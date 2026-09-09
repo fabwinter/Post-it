@@ -126,7 +126,8 @@ function TextGen() {
 
 const IMAGE_MODELS = [
   { value: "gpt-image-2", label: "GPT Image 2" },
-  { value: "nano-banana-2", label: "Nano Banana Pro" },
+  { value: "nano-banana-2", label: "Nano Banana 2" },
+  { value: "nano-banana-pro", label: "Nano Banana Pro" },
   { value: "qwen-image-3", label: "Qwen Image 3" },
   { value: "flux-dev", label: "FLUX Dev" },
   { value: "z-image", label: "Z-Image" },
@@ -141,12 +142,15 @@ const VIDEO_MODELS = [
 const VIDEO_ASPECT = ["16:9", "9:16", "1:1", "4:3"];
 const VIDEO_DURATIONS = [4, 5, 6, 8, 10];
 
+// Verified against the generate-music model's real input schema
+// (poyo_get_model_schema) — mv is a required enum, exactly these six values.
 const MUSIC_VERSIONS = [
-  { value: "V4_5", label: "Suno V4.5" },
-  { value: "V4_5PLUS", label: "Suno V4.5+" },
-  { value: "V5", label: "Suno V5" },
-  { value: "V4", label: "Suno V4" },
-  { value: "V3_5", label: "Suno V3.5" },
+  { value: "V5_5", label: "V5.5 — personalized to your taste" },
+  { value: "V5", label: "V5 — best expression, faster" },
+  { value: "V4_5PLUS", label: "V4.5+ — richer sound" },
+  { value: "V4_5", label: "V4.5 — smarter prompts" },
+  { value: "V4_5ALL", label: "V4.5 (all)" },
+  { value: "V4", label: "V4 — better vocals" },
 ];
 
 function Field({ label, children }) {
