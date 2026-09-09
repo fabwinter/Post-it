@@ -2,7 +2,9 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { api, pollTask, apiErrorMessage } from "@/lib/api";
+import { useTextModels } from "@/lib/useTextModels";
 import { PLATFORM_LIST } from "@/lib/platforms";
+import { ModelPicker } from "@/components/ModelPicker";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "sonner";
@@ -51,12 +53,14 @@ function TextGen() {
   const [tone, setTone] = useState("engaging");
   const [out, setOut] = useState("");
   const [loading, setLoading] = useState(false);
+  const { models, default: defaultModel } = useTextModels("gemini-3-flash-preview");
+  const [model, setModel] = useState("");
 
   const write = async () => {
     if (!brief.trim()) return;
     setLoading(true); setOut("");
     try {
-      const { data } = await api.post("/ai/write", { brief, platform, tone });
+      const { data } = await api.post("/ai/write", { brief, platform, tone, model: model || defaultModel });
       setOut(data.content);
     } catch (e) { toast.error(apiErrorMessage(e, "Generation failed.")); } finally { setLoading(false); }
   };
@@ -85,6 +89,11 @@ function TextGen() {
             <button key={t} onClick={() => setTone(t)}
               className={`rounded-full border px-3 py-1.5 text-xs font-medium capitalize transition-colors ${tone === t ? "border-iris bg-iris/10 text-iris" : "border-white/10 text-zinc-400 hover:text-white"}`}>{t}</button>
           ))}
+        </div>
+
+        <label className="mt-4 block font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">Model</label>
+        <div className="mt-2">
+          <ModelPicker value={model || defaultModel} onChange={setModel} models={models} testid="studio-text-model" />
         </div>
 
         <Button data-testid="studio-write-button" onClick={write} disabled={loading}
@@ -132,6 +141,14 @@ const VIDEO_MODELS = [
 const VIDEO_ASPECT = ["16:9", "9:16", "1:1", "4:3"];
 const VIDEO_DURATIONS = [4, 5, 6, 8, 10];
 
+const MUSIC_VERSIONS = [
+  { value: "V4_5", label: "Suno V4.5" },
+  { value: "V4_5PLUS", label: "Suno V4.5+" },
+  { value: "V5", label: "Suno V5" },
+  { value: "V4", label: "Suno V4" },
+  { value: "V3_5", label: "Suno V3.5" },
+];
+
 function Field({ label, children }) {
   return (
     <div className="flex-1">
@@ -177,6 +194,8 @@ function MediaGen({ kind }) {
   const [vidDuration, setVidDuration] = useState(5);
   const [vidAspect, setVidAspect] = useState("16:9");
   const [vidAudio, setVidAudio] = useState(false);
+  // music controls
+  const [musicVersion, setMusicVersion] = useState("V4_5");
 
   const vidResOptions = (VIDEO_MODELS.find((m) => m.value === vidModel) || VIDEO_MODELS[0]).res;
 
@@ -195,7 +214,7 @@ function MediaGen({ kind }) {
     if (kind === "video") {
       return { model: vidModel, resolution: vidRes, duration: Number(vidDuration), aspect_ratio: vidAspect, generate_audio: vidAudio };
     }
-    return { instrumental };
+    return { instrumental, mv: musicVersion };
   };
 
   const run = async () => {
@@ -219,7 +238,7 @@ function MediaGen({ kind }) {
     ? (IMAGE_MODELS.find((m) => m.value === imgModel) || {}).label
     : kind === "video"
       ? (VIDEO_MODELS.find((m) => m.value === vidModel) || {}).label
-      : "Suno V4.5";
+      : (MUSIC_VERSIONS.find((m) => m.value === musicVersion) || {}).label;
 
   const labels = {
     image: { title: "Image generation", ph: "A paper-cut illustration of a city at sunrise, editorial style…" },
@@ -280,10 +299,15 @@ function MediaGen({ kind }) {
         )}
 
         {kind === "music" && (
-          <label className="mt-3 flex items-center gap-2 text-sm text-zinc-400">
-            <input type="checkbox" checked={instrumental} onChange={(e) => setInstrumental(e.target.checked)} className="accent-lime" data-testid="studio-music-instrumental" />
-            Instrumental (no vocals)
-          </label>
+          <div className="mt-4 space-y-3" data-testid="music-controls">
+            <Field label="Model">
+              <StudioSelect value={musicVersion} onChange={setMusicVersion} options={MUSIC_VERSIONS} testid="studio-music-model" />
+            </Field>
+            <label className="flex items-center gap-2 text-sm text-zinc-400">
+              <input type="checkbox" checked={instrumental} onChange={(e) => setInstrumental(e.target.checked)} className="accent-lime" data-testid="studio-music-instrumental" />
+              Instrumental (no vocals)
+            </label>
+          </div>
         )}
 
         <Button data-testid={`studio-generate-${kind}`} onClick={run} disabled={loading}
