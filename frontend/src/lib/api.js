@@ -1,6 +1,9 @@
 import axios from "axios";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+// Empty by default so requests resolve relative to the current origin
+// (e.g. Vercel serving the frontend and the /api functions together).
+// Set REACT_APP_BACKEND_URL only when the API lives on a different origin.
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "";
 export const API = `${BACKEND_URL}/api`;
 
 export const api = axios.create({ baseURL: API });

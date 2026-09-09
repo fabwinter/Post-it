@@ -427,6 +427,7 @@ async def delete_post(post_id: str):
 
 
 @api_router.get("/stats")
+async def get_stats():
     total = await db.posts.count_documents({})
     drafts = await db.posts.count_documents({"status": "draft"})
     scheduled = await db.posts.count_documents({"status": "scheduled"})
