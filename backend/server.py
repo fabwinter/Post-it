@@ -244,11 +244,11 @@ async def ai_generate(req: GenerateRequest):
     opts = req.options or {}
     if req.kind == "image":
         model = opts.get("model", "gpt-image-2")
-        payload = {
-            "prompt": req.prompt,
-            "size": opts.get("size", "1:1"),
-            "quality": opts.get("quality", "medium"),
-        }
+        payload = {"prompt": req.prompt, "size": opts.get("size", "1:1")}
+        if model.startswith("gpt-image"):
+            payload["quality"] = opts.get("quality", "medium")
+        if opts.get("resolution"):
+            payload["resolution"] = opts["resolution"]
     elif req.kind == "video":
         model = opts.get("model", "seedance-2-fast")
         payload = {
