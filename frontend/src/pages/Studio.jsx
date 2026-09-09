@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { api, pollTask, apiErrorMessage } from "@/lib/api";
 import { useTextModels } from "@/lib/useTextModels";
@@ -19,7 +19,10 @@ const TABS = [
 ];
 
 export default function Studio() {
-  const [tab, setTab] = useState("text");
+  // Composer hands a storyboard scene straight over here ("Generate clip"), so
+  // open on the right tab with the prompt already in the box.
+  const { state } = useLocation();
+  const [tab, setTab] = useState(state?.kind && TABS.some((t) => t.key === state.kind) ? state.kind : "text");
   return (
     <div data-testid="studio-page">
       <div className="font-mono text-xs uppercase tracking-[0.25em] text-zinc-500">Content Studio</div>
@@ -44,10 +47,10 @@ export default function Studio() {
         </div>
 
         <TabsContent value="text" className="mt-6"><TextGen /></TabsContent>
-        <TabsContent value="image" className="mt-6"><MediaGen kind="image" /></TabsContent>
-        <TabsContent value="video" className="mt-6"><MediaGen kind="video" /></TabsContent>
-        <TabsContent value="music" className="mt-6"><MediaGen kind="music" /></TabsContent>
-        <TabsContent value="voice" className="mt-6"><MediaGen kind="voice" /></TabsContent>
+        <TabsContent value="image" className="mt-6"><MediaGen kind="image" initialPrompt={state?.kind === "image" ? state.prompt : ""} /></TabsContent>
+        <TabsContent value="video" className="mt-6"><MediaGen kind="video" initialPrompt={state?.kind === "video" ? state.prompt : ""} /></TabsContent>
+        <TabsContent value="music" className="mt-6"><MediaGen kind="music" initialPrompt={state?.kind === "music" ? state.prompt : ""} /></TabsContent>
+        <TabsContent value="voice" className="mt-6"><MediaGen kind="voice" initialPrompt={state?.kind === "voice" ? state.prompt : ""} /></TabsContent>
       </Tabs>
     </div>
   );
@@ -279,9 +282,9 @@ function StudioSelect({ value, onChange, options, testid }) {
   );
 }
 
-function MediaGen({ kind }) {
+function MediaGen({ kind, initialPrompt = "" }) {
   const navigate = useNavigate();
-  const [prompt, setPrompt] = useState("");
+  const [prompt, setPrompt] = useState(initialPrompt || "");
   const [status, setStatus] = useState("");
   const [progress, setProgress] = useState(0);
   const [fileUrl, setFileUrl] = useState("");

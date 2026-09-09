@@ -1,4 +1,4 @@
-import { LayoutGrid, Sparkles, Repeat, CalendarDays, Images, PenLine, Shapes, Flame, Plug } from "lucide-react";
+import { LayoutGrid, Sparkles, Repeat, CalendarDays, Images, PenLine, Shapes, Flame, Plug, Palette } from "lucide-react";
 
 // Single source of truth for app navigation — both the desktop Sidebar and
 // the mobile menu render from this, so a new page only needs adding here
@@ -12,5 +12,6 @@ export const NAV = [
   { to: "/composer", label: "Composer", icon: PenLine, testid: "nav-composer" },
   { to: "/calendar", label: "Calendar", icon: CalendarDays, testid: "nav-calendar" },
   { to: "/library", label: "Library", icon: Images, testid: "nav-library" },
+  { to: "/brand", label: "Brand Kit", icon: Palette, testid: "nav-brand" },
   { to: "/connections", label: "Connections", icon: Plug, testid: "nav-connections" },
 ];

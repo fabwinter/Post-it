@@ -1,6 +1,7 @@
 import { NavLink, useLocation } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Sparkles } from "lucide-react";
+import { Sparkles, History } from "lucide-react";
+import { openHistory } from "@/lib/historyBus";
 import { NAV } from "@/lib/nav";
 
 export const Sidebar = () => {
@@ -41,6 +42,12 @@ export const Sidebar = () => {
           );
         })}
       </nav>
+
+      <button onClick={() => openHistory()} data-testid="nav-history"
+        className="mx-3 mb-1 flex items-center gap-3 rounded-lg border border-white/10 px-3 py-2.5 text-sm font-medium text-zinc-400 transition-colors hover:border-lime/40 hover:text-white">
+        <History size={18} className="text-zinc-500" />
+        History
+      </button>
 
       <div className="m-3 rounded-xl border border-white/10 bg-gradient-to-br from-white/[0.06] to-transparent p-4">
         <div className="font-mono text-[10px] uppercase tracking-[0.2em] text-zinc-500">Powered by</div>

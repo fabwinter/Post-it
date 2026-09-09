@@ -4,11 +4,13 @@ import { toPng } from "html-to-image";
 import { api, apiErrorMessage } from "@/lib/api";
 import { useTextModels } from "@/lib/useTextModels";
 import { ModelPicker } from "@/components/ModelPicker";
+import { useBrand } from "@/lib/useBrand";
+import { VisualCard, THEMES } from "@/components/VisualCard";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
   Quote, Twitter, ListChecks, GalleryHorizontal, Images as ImagesIcon,
-  Sparkles, Loader2, Download, Send, ChevronLeft, ChevronRight, Play, Pause, BadgeCheck,
+  Sparkles, Loader2, Download, Send, ChevronLeft, ChevronRight, Play, Pause,
 } from "lucide-react";
 
 const TEMPLATES = [
@@ -19,12 +21,6 @@ const TEMPLATES = [
   { key: "slideshow", label: "Slideshow", icon: ImagesIcon, desc: "Auto-playing slide deck" },
 ];
 
-const THEMES = {
-  whiteboard: { key: "whiteboard", label: "Whiteboard", bg: "#F7F7F2", fg: "#141414", sub: "#4b5563", accent: "#E2FF3D", pattern: "grid" },
-  chalkboard: { key: "chalkboard", label: "Chalkboard", bg: "#12211C", fg: "#F4F1E9", sub: "#9db5a8", accent: "#E2FF3D", pattern: "chalk" },
-  midnight: { key: "midnight", label: "Midnight", bg: "#0A0A0A", fg: "#FFFFFF", sub: "#a1a1aa", accent: "#E2FF3D", pattern: "dots" },
-  gradient: { key: "gradient", label: "Gradient", bg: "linear-gradient(135deg,#1a1a2e 0%,#0A0A0A 60%)", fg: "#FFFFFF", sub: "#C4B5FD", accent: "#E2FF3D", pattern: "none" },
-};
 
 export default function Visuals() {
   const navigate = useNavigate();
@@ -40,8 +36,9 @@ export default function Visuals() {
   const cardRef = useRef(null);
   const { models, default: defaultModel } = useTextModels("gemini-3-flash-preview");
   const [model, setModel] = useState("");
+  const { brand } = useBrand();
 
-  const theme = THEMES[themeKey];
+  const theme = THEMES[themeKey] || THEMES.midnight;
   const isDeck = template === "carousel" || template === "slideshow";
 
   useEffect(() => { setData(null); setSlideIdx(0); setPlaying(false); }, [template]);
@@ -72,15 +69,12 @@ export default function Visuals() {
     } catch (e) { toast.error(apiErrorMessage(e, "Export failed")); } finally { setExporting(false); }
   };
 
-  const useInPost = async () => {
-    if (!cardRef.current) return;
-    setExporting(true);
-    try {
-      const url = await toPng(cardRef.current, { pixelRatio: 2, cacheBust: true });
-      const platforms = template === "tweet" ? ["twitter"] : template === "carousel" || template === "slideshow" ? ["instagram"] : ["instagram"];
-      const content = summaryText(template, data);
-      navigate("/composer", { state: { mediaUrl: url, mediaType: "image", content, platforms } });
-    } catch (e) { toast.error(apiErrorMessage(e, "Export failed")); } finally { setExporting(false); }
+  const useInPost = () => {
+    if (!data) return;
+    const platforms = template === "tweet" ? ["twitter"] : ["instagram"];
+    navigate("/composer", {
+      state: { visual: { data, template, theme: themeKey }, content: summaryText(template, data), platforms },
+    });
   };
 
   return (
@@ -125,7 +119,7 @@ export default function Visuals() {
 
           <label className="mt-4 block font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">Theme</label>
           <div className="mt-2 grid grid-cols-2 gap-2">
-            {Object.values(THEMES).map((th) => (
+            {Object.values(THEMES).concat([{ key: "brand", label: brand.name || "Brand", bg: brand.colors?.bg || "#0A0A0A" }]).map((th) => (
               <button key={th.key} onClick={() => setThemeKey(th.key)} data-testid={`visual-theme-${th.key}`}
                 className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs transition-colors ${themeKey === th.key ? "border-lime text-white" : "border-white/10 text-zinc-400 hover:text-white"}`}>
                 <span className="h-4 w-4 rounded-full border border-white/20" style={{ background: th.bg }} />
@@ -164,7 +158,7 @@ export default function Visuals() {
           <div className="mt-4 flex flex-col items-center">
             <div className="w-full max-w-[440px]">
               <div ref={cardRef} data-testid="visual-canvas" className="aspect-square w-full overflow-hidden rounded-xl">
-                <VisualCanvas template={template} theme={theme} data={data} slideIdx={slideIdx} loading={loading} />
+                <VisualCard spec={specFrom(template, themeKey, data, slideIdx)} brand={brand} loading={loading} scale={0.86} />
               </div>
             </div>
 
@@ -183,7 +177,7 @@ export default function Visuals() {
                   className="gap-2 rounded-lg border border-white/10 bg-white/5 text-white hover:bg-white/10">
                   {exporting ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />} PNG
                 </Button>
-                <Button onClick={useInPost} disabled={exporting} data-testid="visual-use"
+                <Button onClick={useInPost} data-testid="visual-use"
                   className="gap-2 rounded-lg bg-lime font-semibold text-[#0A0A0A] hover:bg-lime-hover">
                   <Send size={16} /> Use in post
                 </Button>
@@ -205,110 +199,16 @@ function summaryText(template, data) {
   return "";
 }
 
-function patternStyle(theme) {
-  if (theme.pattern === "grid") return { backgroundImage: "linear-gradient(rgba(0,0,0,0.06) 1px,transparent 1px),linear-gradient(90deg,rgba(0,0,0,0.06) 1px,transparent 1px)", backgroundSize: "28px 28px" };
-  if (theme.pattern === "dots") return { backgroundImage: "radial-gradient(circle at 1px 1px, rgba(255,255,255,0.06) 1px, transparent 0)", backgroundSize: "26px 26px" };
-  if (theme.pattern === "chalk") return { backgroundImage: "radial-gradient(circle at 1px 1px, rgba(255,255,255,0.04) 1px, transparent 0)", backgroundSize: "30px 30px" };
-  return {};
-}
-
-function VisualCanvas({ template, theme, data, slideIdx, loading }) {
-  const base = { background: theme.bg, color: theme.fg };
-  const patt = patternStyle(theme);
-
-  if (loading) {
-    return (
-      <div className="flex h-full w-full items-center justify-center" style={base}>
-        <Loader2 className="animate-spin" style={{ color: theme.accent }} />
-      </div>
-    );
-  }
-  if (!data) {
-    return (
-      <div className="flex h-full w-full items-center justify-center text-center" style={base}>
-        <span style={{ color: theme.sub, fontSize: 13, padding: 24 }}>Generate copy to see your visual here</span>
-      </div>
-    );
-  }
-
-  if (template === "quote") {
-    return (
-      <div className="relative flex h-full w-full flex-col justify-between p-9" style={base}>
-        <div className="absolute inset-0" style={patt} />
-        <div className="relative font-display" style={{ fontSize: 64, lineHeight: 1, color: theme.accent }}>“</div>
-        <div className="relative">
-          <p className="font-display" style={{ fontSize: 28, fontWeight: 700, lineHeight: 1.25 }}>{data.quote}</p>
-        </div>
-        <div className="relative flex items-center justify-between">
-          <span style={{ color: theme.sub, fontSize: 14, fontWeight: 600 }}>— {data.author}</span>
-          <span style={{ color: theme.accent, fontSize: 11, fontFamily: "JetBrains Mono, monospace", letterSpacing: 2 }}>CREATEOS</span>
-        </div>
-      </div>
-    );
-  }
-
-  if (template === "tweet") {
-    return (
-      <div className="flex h-full w-full flex-col justify-center p-9" style={base}>
-        <div className="flex items-center gap-3">
-          <div style={{ height: 52, width: 52, borderRadius: 999, background: "linear-gradient(135deg,#E2FF3D,#C4B5FD)" }} />
-          <div>
-            <div className="flex items-center gap-1" style={{ fontSize: 17, fontWeight: 700 }}>{data.name}<BadgeCheck size={16} style={{ color: "#1DA1F2" }} /></div>
-            <div style={{ color: theme.sub, fontSize: 14 }}>{data.handle}</div>
-          </div>
-          <Twitter size={22} className="ml-auto" style={{ color: theme.sub }} />
-        </div>
-        <p className="mt-5 font-display" style={{ fontSize: 25, lineHeight: 1.35, fontWeight: 500 }}>{data.text}</p>
-        <div className="mt-6" style={{ color: theme.sub, fontSize: 13 }}>9:41 AM · CreateOS</div>
-      </div>
-    );
-  }
-
-  if (template === "infographic") {
-    return (
-      <div className="relative flex h-full w-full flex-col p-9" style={base}>
-        <div className="absolute inset-0" style={patt} />
-        <div className="relative font-mono" style={{ color: theme.accent, fontSize: 11, letterSpacing: 3 }}>INFOGRAPHIC</div>
-        <h2 className="relative mt-3 font-display" style={{ fontSize: 34, fontWeight: 800, lineHeight: 1.05 }}>{data.title}</h2>
-        <div className="relative mt-6 flex flex-1 flex-col justify-center gap-3">
-          {(data.points || []).map((p, i) => (
-            <div key={i} className="flex items-start gap-3">
-              <span className="flex-shrink-0 font-display" style={{ background: theme.accent, color: "#0A0A0A", fontWeight: 800, width: 30, height: 30, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 }}>{i + 1}</span>
-              <span style={{ fontSize: 17, lineHeight: 1.3, fontWeight: 500 }}>{p}</span>
-            </div>
-          ))}
-        </div>
-        <div className="relative font-mono" style={{ color: theme.sub, fontSize: 11, letterSpacing: 2 }}>CREATEOS.STUDIO</div>
-      </div>
-    );
-  }
-
-  // carousel / slideshow deck
+// Map this page's (template, data, slideIdx) view state onto the single-card
+// spec the shared renderer takes.
+function specFrom(template, theme, data, slideIdx) {
+  if (!data) return null;
+  if (template === "quote") return { template: "quote", theme, quote: data.quote, author: data.author };
+  if (template === "tweet") return { template: "tweet", theme, name: data.name, handle: data.handle, text: data.text };
+  if (template === "infographic") return { template: "infographic", theme, title: data.title, points: data.points || [] };
   const slides = data.slides || [];
-  const isCover = slideIdx === 0;
-  const slide = isCover ? null : slides[slideIdx - 1];
-  return (
-    <div className="relative flex h-full w-full flex-col justify-between p-9" style={base}>
-      <div className="absolute inset-0" style={patt} />
-      <div className="relative flex items-center justify-between font-mono" style={{ color: theme.accent, fontSize: 11, letterSpacing: 2 }}>
-        <span>{isCover ? "SWIPE →" : `${slideIdx}/${slides.length}`}</span>
-        <span style={{ color: theme.sub }}>CREATEOS</span>
-      </div>
-      <div className="relative flex flex-1 flex-col justify-center">
-        {isCover ? (
-          <h2 className="font-display" style={{ fontSize: 40, fontWeight: 800, lineHeight: 1.05 }}>{data.title}</h2>
-        ) : (
-          <>
-            <h3 className="font-display" style={{ fontSize: 30, fontWeight: 800, lineHeight: 1.1 }}>{slide?.heading}</h3>
-            <p className="mt-4" style={{ fontSize: 18, lineHeight: 1.4, color: theme.sub }}>{slide?.body}</p>
-          </>
-        )}
-      </div>
-      <div className="relative flex gap-1.5">
-        {Array.from({ length: slides.length + 1 }).map((_, i) => (
-          <span key={i} style={{ height: 4, flex: 1, borderRadius: 4, background: i === slideIdx ? theme.accent : "rgba(150,150,150,0.3)" }} />
-        ))}
-      </div>
-    </div>
-  );
+  const total = slides.length + 1;
+  if (slideIdx === 0) return { template: "cover", theme, index: 0, total, title: data.title };
+  const s = slides[slideIdx - 1] || {};
+  return { template: "slide", theme, index: slideIdx, total, heading: s.heading || s.caption || "", body: s.body || "" };
 }

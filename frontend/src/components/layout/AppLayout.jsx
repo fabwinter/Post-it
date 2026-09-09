@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { Sidebar } from "./Sidebar";
 import { NavLink, useLocation } from "react-router-dom";
-import { Sparkles, Menu } from "lucide-react";
+import { Sparkles, Menu, History } from "lucide-react";
 import { NAV } from "@/lib/nav";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { HistoryDrawer } from "@/components/HistoryDrawer";
+import { openHistory } from "@/lib/historyBus";
 
 export const AppLayout = ({ children }) => {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -18,8 +20,12 @@ export const AppLayout = ({ children }) => {
           <Sparkles size={16} strokeWidth={2.5} />
         </div>
         <span className="font-display text-base font-bold">CreateOS</span>
+        <button onClick={() => openHistory()} data-testid="mobile-history-open"
+          className="ml-auto flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 text-zinc-300 hover:text-lime">
+          <History size={17} />
+        </button>
         <button onClick={() => setMenuOpen(true)} data-testid="mobile-menu-open"
-          className="ml-auto flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 text-zinc-300 hover:text-white">
+          className="flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 text-zinc-300 hover:text-white">
           <Menu size={18} />
         </button>
       </div>
@@ -51,6 +57,8 @@ export const AppLayout = ({ children }) => {
           </nav>
         </SheetContent>
       </Sheet>
+
+      <HistoryDrawer />
 
       <main className="lg:pl-64">
         <div className="mx-auto w-full max-w-[1400px] px-5 py-8 sm:px-8 lg:px-12">{children}</div>
