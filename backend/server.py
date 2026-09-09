@@ -4,6 +4,8 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import asyncio
+import json
+import re
 import logging
 import requests
 from pathlib import Path
@@ -237,6 +239,63 @@ async def ai_repurpose(req: RepurposeRequest):
         results[platform] = txt.strip()
     await asyncio.gather(*[one(p) for p in req.platforms])
     return {"posts": results}
+
+
+def _extract_json(text):
+    if not text:
+        return None
+    text = text.strip()
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            pass
+    return None
+
+
+class VisualRequest(BaseModel):
+    template: str  # quote | tweet | infographic | carousel | slideshow
+    topic: str
+    count: Optional[int] = 5
+
+
+@api_router.post("/ai/visual")
+async def ai_visual(req: VisualRequest):
+    t = req.template
+    n = max(3, min(int(req.count or 5), 8))
+    if t == "quote":
+        system = ('You craft punchy, original social quotes. Return ONLY JSON: '
+                  '{"quote": "a single powerful sentence, max 140 chars", "author": "a fitting short attribution"}')
+        user = f"Topic: {req.topic}"
+    elif t == "tweet":
+        system = ('You write a viral-style tweet. Return ONLY JSON: '
+                  '{"name": "display name", "handle": "@handle", "text": "the tweet, max 260 chars"}')
+        user = f"Topic: {req.topic}"
+    elif t == "infographic":
+        system = ('You design infographic copy. Return ONLY JSON: '
+                  '{"title": "short punchy title, max 50 chars", "points": ["3 to 5 concise bullet points, each max 70 chars"]}')
+        user = f"Topic: {req.topic}"
+    else:  # carousel or slideshow
+        system = ('You design a swipeable social carousel. Return ONLY JSON: '
+                  f'{{"title": "hook cover title, max 50 chars", "slides": [{n} objects each '
+                  '{"heading": "max 40 chars", "body": "max 120 chars"}]}. The first slide is the hook/cover.')
+        user = f"Topic: {req.topic}. Make exactly {n} slides."
+
+    content = await chat([{"role": "system", "content": system}, {"role": "user", "content": user}], CHAT_MODEL, 0.85)
+    data = _extract_json(content)
+    if not data:
+        # graceful fallback
+        if t == "quote":
+            data = {"quote": content.strip()[:140], "author": "CreateOS"}
+        elif t == "tweet":
+            data = {"name": "Creator", "handle": "@creator", "text": content.strip()[:260]}
+        elif t == "infographic":
+            lines = [l.strip("-• ").strip() for l in content.splitlines() if l.strip()]
+            data = {"title": (lines[0] if lines else req.topic)[:50], "points": lines[1:6] or [req.topic]}
+        else:
+            data = {"title": req.topic[:50], "slides": [{"heading": req.topic[:40], "body": content.strip()[:120]}]}
+    return {"data": data}
 
 
 @api_router.post("/ai/generate")

@@ -4,6 +4,7 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { Toaster } from "@/components/ui/sonner";
 import Dashboard from "@/pages/Dashboard";
 import Studio from "@/pages/Studio";
+import Visuals from "@/pages/Visuals";
 import Repurpose from "@/pages/Repurpose";
 import Composer from "@/pages/Composer";
 import CalendarPage from "@/pages/CalendarPage";
@@ -17,6 +18,7 @@ function App() {
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/studio" element={<Studio />} />
+            <Route path="/visuals" element={<Visuals />} />
             <Route path="/repurpose" element={<Repurpose />} />
             <Route path="/composer" element={<Composer />} />
             <Route path="/calendar" element={<CalendarPage />} />

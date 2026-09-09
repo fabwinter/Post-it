@@ -1,10 +1,11 @@
 import { NavLink, useLocation } from "react-router-dom";
 import { motion } from "framer-motion";
-import { LayoutGrid, Sparkles, Repeat, CalendarDays, Images, PenLine } from "lucide-react";
+import { LayoutGrid, Sparkles, Repeat, CalendarDays, Images, PenLine, Shapes } from "lucide-react";
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: LayoutGrid, testid: "nav-dashboard" },
   { to: "/studio", label: "Content Studio", icon: Sparkles, testid: "nav-studio" },
+  { to: "/visuals", label: "Visual Studio", icon: Shapes, testid: "nav-visuals" },
   { to: "/repurpose", label: "Repurpose", icon: Repeat, testid: "nav-repurpose" },
   { to: "/composer", label: "Composer", icon: PenLine, testid: "nav-composer" },
   { to: "/calendar", label: "Calendar", icon: CalendarDays, testid: "nav-calendar" },
