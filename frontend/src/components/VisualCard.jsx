@@ -137,7 +137,10 @@ export const VisualCard = forwardRef(function VisualCard(
   const dot = hasCover ? (spec.index || 0) : (spec.index || 1) - 1;
   return (
     <div ref={ref} className={`relative flex h-full w-full flex-col justify-between ${className}`} style={{ ...base, ...pad }}>
-      {spec.image_url && (
+      {spec.video_url ? (
+        <video src={spec.video_url} muted loop autoPlay playsInline
+          className="absolute inset-0 h-full w-full object-cover" style={{ opacity: 0.45 }} />
+      ) : spec.image_url && (
         <img src={spec.image_url} alt="" crossOrigin="anonymous"
           className="absolute inset-0 h-full w-full object-cover" style={{ opacity: 0.45 }} />
       )}

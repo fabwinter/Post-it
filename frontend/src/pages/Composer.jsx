@@ -10,12 +10,23 @@ import { openHistory } from "@/lib/historyBus";
 import { PostPreview } from "@/components/PostPreview";
 import { ModelPicker } from "@/components/ModelPicker";
 import { VisualCard, ASPECT_CLASS, THEME_LIST } from "@/components/VisualCard";
+import { StockPicker } from "@/components/StockPicker";
+import { useTemplateStyles } from "@/lib/templateStyles";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
   Sparkles, Loader2, Save, CalendarClock, Send, Wand2, Trash2, X, GraduationCap,
   Plus, ChevronLeft, ChevronRight, Download, ImagePlus, History, Hash, Film, Layers,
+  Search, Wand,
 } from "lucide-react";
+
+// Pexels only accepts these three; map a platform's aspect onto the closest one
+// so results aren't a mismatched crop away from unusable.
+const orientationFor = (aspect) => {
+  if (aspect === "9:16") return "portrait";
+  if (aspect === "16:9" || aspect === "1.91:1") return "landscape";
+  return aspect === "4:5" ? "portrait" : "square";
+};
 
 const emptySlide = (index, total) => ({
   type: "visual", caption: "",
@@ -53,6 +64,10 @@ export default function Composer() {
   const [coachLoading, setCoachLoading] = useState(false);
   const [active, setActive] = useState(0);
   const [renderingSlide, setRenderingSlide] = useState(null);
+  const [stockTarget, setStockTarget] = useState(null); // "slide-image" | "slide-video" | "media"
+  const [styleTemplate, setStyleTemplate] = useState(state.applyTemplate || "hooks");
+  const [restyling, setRestyling] = useState(false);
+  const templates = useTemplateStyles();
   const cardRef = useRef(null);
 
   const primary = platforms[0] || "instagram";
@@ -141,6 +156,21 @@ export default function Composer() {
     } catch (e) { toast.error(apiErrorMessage(e, "Coach feedback failed.")); } finally { setCoachLoading(false); }
   };
 
+  // Rewrites the draft already in the box into a template's voice — distinct
+  // from the Viral Templates page, which writes N fresh posts from a topic.
+  const applyStyle = async () => {
+    if (!content.trim()) { toast.error("Write something first, then apply a style to it."); return; }
+    setRestyling(true);
+    try {
+      const { data } = await api.post("/ai/restyle", {
+        content, template: styleTemplate, platform: primary, model: model || defaultModel,
+      });
+      setContent(data.content);
+      const label = templates.find((t) => t.key === styleTemplate)?.label || styleTemplate;
+      toast.success(`Restyled as ${label}`);
+    } catch (e) { toast.error(apiErrorMessage(e, "Restyle failed.")); } finally { setRestyling(false); }
+  };
+
   // ---- slide editing ----
   const patchSlide = (i, patch) => setAssets((s) => s.map((a, idx) => (idx === i ? { ...a, spec: { ...a.spec, ...patch } } : a)));
   const setAllThemes = (theme) => setAssets((s) => s.map((a) => ({ ...a, spec: { ...a.spec, theme } })));
@@ -186,6 +216,15 @@ export default function Composer() {
       patchSlide(i, { image_url: url });
       toast.success("Slide image added");
     } catch (e) { toast.error(apiErrorMessage(e, "Image generation failed.")); } finally { setRenderingSlide(null); }
+  };
+
+  // One handler for every place the stock picker can be opened from — which
+  // field it fills depends on which target requested it.
+  const onStockPick = (item) => {
+    if (stockTarget === "slide-video") patchSlide(active, { video_url: item.url, video_credit: item.credit, image_url: "" });
+    else if (stockTarget === "slide-image") patchSlide(active, { image_url: item.url, image_credit: item.credit, video_url: "" });
+    else if (stockTarget === "media") { setMediaUrl(item.url); setMediaType(item.type); }
+    toast.success(item.credit ? `Added — photo by ${item.credit}` : "Added");
   };
 
   const downloadSlide = async () => {
@@ -316,6 +355,19 @@ export default function Composer() {
               </Button>
             </div>
 
+            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-3">
+              <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Restyle as</span>
+              <select value={styleTemplate} onChange={(e) => setStyleTemplate(e.target.value)} data-testid="composer-style-select"
+                className="rounded-lg border border-white/10 bg-[#0A0A0A] px-2.5 py-1.5 text-xs text-white outline-none focus:border-iris [color-scheme:dark]">
+                {templates.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+              </select>
+              <Button variant="secondary" onClick={applyStyle} disabled={restyling} data-testid="composer-apply-style"
+                className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 text-xs text-white hover:bg-white/10">
+                {restyling ? <Loader2 size={13} className="animate-spin" /> : <Wand size={13} />} Apply style
+              </Button>
+              <span className="text-xs text-zinc-600">rewrites the draft above in that template's voice</span>
+            </div>
+
             {coach && <CoachPanel coach={coach} onUseHook={(h) => setContent(h + "\n\n" + content)} />}
           </div>
 
@@ -398,21 +450,37 @@ export default function Composer() {
 
                     <div className="mt-3 flex flex-wrap gap-2">
                       {activeAsset.type === "scene" ? (
-                        <Button variant="secondary" data-testid="composer-scene-to-studio"
-                          onClick={() => navigate("/studio", { state: { kind: "video", prompt: activeAsset.spec.video_prompt || activeAsset.spec.heading } })}
-                          className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
-                          <Film size={13} /> Generate clip in Studio
-                        </Button>
+                        <>
+                          <Button variant="secondary" data-testid="composer-scene-to-studio"
+                            onClick={() => navigate("/studio", { state: { kind: "video", prompt: activeAsset.spec.video_prompt || activeAsset.spec.heading } })}
+                            className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
+                            <Film size={13} /> Generate clip in Studio
+                          </Button>
+                          <Button variant="secondary" onClick={() => setStockTarget("slide-video")} data-testid="composer-slide-stock-video"
+                            className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
+                            <Search size={13} /> Stock video
+                          </Button>
+                          {activeAsset.spec.video_url && (
+                            <Button variant="ghost" onClick={() => patchSlide(active, { video_url: "" })} data-testid="composer-slide-video-clear"
+                              className="h-8 px-2.5 text-xs text-zinc-500 hover:text-magic">Remove video</Button>
+                          )}
+                        </>
                       ) : (
-                        <Button variant="secondary" onClick={() => renderSlideImage(active)} disabled={renderingSlide !== null}
-                          data-testid="composer-slide-image"
-                          className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
-                          {renderingSlide === active ? <Loader2 size={13} className="animate-spin" /> : <ImagePlus size={13} />} Generate image
-                        </Button>
-                      )}
-                      {activeAsset.spec.image_url && (
-                        <Button variant="ghost" onClick={() => patchSlide(active, { image_url: "" })} data-testid="composer-slide-image-clear"
-                          className="h-8 px-2.5 text-xs text-zinc-500 hover:text-magic">Remove image</Button>
+                        <>
+                          <Button variant="secondary" onClick={() => renderSlideImage(active)} disabled={renderingSlide !== null}
+                            data-testid="composer-slide-image"
+                            className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
+                            {renderingSlide === active ? <Loader2 size={13} className="animate-spin" /> : <ImagePlus size={13} />} Generate image
+                          </Button>
+                          <Button variant="secondary" onClick={() => setStockTarget("slide-image")} data-testid="composer-slide-stock-image"
+                            className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
+                            <Search size={13} /> Stock photo
+                          </Button>
+                          {activeAsset.spec.image_url && (
+                            <Button variant="ghost" onClick={() => patchSlide(active, { image_url: "" })} data-testid="composer-slide-image-clear"
+                              className="h-8 px-2.5 text-xs text-zinc-500 hover:text-magic">Remove image</Button>
+                          )}
+                        </>
                       )}
                       <Button variant="secondary" onClick={downloadSlide} data-testid="composer-slide-download"
                         className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
@@ -425,19 +493,33 @@ export default function Composer() {
             )}
           </div>
 
-          {mediaUrl && (
-            <div className="rounded-xl border border-white/10 bg-[#121212] p-4">
-              <div className="flex items-center justify-between">
-                <span className="font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">Attached media · {mediaType}</span>
-                <button onClick={() => { setMediaUrl(""); setMediaType(""); }} className="text-zinc-500 hover:text-white" data-testid="composer-remove-media"><X size={16} /></button>
+          {/* Attached media — a single-image/video/audio slot separate from the
+              slide deck, used for single-format posts or the podcast/voice case. */}
+          <div className="rounded-xl border border-white/10 bg-[#121212] p-4">
+            <div className="flex items-center justify-between">
+              <span className="font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">
+                Attached media{mediaUrl ? ` · ${mediaType}` : ""}
+              </span>
+              <div className="flex items-center gap-1">
+                <Button variant="ghost" onClick={() => setStockTarget("media")} data-testid="composer-media-stock"
+                  className="h-7 gap-1.5 px-2 text-xs text-zinc-400 hover:text-white">
+                  <Search size={12} /> {mediaUrl ? "Change" : "Browse stock"}
+                </Button>
+                {mediaUrl && (
+                  <button onClick={() => { setMediaUrl(""); setMediaType(""); }} className="text-zinc-500 hover:text-white" data-testid="composer-remove-media"><X size={16} /></button>
+                )}
               </div>
+            </div>
+            {mediaUrl ? (
               <div className="mt-3 overflow-hidden rounded-lg">
                 {mediaType === "video" ? <video src={mediaUrl} controls className="w-full" />
                   : (mediaType === "music" || mediaType === "audio" || mediaType === "voice") ? <audio src={mediaUrl} controls className="w-full" />
                   : <img src={mediaUrl} alt="media" className="max-h-64 w-full object-contain" />}
               </div>
-            </div>
-          )}
+            ) : (
+              <p className="mt-3 text-xs text-zinc-600">Optional — attach one photo, video or audio clip separate from the slide deck above.</p>
+            )}
+          </div>
 
           <div className="rounded-xl border border-white/10 bg-[#121212] p-5">
             <label className="block font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">Schedule</label>
@@ -491,6 +573,14 @@ export default function Composer() {
           ))}
         </div>
       </div>
+
+      <StockPicker
+        open={stockTarget !== null}
+        onOpenChange={(open) => !open && setStockTarget(null)}
+        defaultType={stockTarget === "slide-video" ? "video" : "image"}
+        orientation={orientationFor(aspect)}
+        onSelect={onStockPick}
+      />
     </div>
   );
 }
