@@ -2,6 +2,8 @@ import { useMemo, useRef, useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { toPng } from "html-to-image";
 import { api, apiErrorMessage } from "@/lib/api";
+import { useTextModels } from "@/lib/useTextModels";
+import { ModelPicker } from "@/components/ModelPicker";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
@@ -36,6 +38,8 @@ export default function Visuals() {
   const [playing, setPlaying] = useState(false);
   const [exporting, setExporting] = useState(false);
   const cardRef = useRef(null);
+  const { models, default: defaultModel } = useTextModels("gemini-3-flash-preview");
+  const [model, setModel] = useState("");
 
   const theme = THEMES[themeKey];
   const isDeck = template === "carousel" || template === "slideshow";
@@ -52,7 +56,7 @@ export default function Visuals() {
     if (!topic.trim()) { toast.error("Enter a topic first."); return; }
     setLoading(true); setData(null); setSlideIdx(0);
     try {
-      const { data: res } = await api.post("/ai/visual", { template, topic, count: Number(count) });
+      const { data: res } = await api.post("/ai/visual", { template, topic, count: Number(count), model: model || defaultModel });
       setData(res.data);
     } catch (e) { toast.error(apiErrorMessage(e, "Couldn't generate. Check the PoYo key.")); } finally { setLoading(false); }
   };
@@ -128,6 +132,11 @@ export default function Visuals() {
                 {th.label}
               </button>
             ))}
+          </div>
+
+          <label className="mt-4 block font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">Model</label>
+          <div className="mt-2">
+            <ModelPicker value={model || defaultModel} onChange={setModel} models={models} testid="visual-model" />
           </div>
 
           <Button data-testid="visual-generate" onClick={generate} disabled={loading}

@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, apiErrorMessage } from "@/lib/api";
+import { useTextModels } from "@/lib/useTextModels";
 import { PLATFORM_LIST, platformOf } from "@/lib/platforms";
+import { ModelPicker } from "@/components/ModelPicker";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { Repeat, Loader2, Copy, Send, Sparkles } from "lucide-react";
@@ -14,6 +16,8 @@ export default function Repurpose() {
   const [selected, setSelected] = useState(DEFAULTS);
   const [results, setResults] = useState({});
   const [loading, setLoading] = useState(false);
+  const { models, default: defaultModel } = useTextModels("gemini-3-flash-preview");
+  const [model, setModel] = useState("");
 
   const toggle = (k) => setSelected((s) => (s.includes(k) ? s.filter((x) => x !== k) : [...s, k]));
 
@@ -21,7 +25,7 @@ export default function Repurpose() {
     if (!source.trim() || selected.length === 0) return;
     setLoading(true); setResults({});
     try {
-      const { data } = await api.post("/ai/repurpose", { source, platforms: selected });
+      const { data } = await api.post("/ai/repurpose", { source, platforms: selected, model: model || defaultModel });
       setResults(data.posts);
     } catch (e) { toast.error(apiErrorMessage(e, "Repurpose failed.")); } finally { setLoading(false); }
   };
@@ -49,6 +53,11 @@ export default function Repurpose() {
                 </button>
               );
             })}
+          </div>
+
+          <label className="mt-4 block font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">Model</label>
+          <div className="mt-2">
+            <ModelPicker value={model || defaultModel} onChange={setModel} models={models} testid="repurpose-model" />
           </div>
 
           <Button data-testid="repurpose-run" onClick={run} disabled={loading}

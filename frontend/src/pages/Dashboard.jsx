@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { api } from "@/lib/api";
+import { api, apiErrorMessage } from "@/lib/api";
 import { PLATFORM_LIST, platformOf } from "@/lib/platforms";
 import { Sparkles, ArrowRight, Loader2, FileText, CalendarClock, Images, Send, Wand2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -44,7 +44,7 @@ export default function Dashboard() {
       const { data } = await api.post("/ai/ideate", { topic, count: 6 });
       setIdeas(data.ideas);
     } catch (e) {
-      toast.error("Couldn't generate ideas. Check the PoYo key.");
+      toast.error(apiErrorMessage(e, "Couldn't generate ideas."));
     } finally {
       setLoading(false);
     }

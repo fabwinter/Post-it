@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { api, apiErrorMessage } from "@/lib/api";
+import { useTextModels } from "@/lib/useTextModels";
 import { PLATFORM_LIST, platformOf } from "@/lib/platforms";
 import { PostPreview } from "@/components/PostPreview";
+import { ModelPicker } from "@/components/ModelPicker";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { Sparkles, Loader2, Save, CalendarClock, Send, Wand2, Trash2, X } from "lucide-react";
@@ -22,6 +24,8 @@ export default function Composer() {
   const [saving, setSaving] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [brief, setBrief] = useState(state.brief || "");
+  const { models, default: defaultModel } = useTextModels("gemini-3-flash-preview");
+  const [model, setModel] = useState("");
 
   useEffect(() => {
     if (state.postId) {
@@ -48,7 +52,7 @@ export default function Composer() {
     if (!useBrief.trim()) { toast.error("Add a brief or some text first."); return; }
     setAiLoading(true);
     try {
-      const { data } = await api.post("/ai/write", { brief: useBrief, platform: platforms[0] || "twitter", tone: "engaging" });
+      const { data } = await api.post("/ai/write", { brief: useBrief, platform: platforms[0] || "twitter", tone: "engaging", model: model || defaultModel });
       setContent(data.content);
     } catch (e) { toast.error(apiErrorMessage(e, "AI write failed.")); } finally { setAiLoading(false); }
   };
@@ -112,6 +116,7 @@ export default function Composer() {
               <input value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="Give the AI a brief (optional)…"
                 data-testid="composer-brief"
                 className="min-w-[180px] flex-1 rounded-lg border border-white/10 bg-[#0A0A0A] px-3 py-2 text-sm outline-none focus:border-iris" />
+              <ModelPicker value={model || defaultModel} onChange={setModel} models={models} testid="composer-model" className="w-auto min-w-[160px] flex-none" />
               <Button onClick={() => generate()} disabled={aiLoading} data-testid="composer-ai-write"
                 className="gap-2 rounded-lg bg-iris/90 font-semibold text-[#0A0A0A] hover:bg-iris">
                 {aiLoading ? <Loader2 size={16} className="animate-spin" /> : <Wand2 size={16} />} AI write
