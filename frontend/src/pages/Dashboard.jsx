@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { api, apiErrorMessage } from "@/lib/api";
+import { useTextModels } from "@/lib/useTextModels";
 import { PLATFORM_LIST, platformOf } from "@/lib/platforms";
+import { ModelPicker } from "@/components/ModelPicker";
 import { Sparkles, ArrowRight, Loader2, FileText, CalendarClock, Images, Send, Wand2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -20,6 +22,8 @@ export default function Dashboard() {
   const [stats, setStats] = useState({ total: 0, drafts: 0, scheduled: 0, published: 0, media: 0 });
   const [drafts, setDrafts] = useState([]);
   const [scheduled, setScheduled] = useState([]);
+  const { models, default: defaultModel } = useTextModels("gemini-3-flash-preview");
+  const [model, setModel] = useState("");
 
   const loadData = async () => {
     try {
@@ -41,7 +45,7 @@ export default function Dashboard() {
     setLoading(true);
     setIdeas([]);
     try {
-      const { data } = await api.post("/ai/ideate", { topic, count: 6 });
+      const { data } = await api.post("/ai/ideate", { topic, count: 6, model: model || defaultModel });
       setIdeas(data.ideas);
     } catch (e) {
       toast.error(apiErrorMessage(e, "Couldn't generate ideas."));
@@ -96,6 +100,12 @@ export default function Dashboard() {
               {loading ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />}
               Ideate
             </Button>
+          </div>
+
+          <div className="mt-3 flex items-center gap-2">
+            <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Model</span>
+            <ModelPicker value={model || defaultModel} onChange={setModel} models={models} testid="dashboard-model"
+              className="w-auto min-w-[180px] flex-none" />
           </div>
 
           {ideas.length > 0 && (
