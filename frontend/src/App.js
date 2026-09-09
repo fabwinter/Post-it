@@ -11,6 +11,7 @@ import Composer from "@/pages/Composer";
 import CalendarPage from "@/pages/CalendarPage";
 import Library from "@/pages/Library";
 import Connections from "@/pages/Connections";
+import BrandKit from "@/pages/BrandKit";
 
 function App() {
   return (
@@ -26,6 +27,7 @@ function App() {
             <Route path="/composer" element={<Composer />} />
             <Route path="/calendar" element={<CalendarPage />} />
             <Route path="/library" element={<Library />} />
+            <Route path="/brand" element={<BrandKit />} />
             <Route path="/connections" element={<Connections />} />
           </Routes>
         </AppLayout>

@@ -69,6 +69,86 @@ async def d1_query(sql: str, params: Optional[list] = None):
     return await asyncio.to_thread(_d1_query, sql, params)
 
 
+# The app provisions its own tables and columns. D1's dashboard console silently
+# swallows multi-statement pastes, so relying on a human to run schema.sql by
+# hand has already cost us two rounds of "no such table" — this runs once per
+# cold start instead. Every statement is IF NOT EXISTS or an idempotent ALTER
+# whose "duplicate column name" error is expected and ignored.
+_CREATE_TABLES = [
+    """CREATE TABLE IF NOT EXISTS posts (
+        id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT 'Untitled post',
+        content TEXT NOT NULL DEFAULT '', platforms TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL DEFAULT 'draft', scheduled_time TEXT,
+        media_urls TEXT NOT NULL DEFAULT '[]', media_type TEXT,
+        assets TEXT NOT NULL DEFAULT '[]', format TEXT NOT NULL DEFAULT 'single',
+        hashtags TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS generations (
+        id TEXT PRIMARY KEY, kind TEXT NOT NULL, prompt TEXT NOT NULL,
+        model TEXT NOT NULL, task_id TEXT NOT NULL, status TEXT NOT NULL,
+        files TEXT NOT NULL DEFAULT '[]', progress INTEGER DEFAULT 0,
+        error_message TEXT, output TEXT, title TEXT, meta TEXT,
+        favorite INTEGER NOT NULL DEFAULT 0, updated_at TEXT,
+        created_at TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS connections (
+        id TEXT PRIMARY KEY, platform TEXT NOT NULL UNIQUE, account_name TEXT,
+        status TEXT NOT NULL DEFAULT 'not_connected',
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS brand_kits (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT 'Default brand',
+        is_default INTEGER NOT NULL DEFAULT 1, colors TEXT NOT NULL DEFAULT '{}',
+        fonts TEXT NOT NULL DEFAULT '{}', logo_url TEXT, handle TEXT, voice TEXT,
+        audience TEXT, hashtags TEXT NOT NULL DEFAULT '[]', cta TEXT,
+        banned_words TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+]
+
+# Columns added after the first release. Existing databases predate them, so
+# they arrive as ALTERs rather than being picked up from the CREATE above.
+_ADD_COLUMNS = {
+    "posts": [
+        ("assets", "ALTER TABLE posts ADD COLUMN assets TEXT NOT NULL DEFAULT '[]'"),
+        ("format", "ALTER TABLE posts ADD COLUMN format TEXT NOT NULL DEFAULT 'single'"),
+        ("hashtags", "ALTER TABLE posts ADD COLUMN hashtags TEXT NOT NULL DEFAULT '[]'"),
+    ],
+    "generations": [
+        ("output", "ALTER TABLE generations ADD COLUMN output TEXT"),
+        ("title", "ALTER TABLE generations ADD COLUMN title TEXT"),
+        ("meta", "ALTER TABLE generations ADD COLUMN meta TEXT"),
+        ("favorite", "ALTER TABLE generations ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0"),
+        ("updated_at", "ALTER TABLE generations ADD COLUMN updated_at TEXT"),
+    ],
+}
+
+_schema_ready = False
+
+
+async def ensure_schema():
+    global _schema_ready
+    if _schema_ready:
+        return
+    await asyncio.gather(*[d1_query(sql) for sql in _CREATE_TABLES])
+    infos = await asyncio.gather(
+        *[d1_query(f"SELECT name FROM pragma_table_info('{t}')") for t in _ADD_COLUMNS]
+    )
+    pending = []
+    for (table, cols), (rows, _meta) in zip(_ADD_COLUMNS.items(), infos):
+        have = {r["name"] for r in rows}
+        pending += [sql for name, sql in cols if name not in have]
+
+    async def add(sql):
+        try:
+            await d1_query(sql)
+        except HTTPException as e:
+            # "duplicate column name" means another cold start beat us to it.
+            if "duplicate column" not in str(e.detail).lower():
+                raise
+
+    if pending:
+        await asyncio.gather(*[add(sql) for sql in pending])
+    _schema_ready = True
+
+
 # ---------------- PoYo client (sync helpers, run in threadpool) ----------------
 def _poyo_headers():
     return {"Authorization": f"Bearer {POYO_API_KEY}", "Content-Type": "application/json"}
@@ -181,6 +261,7 @@ class IdeateRequest(BaseModel):
     platform: Optional[str] = "general"
     count: Optional[int] = 6
     model: Optional[str] = None
+    use_brand: bool = True
 
 
 class WriteRequest(BaseModel):
@@ -188,6 +269,7 @@ class WriteRequest(BaseModel):
     platform: str = "twitter"
     tone: Optional[str] = "engaging"
     model: Optional[str] = None
+    use_brand: bool = True
 
 
 class RepurposeRequest(BaseModel):
@@ -215,6 +297,9 @@ class Post(BaseModel):
     scheduled_time: Optional[str] = None
     media_urls: List[str] = Field(default_factory=list)
     media_type: Optional[str] = None
+    assets: List[Dict[str, Any]] = Field(default_factory=list)
+    format: str = "single"  # single | carousel | reel | story | thread
+    hashtags: List[str] = Field(default_factory=list)
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
 
@@ -227,6 +312,9 @@ class PostCreate(BaseModel):
     scheduled_time: Optional[str] = None
     media_urls: Optional[List[str]] = Field(default_factory=list)
     media_type: Optional[str] = None
+    assets: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
+    format: Optional[str] = "single"
+    hashtags: Optional[List[str]] = Field(default_factory=list)
 
 
 class PostUpdate(BaseModel):
@@ -237,6 +325,13 @@ class PostUpdate(BaseModel):
     scheduled_time: Optional[str] = None
     media_urls: Optional[List[str]] = None
     media_type: Optional[str] = None
+    assets: Optional[List[Dict[str, Any]]] = None
+    format: Optional[str] = None
+    hashtags: Optional[List[str]] = None
+
+
+# Post columns whose Python value is a list/dict and whose D1 value is JSON text.
+JSON_POST_FIELDS = ("platforms", "media_urls", "assets", "hashtags")
 
 
 def _post_row(post: dict):
@@ -244,6 +339,8 @@ def _post_row(post: dict):
         post["id"], post.get("title") or "Untitled post", post.get("content") or "",
         json.dumps(post.get("platforms") or []), post.get("status") or "draft", post.get("scheduled_time"),
         json.dumps(post.get("media_urls") or []), post.get("media_type"),
+        json.dumps(post.get("assets") or []), post.get("format") or "single",
+        json.dumps(post.get("hashtags") or []),
         post["created_at"], post["updated_at"],
     ]
 
@@ -258,6 +355,9 @@ def _row_to_post(row: dict):
         "scheduled_time": row["scheduled_time"],
         "media_urls": json.loads(row["media_urls"] or "[]"),
         "media_type": row["media_type"],
+        "assets": json.loads(row.get("assets") or "[]"),
+        "format": row.get("format") or "single",
+        "hashtags": json.loads(row.get("hashtags") or "[]"),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -267,13 +367,51 @@ def _row_to_generation(row: dict):
     return {
         "id": row["id"],
         "kind": row["kind"],
+        "title": row.get("title") or (row["prompt"] or "")[:80],
         "prompt": row["prompt"],
         "model": row["model"],
         "task_id": row["task_id"],
         "status": row["status"],
         "files": json.loads(row["files"] or "[]"),
+        "output": row.get("output"),
+        "meta": json.loads(row.get("meta") or "{}"),
+        "favorite": bool(row.get("favorite")),
+        "progress": row.get("progress") or 0,
+        "error_message": row.get("error_message"),
         "created_at": row["created_at"],
+        "updated_at": row.get("updated_at") or row["created_at"],
     }
+
+
+# Text kinds have no PoYo task behind them, so they land already finished with
+# their result in `output`. task_id stays '' rather than NULL because the column
+# predates them and is NOT NULL.
+TEXT_KINDS = ("ideate", "write", "repurpose", "templates", "coach", "visual", "post_plan")
+
+
+async def record_generation(kind: str, prompt: str, model: str, output: Any = None,
+                            title: Optional[str] = None, meta: Optional[dict] = None,
+                            task_id: str = "", status: str = "finished",
+                            files: Optional[list] = None) -> Optional[str]:
+    """Persist one generation. Never raises: a history write failing must not
+    cost the user the generation they just paid for and are looking at."""
+    gid = str(uuid.uuid4())
+    if not isinstance(output, (str, type(None))):
+        output = json.dumps(output)
+    ts = now_iso()
+    try:
+        await ensure_schema()
+        await d1_query(
+            "INSERT INTO generations (id, kind, prompt, model, task_id, status, files, progress, "
+            "error_message, output, title, meta, favorite, updated_at, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [gid, kind, prompt or "", model, task_id, status, json.dumps(files or []), 0,
+             None, output, (title or prompt or "")[:120], json.dumps(meta or {}), 0, ts, ts],
+        )
+        return gid
+    except Exception:
+        logger.exception(f"Could not record {kind} generation")
+        return None
 
 
 # ---------------- AI routes ----------------
@@ -314,9 +452,11 @@ async def ai_ideate(req: IdeateRequest):
         "You are a world-class social media strategist and viral content ideator. "
         "You output ONLY a numbered list of distinct, specific, scroll-stopping content ideas. "
         "No preamble, no closing remarks. Each idea is one line: a punchy hook or angle."
+        + (brand_prompt(await load_brand()) if req.use_brand else "")
     )
     user = f"Give me {req.count} fresh content ideas{platform_note} about: {req.topic}"
-    content = await chat([{"role": "system", "content": system}, {"role": "user", "content": user}], req.model or CHAT_MODEL, 0.95)
+    model = req.model or CHAT_MODEL
+    content = await chat([{"role": "system", "content": system}, {"role": "user", "content": user}], model, 0.95)
     ideas = []
     for line in content.splitlines():
         line = line.strip()
@@ -326,7 +466,12 @@ async def ai_ideate(req: IdeateRequest):
         cleaned = line.lstrip("0123456789.)-•* ").strip()
         if cleaned:
             ideas.append(cleaned)
-    return {"ideas": ideas[: req.count] if ideas else [content]}
+    ideas = ideas[: req.count] if ideas else [content]
+    gid = await record_generation(
+        "ideate", req.topic, model, output=json.dumps({"ideas": ideas}),
+        title=f"Ideas — {req.topic}", meta={"platform": req.platform, "count": req.count},
+    )
+    return {"ideas": ideas, "generation_id": gid}
 
 
 @api_router.post("/ai/write")
@@ -336,9 +481,16 @@ async def ai_write(req: WriteRequest):
         f"You are an elite copywriter. Write a single ready-to-publish {req.platform} post. "
         f"Tone: {req.tone}. Platform rules: {guide} "
         "Return ONLY the post text, no explanations, no quotation marks, no markdown headers."
+        + (brand_prompt(await load_brand()) if req.use_brand else "")
     )
-    content = await chat([{"role": "system", "content": system}, {"role": "user", "content": req.brief}], req.model or CHAT_MODEL, 0.85)
-    return {"content": content.strip()}
+    model = req.model or CHAT_MODEL
+    content = await chat([{"role": "system", "content": system}, {"role": "user", "content": req.brief}], model, 0.85)
+    text = content.strip()
+    gid = await record_generation(
+        "write", req.brief, model, output=text, title=text[:80],
+        meta={"platform": req.platform, "tone": req.tone},
+    )
+    return {"content": text, "generation_id": gid}
 
 
 @api_router.post("/ai/repurpose")
@@ -356,7 +508,11 @@ async def ai_repurpose(req: RepurposeRequest):
         )
         results[platform] = txt.strip()
     await asyncio.gather(*[one(p) for p in req.platforms])
-    return {"posts": results}
+    gid = await record_generation(
+        "repurpose", req.source, req.model or CHAT_MODEL, output=json.dumps(results),
+        title=f"Repurposed — {req.source[:60]}", meta={"platforms": req.platforms},
+    )
+    return {"posts": results, "generation_id": gid}
 
 
 def _extract_json(text):
@@ -422,7 +578,11 @@ async def ai_visual(req: VisualRequest):
             data = {"title": req.topic[:50], "slides": [{"caption": req.topic[:60], "image_prompt": req.topic} for _ in range(n)]}
         else:
             data = {"title": req.topic[:50], "slides": [{"heading": req.topic[:40], "body": content.strip()[:120]}]}
-    return {"data": data}
+    gid = await record_generation(
+        "visual", req.topic, req.model or CHAT_MODEL, output=json.dumps(data),
+        title=f"{t.title()} — {req.topic[:60]}", meta={"template": t, "count": n},
+    )
+    return {"data": data, "generation_id": gid}
 
 
 TEMPLATE_GUIDES = {
@@ -440,6 +600,7 @@ class TemplateRequest(BaseModel):
     platform: str = "twitter"
     count: Optional[int] = 7
     model: Optional[str] = None
+    use_brand: bool = True
 
 
 @api_router.post("/ai/templates")
@@ -451,6 +612,7 @@ async def ai_templates(req: TemplateRequest):
         f"You are a viral content strategist. Write {n} distinct {req.platform} posts about the given topic, "
         f"each following this template: {style} Platform rules: {guide} "
         f'Return ONLY JSON: {{"posts": [{n} strings, each a complete ready-to-publish post]}}. No explanations.'
+        + (brand_prompt(await load_brand()) if req.use_brand else "")
     )
     content = await chat(
         [{"role": "system", "content": system}, {"role": "user", "content": req.topic}],
@@ -460,7 +622,13 @@ async def ai_templates(req: TemplateRequest):
     posts = data.get("posts") if data else None
     if not posts:
         posts = [p.strip() for p in re.split(r"\n\s*\n|\n\d+[\.\)]\s*", content) if p.strip()]
-    return {"posts": [{"day": i + 1, "content": p} for i, p in enumerate(posts[:n])]}
+    out = [{"day": i + 1, "content": p} for i, p in enumerate(posts[:n])]
+    gid = await record_generation(
+        "templates", req.topic, req.model or CHAT_MODEL, output=json.dumps({"posts": out}),
+        title=f"{req.template.replace('_', ' ').title()} — {req.topic[:60]}",
+        meta={"template": req.template, "platform": req.platform},
+    )
+    return {"posts": out, "generation_id": gid}
 
 
 class CoachRequest(BaseModel):
@@ -485,7 +653,11 @@ async def ai_coach(req: CoachRequest):
     data = _extract_json(content)
     if not data:
         data = {"score": None, "strengths": [], "improvements": [content.strip()], "hook_rewrite": ""}
-    return {"data": data}
+    gid = await record_generation(
+        "coach", req.content, req.model or CHAT_MODEL, output=json.dumps(data),
+        title=f"Coach — {req.content[:60]}", meta={"platform": req.platform},
+    )
+    return {"data": data, "generation_id": gid}
 
 
 @api_router.get("/proxy-image")
@@ -499,9 +671,17 @@ async def proxy_image(url: str):
 @api_router.post("/ai/generate")
 async def ai_generate(req: GenerateRequest):
     opts = req.options or {}
+    prompt = req.prompt
+    if opts.get("use_brand"):
+        brand = await load_brand()
+        colors = brand.get("colors") or {}
+        palette = ", ".join(v for v in [colors.get("bg"), colors.get("accent"), colors.get("fg")] if v)
+        if palette:
+            prompt = f"{prompt}. Colour palette: {palette}. Keep the image free of any text or lettering."
+
     if req.kind == "image":
         model = opts.get("model", "gpt-image-2")
-        payload = {"prompt": req.prompt, "size": opts.get("size", "1:1")}
+        payload = {"prompt": prompt, "size": opts.get("size", "1:1")}
         if model.startswith("gpt-image"):
             payload["quality"] = opts.get("quality", "medium")
         if opts.get("resolution"):
@@ -513,41 +693,27 @@ async def ai_generate(req: GenerateRequest):
         # model's real shape, so forward whatever it sent rather than guessing a
         # one-size-fits-all payload here.
         model = opts.get("model", "seedance-2-fast")
-        payload = {"prompt": req.prompt, **{k: v for k, v in opts.items() if k != "model"}}
+        payload = {"prompt": prompt, **{k: v for k, v in opts.items() if k not in ("model", "use_brand")}}
         if "duration" in payload:
             payload["duration"] = int(payload["duration"])
     elif req.kind == "music":
         model = "generate-music"
         payload = {
-            "prompt": req.prompt,
+            "prompt": prompt,
             "custom_mode": False,
             "instrumental": bool(opts.get("instrumental", False)),
             "mv": opts.get("mv", "V4_5"),
         }
     elif req.kind == "voice":
         model = opts.get("model", "elevenlabs-tts-turbo-2-5")
-        payload = {"text": req.prompt, **{k: v for k, v in opts.items() if k != "model"}}
+        payload = {"text": req.prompt, **{k: v for k, v in opts.items() if k not in ("model", "use_brand")}}
     else:
         raise HTTPException(status_code=400, detail="kind must be image, video, music, or voice")
 
     task_id, status = await asyncio.to_thread(_poyo_submit, model, payload)
-    record = {
-        "id": str(uuid.uuid4()),
-        "kind": req.kind,
-        "prompt": req.prompt,
-        "model": model,
-        "task_id": task_id,
-        "status": status,
-        "files": [],
-        "created_at": now_iso(),
-    }
-    await d1_query(
-        "INSERT INTO generations (id, kind, prompt, model, task_id, status, files, progress, error_message, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        [record["id"], record["kind"], record["prompt"], record["model"], record["task_id"], record["status"],
-         json.dumps(record["files"]), 0, None, record["created_at"]],
-    )
-    return {"id": record["id"], "task_id": task_id, "status": status, "kind": req.kind}
+    gid = await record_generation(req.kind, req.prompt, model, task_id=task_id,
+                                  status=status, meta={"options": opts})
+    return {"id": gid, "task_id": task_id, "status": status, "kind": req.kind}
 
 
 @api_router.get("/ai/task/{task_id}")
@@ -556,8 +722,9 @@ async def ai_task(task_id: str):
     status = data.get("status", "running")
     files = data.get("files", []) or []
     await d1_query(
-        "UPDATE generations SET status = ?, files = ?, progress = ? WHERE task_id = ?",
-        [status, json.dumps(files), data.get("progress", 0), task_id],
+        "UPDATE generations SET status = ?, files = ?, progress = ?, error_message = ?, updated_at = ? "
+        "WHERE task_id = ?",
+        [status, json.dumps(files), data.get("progress", 0), data.get("error_message"), now_iso(), task_id],
     )
     return {
         "task_id": task_id,
@@ -570,8 +737,10 @@ async def ai_task(task_id: str):
 
 @api_router.get("/media")
 async def list_media(limit: int = 60):
+    await ensure_schema()
     rows, _ = await d1_query(
-        "SELECT * FROM generations WHERE status = 'finished' ORDER BY created_at DESC LIMIT ?", [limit]
+        "SELECT * FROM generations WHERE status = 'finished' AND task_id != '' "
+        "ORDER BY created_at DESC LIMIT ?", [limit]
     )
     return [_row_to_generation(r) for r in rows]
 
@@ -637,13 +806,504 @@ async def rss_import(req: RssImportRequest):
     return {"items": items}
 
 
+# ---------------- Brand kit ----------------
+# One kit per workspace for now. It is the single place the app learns what the
+# brand sounds and looks like, and it feeds three different consumers: copy
+# prompts, image prompts, and the client-side visual renderer.
+DEFAULT_BRAND = {
+    "name": "Default brand",
+    "colors": {"bg": "#0A0A0A", "fg": "#FFFFFF", "accent": "#E2FF3D", "sub": "#a1a1aa"},
+    "fonts": {"display": "Inter", "body": "Inter"},
+    "logo_url": None,
+    "handle": "",
+    "voice": "",
+    "audience": "",
+    "hashtags": [],
+    "cta": "",
+    "banned_words": [],
+}
+
+
+class BrandKitUpdate(BaseModel):
+    name: Optional[str] = None
+    colors: Optional[Dict[str, str]] = None
+    fonts: Optional[Dict[str, str]] = None
+    logo_url: Optional[str] = None
+    handle: Optional[str] = None
+    voice: Optional[str] = None
+    audience: Optional[str] = None
+    hashtags: Optional[List[str]] = None
+    cta: Optional[str] = None
+    banned_words: Optional[List[str]] = None
+
+
+def _row_to_brand(row: dict):
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "colors": json.loads(row["colors"] or "{}") or DEFAULT_BRAND["colors"],
+        "fonts": json.loads(row["fonts"] or "{}") or DEFAULT_BRAND["fonts"],
+        "logo_url": row["logo_url"],
+        "handle": row["handle"] or "",
+        "voice": row["voice"] or "",
+        "audience": row["audience"] or "",
+        "hashtags": json.loads(row["hashtags"] or "[]"),
+        "cta": row["cta"] or "",
+        "banned_words": json.loads(row["banned_words"] or "[]"),
+        "updated_at": row["updated_at"],
+    }
+
+
+async def load_brand() -> dict:
+    """The brand kit, or sane defaults. Never raises — an unconfigured or
+    unreachable kit degrades to generic copy rather than a failed generation."""
+    try:
+        await ensure_schema()
+        rows, _ = await d1_query("SELECT * FROM brand_kits ORDER BY is_default DESC, created_at ASC LIMIT 1")
+        if rows:
+            return _row_to_brand(rows[0])
+    except Exception:
+        logger.exception("Could not load brand kit")
+    return {"id": None, **DEFAULT_BRAND, "updated_at": None}
+
+
+def brand_prompt(brand: dict) -> str:
+    """The brand kit rendered as prompt text. Returns '' when nothing is filled
+    in, so an empty kit adds no noise to the prompt."""
+    bits = []
+    if brand.get("name") and brand["name"] != DEFAULT_BRAND["name"]:
+        bits.append(f"Brand name: {brand['name']}.")
+    if brand.get("voice"):
+        bits.append(f"Brand voice: {brand['voice']}.")
+    if brand.get("audience"):
+        bits.append(f"Audience: {brand['audience']}.")
+    if brand.get("cta"):
+        bits.append(f"Preferred call to action: {brand['cta']}.")
+    if brand.get("hashtags"):
+        bits.append(f"Signature hashtags to consider: {' '.join(brand['hashtags'][:8])}.")
+    if brand.get("banned_words"):
+        bits.append(f"Never use these words or phrases: {', '.join(brand['banned_words'][:20])}.")
+    if not bits:
+        return ""
+    return " BRAND CONTEXT — follow it closely: " + " ".join(bits)
+
+
+@api_router.get("/brand-kit")
+async def get_brand_kit():
+    return await load_brand()
+
+
+@api_router.put("/brand-kit")
+async def put_brand_kit(upd: BrandKitUpdate):
+    await ensure_schema()
+    changes = {k: v for k, v in upd.model_dump().items() if v is not None}
+    rows, _ = await d1_query("SELECT * FROM brand_kits ORDER BY is_default DESC, created_at ASC LIMIT 1")
+    ts = now_iso()
+    merged = {**DEFAULT_BRAND, **({k: v for k, v in _row_to_brand(rows[0]).items() if k != "id"} if rows else {}), **changes}
+    values = [
+        merged["name"], json.dumps(merged["colors"]), json.dumps(merged["fonts"]),
+        merged["logo_url"], merged["handle"], merged["voice"], merged["audience"],
+        json.dumps(merged["hashtags"]), merged["cta"], json.dumps(merged["banned_words"]), ts,
+    ]
+    if rows:
+        out, _ = await d1_query(
+            "UPDATE brand_kits SET name=?, colors=?, fonts=?, logo_url=?, handle=?, voice=?, audience=?, "
+            "hashtags=?, cta=?, banned_words=?, updated_at=? WHERE id=? RETURNING *",
+            values + [rows[0]["id"]],
+        )
+    else:
+        out, _ = await d1_query(
+            "INSERT INTO brand_kits (id, name, colors, fonts, logo_url, handle, voice, audience, hashtags, "
+            "cta, banned_words, updated_at, is_default, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?) RETURNING *",
+            [str(uuid.uuid4())] + values + [ts],
+        )
+    return _row_to_brand(out[0])
+
+
+# ---------------- Generation history ----------------
+class BulkDeleteRequest(BaseModel):
+    ids: List[str]
+
+
+class GenerationUpdate(BaseModel):
+    title: Optional[str] = None
+    prompt: Optional[str] = None
+    output: Optional[str] = None
+    favorite: Optional[bool] = None
+
+
+PENDING_STATUSES = ("not_started", "pending", "queued", "running", "processing", "in_progress")
+
+
+async def _reconcile(rows: List[dict]) -> List[dict]:
+    """Media rows are only ever advanced by the browser polling /ai/task. Close
+    the tab mid-render and the row is stuck on 'running' forever, so re-check
+    the still-pending ones server-side whenever history is read."""
+    stale = [r for r in rows if r["task_id"] and (r["status"] or "") in PENDING_STATUSES][:8]
+    if not stale:
+        return rows
+
+    async def refresh(row):
+        try:
+            data = await asyncio.to_thread(_poyo_status, row["task_id"])
+        except Exception:
+            return
+        status = data.get("status", row["status"])
+        files = data.get("files", []) or []
+        if status == row["status"] and not files:
+            return
+        row["status"] = status
+        row["files"] = json.dumps(files)
+        row["progress"] = data.get("progress", 0)
+        row["error_message"] = data.get("error_message")
+        try:
+            await d1_query(
+                "UPDATE generations SET status=?, files=?, progress=?, error_message=?, updated_at=? WHERE id=?",
+                [status, row["files"], row["progress"], row["error_message"], now_iso(), row["id"]],
+            )
+        except Exception:
+            logger.exception("Could not persist reconciled generation")
+
+    await asyncio.gather(*[refresh(r) for r in stale])
+    return rows
+
+
+@api_router.get("/generations")
+async def list_generations(kind: Optional[str] = None, group: Optional[str] = None,
+                           favorite: Optional[bool] = None, limit: int = 60):
+    await ensure_schema()
+    limit = max(1, min(int(limit), 200))
+    where, params = [], []
+    if kind:
+        kinds = [k.strip() for k in kind.split(",") if k.strip()]
+        where.append(f"kind IN ({','.join(['?'] * len(kinds))})")
+        params += kinds
+    elif group == "text":
+        where.append(f"kind IN ({','.join(['?'] * len(TEXT_KINDS))})")
+        params += list(TEXT_KINDS)
+    elif group == "media":
+        where.append("task_id != ''")
+    if favorite:
+        where.append("favorite = 1")
+    sql = "SELECT * FROM generations"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    rows, _ = await d1_query(sql, params + [limit])
+    rows = await _reconcile(rows)
+    return [_row_to_generation(r) for r in rows]
+
+
+@api_router.get("/generations/{gen_id}")
+async def get_generation(gen_id: str):
+    await ensure_schema()
+    rows, _ = await d1_query("SELECT * FROM generations WHERE id = ?", [gen_id])
+    if not rows:
+        raise HTTPException(status_code=404, detail="Generation not found")
+    rows = await _reconcile(rows)
+    return _row_to_generation(rows[0])
+
+
+@api_router.put("/generations/{gen_id}")
+async def update_generation(gen_id: str, upd: GenerationUpdate):
+    await ensure_schema()
+    changes = {k: v for k, v in upd.model_dump().items() if v is not None}
+    if not changes:
+        return await get_generation(gen_id)
+    if "favorite" in changes:
+        changes["favorite"] = 1 if changes["favorite"] else 0
+    changes["updated_at"] = now_iso()
+    sets = ", ".join(f"{k} = ?" for k in changes)
+    rows, _ = await d1_query(
+        f"UPDATE generations SET {sets} WHERE id = ? RETURNING *", list(changes.values()) + [gen_id]
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Generation not found")
+    return _row_to_generation(rows[0])
+
+
+@api_router.delete("/generations/{gen_id}")
+async def delete_generation(gen_id: str):
+    await ensure_schema()
+    rows, _ = await d1_query("DELETE FROM generations WHERE id = ? RETURNING id", [gen_id])
+    if not rows:
+        raise HTTPException(status_code=404, detail="Generation not found")
+    return {"ok": True}
+
+
+@api_router.post("/generations/bulk-delete")
+async def bulk_delete_generations(req: BulkDeleteRequest):
+    await ensure_schema()
+    if not req.ids:
+        return {"deleted": 0}
+    placeholders = ",".join(["?"] * len(req.ids))
+    rows, _ = await d1_query(
+        f"DELETE FROM generations WHERE id IN ({placeholders}) RETURNING id", req.ids
+    )
+    return {"deleted": len(rows)}
+
+
+# ---------------- Platform specs & one-shot post builder ----------------
+# What each network actually wants, in one place. The build-post prompt reads
+# from this so a plan comes back native to the platform instead of generic, and
+# the frontend fetches the same map so slide counts and aspect ratios can never
+# drift between the two.
+PLATFORM_SPECS = {
+    "instagram": {
+        "label": "Instagram", "char_limit": 2200, "hashtags": 8,
+        "formats": ["carousel", "reel", "single", "story"], "default_format": "carousel",
+        "aspect": {"carousel": "4:5", "single": "4:5", "reel": "9:16", "story": "9:16"},
+        "slides": {"min": 3, "max": 10, "default": 6},
+        "notes": "Cover slide must stop the scroll on its own. Caption opens with a hook line, hashtags go at the end.",
+    },
+    "tiktok": {
+        "label": "TikTok", "char_limit": 2200, "hashtags": 5,
+        "formats": ["reel", "carousel", "single"], "default_format": "reel",
+        "aspect": {"reel": "9:16", "carousel": "9:16", "single": "9:16"},
+        "slides": {"min": 3, "max": 8, "default": 5},
+        "notes": "Hook in the first 2 seconds. Casual, spoken-word voiceover, on-screen text every scene.",
+    },
+    "linkedin": {
+        "label": "LinkedIn", "char_limit": 3000, "hashtags": 3,
+        "formats": ["single", "carousel", "text"], "default_format": "carousel",
+        "aspect": {"carousel": "1:1", "single": "1.91:1", "text": "1:1"},
+        "slides": {"min": 4, "max": 10, "default": 7},
+        "notes": "Professional but human. Short paragraphs, one insight per line, a soft CTA at the end.",
+    },
+    "twitter": {
+        "label": "X / Twitter", "char_limit": 280, "hashtags": 2,
+        "formats": ["single", "thread", "carousel"], "default_format": "thread",
+        "aspect": {"single": "16:9", "thread": "16:9", "carousel": "1:1"},
+        "slides": {"min": 3, "max": 8, "default": 5},
+        "notes": "Every tweet stands alone and is under 280 characters. No hashtag spam.",
+    },
+    "threads": {
+        "label": "Threads", "char_limit": 500, "hashtags": 1,
+        "formats": ["single", "thread", "carousel"], "default_format": "single",
+        "aspect": {"single": "1:1", "thread": "1:1", "carousel": "1:1"},
+        "slides": {"min": 3, "max": 8, "default": 5},
+        "notes": "Conversational and unpolished. Minimal hashtags.",
+    },
+    "youtube": {
+        "label": "YouTube", "char_limit": 5000, "hashtags": 3,
+        "formats": ["reel", "single"], "default_format": "reel",
+        "aspect": {"reel": "9:16", "single": "16:9"},
+        "slides": {"min": 3, "max": 8, "default": 5},
+        "notes": "Title carries the click. Description is keyword-aware with a clear value proposition.",
+    },
+    "facebook": {
+        "label": "Facebook", "char_limit": 5000, "hashtags": 2,
+        "formats": ["single", "carousel", "reel"], "default_format": "single",
+        "aspect": {"single": "1.91:1", "carousel": "1:1", "reel": "9:16"},
+        "slides": {"min": 3, "max": 10, "default": 5},
+        "notes": "Story-driven and friendly, medium length, clear CTA.",
+    },
+}
+
+FORMAT_NOTES = {
+    "carousel": "a swipeable multi-slide carousel: a cover slide that hooks, then one idea per slide",
+    "reel": "a short-form vertical video: a scene-by-scene script with a voiceover line and on-screen text per scene",
+    "single": "a single post with one strong visual",
+    "story": "a vertical full-bleed story frame",
+    "thread": "a numbered thread where each part stands alone",
+    "text": "a text-only post with no visual",
+}
+
+THEME_KEYS = ["midnight", "whiteboard", "chalkboard", "gradient"]
+
+
+class BuildPostRequest(BaseModel):
+    topic: str
+    platform: str = "instagram"
+    format: str = "auto"  # auto | carousel | reel | single | story | thread | text
+    tone: Optional[str] = None
+    slides: Optional[int] = None
+    model: Optional[str] = None
+    use_brand: bool = True
+
+
+@api_router.get("/platform-specs")
+async def platform_specs():
+    return {"platforms": PLATFORM_SPECS, "formats": FORMAT_NOTES, "themes": THEME_KEYS}
+
+
+def _plan_to_assets(plan: dict, theme: str) -> List[Dict[str, Any]]:
+    """Turn the model's visual plan into Composer assets.
+
+    Each asset is a self-contained card spec rather than a rendered PNG: the
+    browser renders it on demand, so a ten-slide carousel costs a few hundred
+    bytes in D1 instead of ten multi-megabyte data URLs.
+    """
+    fmt = plan.get("format") or "single"
+    visual = plan.get("visual") or {}
+    style = visual.get("style") or ("carousel" if fmt in ("carousel", "thread") else "quote")
+    assets: List[Dict[str, Any]] = []
+
+    if fmt == "reel":
+        for i, sc in enumerate(visual.get("script") or []):
+            assets.append({
+                "type": "scene",
+                "caption": sc.get("voiceover", ""),
+                "spec": {
+                    "template": "slide", "theme": theme, "index": i + 1,
+                    "total": len(visual.get("script") or []),
+                    "heading": sc.get("on_screen_text") or sc.get("scene", ""),
+                    "body": sc.get("voiceover", ""),
+                    "video_prompt": sc.get("video_prompt", ""),
+                },
+            })
+        return assets
+
+    slides = visual.get("slides") or []
+    if slides:
+        total = len(slides) + 1
+        assets.append({
+            "type": "visual", "caption": "",
+            "spec": {"template": "cover", "theme": theme, "index": 0, "total": total,
+                     "title": visual.get("title") or plan.get("title") or "",
+                     "image_prompt": visual.get("cover_image_prompt", "")},
+        })
+        for i, sl in enumerate(slides):
+            assets.append({
+                "type": "visual", "caption": "",
+                "spec": {"template": "slide", "theme": theme, "index": i + 1, "total": total,
+                         "heading": sl.get("heading", ""), "body": sl.get("body", ""),
+                         "image_prompt": sl.get("image_prompt", "")},
+            })
+        return assets
+
+    if style == "quote":
+        assets.append({"type": "visual", "caption": "", "spec": {
+            "template": "quote", "theme": theme,
+            "quote": visual.get("quote") or plan.get("hook") or "",
+            "author": visual.get("author") or "",
+        }})
+    elif style == "infographic":
+        assets.append({"type": "visual", "caption": "", "spec": {
+            "template": "infographic", "theme": theme,
+            "title": visual.get("title") or plan.get("title") or "",
+            "points": visual.get("points") or [],
+        }})
+    elif visual.get("image_prompt"):
+        assets.append({"type": "visual", "caption": "", "spec": {
+            "template": "cover", "theme": theme, "index": 0, "total": 1,
+            "title": visual.get("title") or plan.get("hook") or plan.get("title") or "",
+            "image_prompt": visual.get("image_prompt", ""),
+        }})
+    return assets
+
+
+@api_router.post("/ai/build-post")
+async def ai_build_post(req: BuildPostRequest):
+    """Topic in, publishable post out — copy, hashtags and a visual plan in one
+    pass. This is the shortcut from the Idea Engine to something you can look
+    at, instead of six manual hops through Studio and Visual Studio."""
+    spec = PLATFORM_SPECS.get(req.platform) or PLATFORM_SPECS["instagram"]
+    allowed = spec["formats"]
+    fmt = req.format if req.format in allowed else ("auto" if req.format == "auto" else spec["default_format"])
+    n = int(req.slides or spec["slides"]["default"])
+    n = max(spec["slides"]["min"], min(n, spec["slides"]["max"]))
+
+    brand = await load_brand() if req.use_brand else {}
+    brand_note = brand_prompt(brand) if brand else ""
+    tone = req.tone or (brand.get("voice") if brand else "") or "confident, specific, no fluff"
+
+    if fmt == "auto":
+        format_rule = (
+            f"Pick the single best format for this topic from {allowed} and put it in \"format\". "
+            + " ".join(f"'{f}' is {FORMAT_NOTES[f]}." for f in allowed if f in FORMAT_NOTES)
+        )
+    else:
+        format_rule = f'Use format \"{fmt}\" — {FORMAT_NOTES.get(fmt, fmt)}.'
+
+    system = (
+        f"You are a senior social creative director producing a finished, ready-to-publish "
+        f"{spec['label']} post. Tone: {tone}. Platform rules: {spec['notes']} "
+        f"Caption must be under {spec['char_limit']} characters and use at most {spec['hashtags']} hashtags. "
+        f"{format_rule} "
+        f"If the format is carousel, thread or reel, produce exactly {n} slides/scenes (a carousel's cover "
+        f"is separate and does not count). "
+        f"{brand_note} "
+        "Return ONLY JSON with this exact shape:\n"
+        '{"format": "one of ' + "|".join(allowed) + '", '
+        '"title": "internal name for this post, max 60 chars", '
+        '"hook": "the opening line, max 90 chars", '
+        '"caption": "the complete ready-to-publish caption, WITHOUT the hashtags", '
+        '"hashtags": ["array of hashtag strings including the # sign"], '
+        '"cta": "the closing call to action, one line", '
+        '"alt_text": "accessibility description of the visual, max 120 chars", '
+        '"why_it_works": "one sentence on the strategic angle", '
+        '"visual": {"style": "carousel|quote|infographic|photo|video", '
+        '"theme": "one of ' + "|".join(THEME_KEYS) + '", '
+        '"title": "cover/graphic title, max 50 chars", '
+        '"quote": "used only when style is quote", "author": "attribution for the quote", '
+        '"points": ["used only when style is infographic, 3-5 items, each max 70 chars"], '
+        '"cover_image_prompt": "a vivid image-generation prompt for the cover, with NO text or words in the image", '
+        '"slides": [{"heading": "max 40 chars", "body": "max 130 chars", '
+        '"image_prompt": "optional image prompt for this slide, no text in image"}], '
+        '"script": [{"scene": "what is on screen", "on_screen_text": "max 40 chars", '
+        '"voiceover": "one spoken line", "video_prompt": "a detailed video-generation prompt"}]}}\n'
+        "Omit the keys that do not apply to the chosen format. No markdown, no commentary."
+    )
+
+    model = req.model or CHAT_MODEL
+    content = await chat(
+        [{"role": "system", "content": system}, {"role": "user", "content": f"Topic: {req.topic}"}],
+        model, 0.85, 2600,
+    )
+    plan = _extract_json(content)
+    if not plan:
+        # Never leave the user with nothing: fall back to the raw copy as a
+        # single post so the Composer still opens with something usable.
+        plan = {"format": "single", "title": req.topic[:60], "hook": "", "caption": content.strip(),
+                "hashtags": [], "cta": "", "visual": {}}
+
+    if plan.get("format") not in allowed:
+        plan["format"] = fmt if fmt != "auto" else spec["default_format"]
+    theme = ((plan.get("visual") or {}).get("theme")) or "midnight"
+    if theme not in THEME_KEYS:
+        theme = "midnight"
+
+    hashtags = [h if h.startswith("#") else f"#{h}" for h in (plan.get("hashtags") or []) if h]
+    brand_tags = (brand.get("hashtags") or []) if brand else []
+    for t in brand_tags:
+        tag = t if t.startswith("#") else f"#{t}"
+        if tag not in hashtags and len(hashtags) < spec["hashtags"]:
+            hashtags.append(tag)
+    plan["hashtags"] = hashtags[: spec["hashtags"]]
+
+    assets = _plan_to_assets(plan, theme)
+    result = {
+        "format": plan["format"],
+        "platform": req.platform,
+        "title": plan.get("title") or req.topic[:60],
+        "hook": plan.get("hook", ""),
+        "caption": (plan.get("caption") or "").strip(),
+        "hashtags": plan["hashtags"],
+        "cta": plan.get("cta", ""),
+        "alt_text": plan.get("alt_text", ""),
+        "why_it_works": plan.get("why_it_works", ""),
+        "theme": theme,
+        "assets": assets,
+        "visual": plan.get("visual") or {},
+    }
+    result["generation_id"] = await record_generation(
+        "post_plan", req.topic, model, output=json.dumps(result),
+        title=result["title"], meta={"platform": req.platform, "format": result["format"]},
+    )
+    return result
+
+
 # ---------------- Posts CRUD ----------------
 @api_router.post("/posts", response_model=Post)
 async def create_post(inp: PostCreate):
+    await ensure_schema()
     post = Post(**{k: v for k, v in inp.model_dump().items() if v is not None})
     await d1_query(
-        "INSERT INTO posts (id, title, content, platforms, status, scheduled_time, media_urls, media_type, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO posts (id, title, content, platforms, status, scheduled_time, media_urls, media_type, "
+        "assets, format, hashtags, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         _post_row(post.model_dump()),
     )
     return post
@@ -651,6 +1311,7 @@ async def create_post(inp: PostCreate):
 
 @api_router.get("/posts", response_model=List[Post])
 async def list_posts(status: Optional[str] = None):
+    await ensure_schema()
     if status:
         rows, _ = await d1_query("SELECT * FROM posts WHERE status = ? ORDER BY created_at DESC LIMIT 500", [status])
     else:
@@ -668,12 +1329,13 @@ async def get_post(post_id: str):
 
 @api_router.put("/posts/{post_id}", response_model=Post)
 async def update_post(post_id: str, upd: PostUpdate):
+    await ensure_schema()
     changes = {k: v for k, v in upd.model_dump().items() if v is not None}
     changes["updated_at"] = now_iso()
     set_clauses = []
     params = []
     for k, v in changes.items():
-        if k in ("platforms", "media_urls"):
+        if k in JSON_POST_FIELDS:
             v = json.dumps(v)
         set_clauses.append(f"{k} = ?")
         params.append(v)
@@ -692,10 +1354,6 @@ async def delete_post(post_id: str):
     return {"ok": True}
 
 
-class BulkDeleteRequest(BaseModel):
-    ids: List[str]
-
-
 @api_router.post("/posts/bulk-delete")
 async def bulk_delete_posts(req: BulkDeleteRequest):
     if not req.ids:
@@ -707,6 +1365,7 @@ async def bulk_delete_posts(req: BulkDeleteRequest):
 
 @api_router.get("/stats")
 async def get_stats():
+    await ensure_schema()
     rows, _ = await d1_query(
         "SELECT "
         "(SELECT COUNT(*) FROM posts) AS total, "
@@ -728,6 +1387,7 @@ SUPPORTED_PLATFORMS = ["twitter", "linkedin", "instagram", "tiktok", "youtube", 
 
 @api_router.get("/connections")
 async def list_connections():
+    await ensure_schema()
     rows, _ = await d1_query("SELECT * FROM connections")
     by_platform = {r["platform"]: r for r in rows}
     return [

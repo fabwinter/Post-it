@@ -1,0 +1,175 @@
+"""Offline harness: D1 is backed by a real in-memory sqlite3 so the SQL is
+genuinely validated; PoYo is faked."""
+import json, os, pathlib, sqlite3, sys
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+os.environ.update(CF_ACCOUNT_ID="a", CF_D1_DATABASE_ID="d", CF_API_TOKEN="t", POYO_API_KEY="k")
+
+DB = sqlite3.connect(":memory:", check_same_thread=False)
+DB.row_factory = sqlite3.Row
+
+CHAT_REPLY = {"value": "hello"}
+
+class Resp:
+    def __init__(self, body, code=200):
+        self._b, self.status_code, self.text = body, code, json.dumps(body)
+        self.headers = {"content-type": "application/json"}
+    def json(self): return self._b
+
+def fake_post(url, headers=None, json=None, timeout=None, **kw):
+    body = json or {}
+    if "/d1/database/" in url:
+        sql, params = body["sql"], body.get("params", [])
+        cur = DB.cursor()
+        try:
+            cur.execute(sql, params)
+        except sqlite3.Error as e:
+            return Resp({"success": False, "errors": [str(e)]}, 200)
+        rows = [dict(r) for r in cur.fetchall()] if cur.description else []
+        DB.commit()
+        return Resp({"success": True, "result": [{"results": rows, "meta": {}}]})
+    if "/v1/chat/completions" in url or "/v1/responses" in url:
+        txt = CHAT_REPLY["value"]
+        if "/v1/responses" in url:
+            return Resp({"data": {"output": [{"content": [{"type": "output_text", "text": txt}]}]}})
+        return Resp({"data": {"choices": [{"message": {"content": txt}}]}})
+    if "/api/generate/submit" in url:
+        SUBMITTED.append(body)
+        return Resp({"data": {"task_id": "task-123", "status": "running"}})
+    raise AssertionError("unexpected POST " + url)
+
+def fake_get(url, headers=None, timeout=None, **kw):
+    if "/api/generate/status/" in url:
+        return Resp({"data": {"status": "finished", "progress": 100,
+                              "files": [{"file_url": "https://cdn/x.png"}]}})
+    if "/v1/models" in url:
+        return Resp({"data": []})
+    raise AssertionError("unexpected GET " + url)
+
+SUBMITTED = []
+import requests
+requests.post, requests.get = fake_post, fake_get
+
+import server
+from fastapi.testclient import TestClient
+c = TestClient(server.app)
+
+def check(name, cond, extra=""):
+    print(("PASS  " if cond else "FAIL  ") + name + ("" if cond else f"  -> {extra}"))
+    if not cond: FAILS.append(name)
+FAILS = []
+
+# --- schema self-provisioning ---
+r = c.get("/api/stats")
+check("stats boots & provisions schema", r.status_code == 200, r.text)
+tables = {r[0] for r in DB.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+check("all tables created", {"posts", "generations", "connections", "brand_kits"} <= tables, tables)
+cols = {r[1] for r in DB.execute("PRAGMA table_info(posts)")}
+check("posts has assets/format/hashtags", {"assets", "format", "hashtags"} <= cols, cols)
+
+# --- brand kit ---
+r = c.get("/api/brand-kit")
+check("brand kit defaults", r.status_code == 200 and r.json()["colors"]["accent"] == "#E2FF3D", r.text)
+r = c.put("/api/brand-kit", json={"name": "Acme", "voice": "dry and technical",
+                                  "hashtags": ["#acme"], "banned_words": ["synergy"]})
+check("brand kit saves", r.status_code == 200 and r.json()["name"] == "Acme", r.text)
+r = c.get("/api/brand-kit")
+check("brand kit persists", r.json()["voice"] == "dry and technical", r.text)
+check("brand_prompt renders", "dry and technical" in server.brand_prompt(r.json()), server.brand_prompt(r.json()))
+
+# --- auto-saved text generations ---
+CHAT_REPLY["value"] = "1. First idea\n2. Second idea"
+r = c.post("/api/ai/ideate", json={"topic": "distribution", "count": 2})
+check("ideate returns ideas", r.json()["ideas"] == ["First idea", "Second idea"], r.text)
+check("ideate auto-saved", bool(r.json().get("generation_id")), r.text)
+
+CHAT_REPLY["value"] = "A great post about things."
+r = c.post("/api/ai/write", json={"brief": "b", "platform": "linkedin"})
+check("write auto-saved", bool(r.json().get("generation_id")), r.text)
+
+CHAT_REPLY["value"] = '{"score": 80, "strengths": ["a"], "improvements": ["b"], "hook_rewrite": "x"}'
+r = c.post("/api/ai/coach", json={"content": "draft"})
+check("coach auto-saved", bool(r.json().get("generation_id")), r.text)
+
+CHAT_REPLY["value"] = '{"title":"T","slides":[{"heading":"h","body":"b"}]}'
+r = c.post("/api/ai/visual", json={"template": "carousel", "topic": "x", "count": 3})
+check("visual auto-saved", bool(r.json().get("generation_id")), r.text)
+
+r = c.get("/api/generations?group=text")
+gens = r.json()
+check("history lists text generations", len(gens) >= 4, len(gens))
+check("history carries output", any(g["kind"] == "ideate" and "First idea" in (g["output"] or "") for g in gens), gens[:1])
+
+gid = gens[0]["id"]
+r = c.put(f"/api/generations/{gid}", json={"title": "Renamed", "favorite": True})
+check("generation edit", r.json()["title"] == "Renamed" and r.json()["favorite"] is True, r.text)
+check("favorite filter", len(c.get("/api/generations?favorite=true").json()) == 1, c.get("/api/generations?favorite=true").text)
+check("generation delete", c.delete(f"/api/generations/{gid}").status_code == 200)
+check("deleted is gone", c.get(f"/api/generations/{gid}").status_code == 404)
+
+# --- media generation + reconcile ---
+r = c.post("/api/ai/generate", json={"kind": "image", "prompt": "a cat", "options": {"model": "gpt-image-2", "use_brand": True}})
+check("image submit", r.json()["task_id"] == "task-123", r.text)
+check("brand palette injected into image prompt", "Colour palette" in SUBMITTED[-1]["input"]["prompt"], SUBMITTED[-1])
+check("use_brand not leaked to PoYo", "use_brand" not in SUBMITTED[-1]["input"], SUBMITTED[-1])
+row = DB.execute("SELECT status FROM generations WHERE task_id='task-123'").fetchone()
+check("media row stored running", row["status"] == "running", dict(row))
+r = c.get("/api/generations?group=media")
+check("reconcile flips to finished", r.json()[0]["status"] == "finished", r.text[:200])
+check("reconcile stored files", r.json()[0]["files"][0]["file_url"] == "https://cdn/x.png", r.text[:200])
+
+# --- platform specs + build-post ---
+r = c.get("/api/platform-specs")
+check("platform specs", "instagram" in r.json()["platforms"], r.text[:120])
+
+CHAT_REPLY["value"] = json.dumps({
+    "format": "carousel", "title": "Ship weekly", "hook": "Consistency wins",
+    "caption": "Here is why shipping weekly beats going viral.", "hashtags": ["creators", "#growth"],
+    "cta": "Follow for more", "alt_text": "carousel", "why_it_works": "specific",
+    "visual": {"style": "carousel", "theme": "chalkboard", "title": "Ship weekly",
+               "cover_image_prompt": "a workshop bench",
+               "slides": [{"heading": "H1", "body": "B1", "image_prompt": "p1"},
+                          {"heading": "H2", "body": "B2"},
+                          {"heading": "H3", "body": "B3"}]}})
+r = c.post("/api/ai/build-post", json={"topic": "shipping weekly", "platform": "instagram", "format": "carousel", "slides": 3})
+b = r.json()
+check("build-post format", b["format"] == "carousel", b)
+check("build-post normalises hashtags", b["hashtags"][0] == "#creators", b["hashtags"])
+check("build-post merges brand hashtag", "#acme" in b["hashtags"], b["hashtags"])
+check("build-post theme", b["theme"] == "chalkboard", b["theme"])
+check("build-post assets = cover + slides", len(b["assets"]) == 4, [a["spec"]["template"] for a in b["assets"]])
+check("cover first", b["assets"][0]["spec"]["template"] == "cover", b["assets"][0])
+check("slide indices", [a["spec"]["index"] for a in b["assets"]] == [0, 1, 2, 3], b["assets"])
+check("assets carry no data URLs", "data:image" not in json.dumps(b["assets"]))
+check("build-post auto-saved", bool(b.get("generation_id")), b)
+
+CHAT_REPLY["value"] = json.dumps({
+    "format": "reel", "title": "R", "caption": "cap", "hashtags": [],
+    "visual": {"style": "video", "theme": "midnight",
+               "script": [{"scene": "s1", "on_screen_text": "T1", "voiceover": "V1", "video_prompt": "vp1"},
+                          {"scene": "s2", "on_screen_text": "T2", "voiceover": "V2", "video_prompt": "vp2"}]}})
+r = c.post("/api/ai/build-post", json={"topic": "x", "platform": "tiktok", "format": "reel", "slides": 3})
+b = r.json()
+check("reel assets are scenes", [a["type"] for a in b["assets"]] == ["scene", "scene"], b["assets"])
+check("scene keeps video prompt", b["assets"][0]["spec"]["video_prompt"] == "vp1", b["assets"][0])
+
+CHAT_REPLY["value"] = "not json at all"
+r = c.post("/api/ai/build-post", json={"topic": "x", "platform": "linkedin"})
+check("build-post survives non-JSON", r.status_code == 200 and r.json()["caption"] == "not json at all", r.text[:200])
+
+# --- posts with assets ---
+r = c.post("/api/posts", json={"title": "P", "content": "c", "platforms": ["instagram"],
+                               "format": "carousel", "hashtags": ["#a"],
+                               "assets": [{"type": "visual", "spec": {"template": "cover", "title": "T"}}]})
+check("post create with assets", r.status_code == 200 and r.json()["assets"][0]["spec"]["title"] == "T", r.text[:200])
+pid = r.json()["id"]
+r = c.put(f"/api/posts/{pid}", json={"assets": [{"type": "visual", "spec": {"template": "slide"}}], "format": "reel"})
+check("post update assets", r.json()["assets"][0]["spec"]["template"] == "slide" and r.json()["format"] == "reel", r.text[:200])
+r = c.get(f"/api/posts/{pid}")
+check("post round-trips assets", r.json()["assets"][0]["spec"]["template"] == "slide", r.text[:200])
+
+# --- legacy: media library still only shows real media ---
+r = c.get("/api/media")
+check("media excludes text generations", all(m["task_id"] for m in r.json()), r.text[:200])
+
+print("\n" + ("ALL PASS" if not FAILS else f"{len(FAILS)} FAILED: {FAILS}"))
+sys.exit(1 if FAILS else 0)

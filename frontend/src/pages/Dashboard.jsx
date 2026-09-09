@@ -5,7 +5,9 @@ import { api, apiErrorMessage } from "@/lib/api";
 import { useTextModels } from "@/lib/useTextModels";
 import { PLATFORM_LIST, platformOf } from "@/lib/platforms";
 import { ModelPicker } from "@/components/ModelPicker";
-import { Sparkles, ArrowRight, Loader2, FileText, CalendarClock, Images, Send, Wand2 } from "lucide-react";
+import { Sparkles, ArrowRight, Loader2, FileText, CalendarClock, Images, Send, Wand2, Zap } from "lucide-react";
+import { usePlatformSpecs, specFor, FORMAT_LABEL } from "@/lib/platformSpecs";
+import { PLATFORMS } from "@/lib/platforms";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
@@ -24,6 +26,9 @@ export default function Dashboard() {
   const [scheduled, setScheduled] = useState([]);
   const { models, default: defaultModel } = useTextModels("gemini-3-flash-preview");
   const [model, setModel] = useState("");
+  const specs = usePlatformSpecs();
+  const [platform, setPlatform] = useState("instagram");
+  const [building, setBuilding] = useState(null);
 
   const loadData = async () => {
     try {
@@ -56,6 +61,20 @@ export default function Dashboard() {
 
   const openIdea = (idea) => {
     navigate("/composer", { state: { brief: idea } });
+  };
+
+  // The one-click path: idea straight to a finished post — caption, hashtags
+  // and every slide — instead of six manual hops through the other screens.
+  const buildIdea = async (idea, i) => {
+    setBuilding(i);
+    try {
+      const { data } = await api.post("/ai/build-post", {
+        topic: idea, platform, format: "auto", model: model || defaultModel,
+      });
+      navigate("/composer", { state: { plan: { ...data, platform } } });
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "Couldn't build that post."));
+    } finally { setBuilding(null); }
   };
 
   const statCards = [
@@ -102,29 +121,56 @@ export default function Dashboard() {
             </Button>
           </div>
 
-          <div className="mt-3 flex items-center gap-2">
+          <div className="mt-3 flex flex-wrap items-center gap-2">
             <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Model</span>
             <ModelPicker value={model || defaultModel} onChange={setModel} models={models} testid="dashboard-model"
               className="w-auto min-w-[180px] flex-none" />
+            <span className="ml-1 font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Build for</span>
+            <div className="flex flex-wrap gap-1">
+              {Object.keys(specs).map((k) => {
+                const P = PLATFORMS[k]; if (!P) return null;
+                const I = P.icon; const on = platform === k;
+                return (
+                  <button key={k} onClick={() => setPlatform(k)} data-testid={`dashboard-platform-${k}`}
+                    title={specFor(specs, k).label}
+                    className={`flex h-7 w-7 items-center justify-center rounded-lg border transition-colors ${on ? "border-lime bg-lime/10 text-lime" : "border-white/10 text-zinc-500 hover:text-white"}`}>
+                    <I size={13} />
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           {ideas.length > 0 && (
-            <div className="mt-6 grid gap-2 sm:grid-cols-2">
+            <p className="mt-6 font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">
+              Tap an idea to draft the caption · Build makes the whole {FORMAT_LABEL[specFor(specs, platform).default_format] || "post"} — copy, hashtags and slides
+            </p>
+          )}
+          {ideas.length > 0 && (
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
               {ideas.map((idea, i) => (
-                <motion.button
+                <motion.div
                   key={i}
                   variants={fade}
                   custom={i}
                   initial="hidden"
                   animate="show"
-                  onClick={() => openIdea(idea)}
                   data-testid={`idea-item-${i}`}
-                  className="group flex items-center gap-3 rounded-xl border border-white/10 bg-[#0A0A0A] p-4 text-left transition-colors hover:border-lime/40 hover:bg-white/[0.04]"
+                  className="group flex items-center gap-3 rounded-xl border border-white/10 bg-[#0A0A0A] p-4 transition-colors hover:border-lime/40 hover:bg-white/[0.04]"
                 >
                   <span className="font-mono text-xs text-zinc-600">{String(i + 1).padStart(2, "0")}</span>
-                  <span className="flex-1 text-sm text-zinc-200">{idea}</span>
-                  <ArrowRight size={16} className="text-zinc-600 transition-transform group-hover:translate-x-0.5 group-hover:text-lime" />
-                </motion.button>
+                  <button onClick={() => openIdea(idea)} data-testid={`idea-open-${i}`}
+                    className="flex-1 text-left text-sm text-zinc-200">
+                    {idea}
+                  </button>
+                  <button onClick={() => buildIdea(idea, i)} disabled={building !== null} data-testid={`idea-build-${i}`}
+                    title={`Build a full ${specFor(specs, platform).label} post`}
+                    className="flex flex-shrink-0 items-center gap-1.5 rounded-lg border border-lime/30 bg-lime/10 px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-lime transition-colors hover:bg-lime/20 disabled:opacity-40">
+                    {building === i ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />}
+                    Build
+                  </button>
+                  <ArrowRight size={16} className="hidden text-zinc-600 transition-transform group-hover:translate-x-0.5 group-hover:text-lime sm:block" />
+                </motion.div>
               ))}
             </div>
           )}
@@ -148,7 +194,7 @@ export default function Dashboard() {
 
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Recent drafts */}
-        <section className="rounded-xl border border-white/10 bg-[#121212] p-5">
+        <section className="min-w-0 rounded-xl border border-white/10 bg-[#121212] p-5">
           <div className="flex items-center justify-between">
             <h3 className="font-display text-lg font-semibold">Recent drafts</h3>
             <button onClick={() => navigate("/composer")} className="font-mono text-[11px] uppercase tracking-[0.15em] text-lime hover:underline" data-testid="new-draft-link">+ New</button>
@@ -157,7 +203,7 @@ export default function Dashboard() {
             {drafts.length === 0 && <EmptyRow label="No drafts yet — start in the Composer." />}
             {drafts.map((d) => (
               <button key={d.id} onClick={() => navigate("/composer", { state: { postId: d.id } })}
-                className="flex w-full items-center gap-3 rounded-lg border border-white/10 bg-[#0A0A0A] p-3 text-left transition-colors hover:border-white/20"
+                className="flex w-full min-w-0 items-center gap-3 rounded-lg border border-white/10 bg-[#0A0A0A] p-3 text-left transition-colors hover:border-white/20"
                 data-testid={`draft-row-${d.id}`}>
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm text-zinc-200">{d.content || d.title}</div>
@@ -172,7 +218,7 @@ export default function Dashboard() {
         </section>
 
         {/* Next scheduled */}
-        <section className="rounded-xl border border-white/10 bg-[#121212] p-5">
+        <section className="min-w-0 rounded-xl border border-white/10 bg-[#121212] p-5">
           <div className="flex items-center justify-between">
             <h3 className="font-display text-lg font-semibold">Next scheduled</h3>
             <button onClick={() => navigate("/calendar")} className="font-mono text-[11px] uppercase tracking-[0.15em] text-lime hover:underline" data-testid="view-calendar-link">Calendar</button>
@@ -181,7 +227,7 @@ export default function Dashboard() {
             {scheduled.length === 0 && <EmptyRow label="Nothing queued — schedule from the Composer." />}
             {scheduled.map((d) => (
               <button key={d.id} onClick={() => navigate("/composer", { state: { postId: d.id } })}
-                className="flex w-full items-center gap-3 rounded-lg border border-white/10 bg-[#0A0A0A] p-3 text-left transition-colors hover:border-white/20"
+                className="flex w-full min-w-0 items-center gap-3 rounded-lg border border-white/10 bg-[#0A0A0A] p-3 text-left transition-colors hover:border-white/20"
                 data-testid={`scheduled-row-${d.id}`}>
                 <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-white/5">
                   <Send size={15} className="text-lime" />
