@@ -26,17 +26,22 @@ export default function Studio() {
       <h1 className="mt-2 font-display text-4xl font-semibold tracking-tight">Generate anything, publish everywhere</h1>
 
       <Tabs value={tab} onValueChange={setTab} className="mt-7">
-        <TabsList className="h-auto w-full justify-start gap-1 rounded-xl border border-white/10 bg-[#121212] p-1.5">
-          {TABS.map((t) => {
-            const Icon = t.icon;
-            return (
-              <TabsTrigger key={t.key} value={t.key} data-testid={`studio-tab-${t.key}`}
-                className="gap-2 rounded-lg px-4 py-2 text-sm data-[state=active]:bg-lime data-[state=active]:text-[#0A0A0A] data-[state=active]:shadow-none">
-                <Icon size={16} /> {t.label}
-              </TabsTrigger>
-            );
-          })}
-        </TabsList>
+        <div className="relative">
+          <TabsList className="h-auto w-full flex-nowrap justify-start gap-1 overflow-x-auto rounded-xl border border-white/10 bg-[#121212] p-1.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {TABS.map((t) => {
+              const Icon = t.icon;
+              return (
+                <TabsTrigger key={t.key} value={t.key} data-testid={`studio-tab-${t.key}`}
+                  className="flex-shrink-0 gap-2 rounded-lg px-4 py-2 text-sm data-[state=active]:bg-lime data-[state=active]:text-[#0A0A0A] data-[state=active]:shadow-none">
+                  <Icon size={16} /> {t.label}
+                </TabsTrigger>
+              );
+            })}
+          </TabsList>
+          {/* Signals the strip scrolls further right — sibling of the scroll
+              container, not a child, so it stays put while tabs scroll under it. */}
+          <div className="pointer-events-none absolute right-0 top-0 h-[50px] w-10 rounded-r-xl bg-gradient-to-l from-[#121212] to-transparent sm:hidden" />
+        </div>
 
         <TabsContent value="text" className="mt-6"><TextGen /></TabsContent>
         <TabsContent value="image" className="mt-6"><MediaGen kind="image" /></TabsContent>
