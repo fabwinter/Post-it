@@ -1,4 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi.responses import Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -276,10 +277,16 @@ async def ai_visual(req: VisualRequest):
         system = ('You design infographic copy. Return ONLY JSON: '
                   '{"title": "short punchy title, max 50 chars", "points": ["3 to 5 concise bullet points, each max 70 chars"]}')
         user = f"Topic: {req.topic}"
-    else:  # carousel or slideshow
-        system = ('You design a swipeable social carousel. Return ONLY JSON: '
-                  f'{{"title": "hook cover title, max 50 chars", "slides": [{n} objects each '
-                  '{"heading": "max 40 chars", "body": "max 120 chars"}]}. The first slide is the hook/cover.')
+    else:  # carousel / slideshow / photo
+        if t == "photo":
+            system = ('You plan a photo slideshow. Return ONLY JSON: '
+                      f'{{"title": "short cover title, max 50 chars", "slides": [{n} objects each '
+                      '{"caption": "short on-image caption, max 60 chars", "image_prompt": "a vivid, cinematic, '
+                      'detailed image-generation prompt for this slide; do NOT include any text or words in the image"}]}}')
+        else:
+            system = ('You design a swipeable social carousel. Return ONLY JSON: '
+                      f'{{"title": "hook cover title, max 50 chars", "slides": [{n} objects each '
+                      '{"heading": "max 40 chars", "body": "max 120 chars"}]}. The first slide is the hook/cover.')
         user = f"Topic: {req.topic}. Make exactly {n} slides."
 
     content = await chat([{"role": "system", "content": system}, {"role": "user", "content": user}], CHAT_MODEL, 0.85)
@@ -293,9 +300,19 @@ async def ai_visual(req: VisualRequest):
         elif t == "infographic":
             lines = [l.strip("-• ").strip() for l in content.splitlines() if l.strip()]
             data = {"title": (lines[0] if lines else req.topic)[:50], "points": lines[1:6] or [req.topic]}
+        elif t == "photo":
+            data = {"title": req.topic[:50], "slides": [{"caption": req.topic[:60], "image_prompt": req.topic} for _ in range(n)]}
         else:
             data = {"title": req.topic[:50], "slides": [{"heading": req.topic[:40], "body": content.strip()[:120]}]}
     return {"data": data}
+
+
+@api_router.get("/proxy-image")
+async def proxy_image(url: str):
+    r = await asyncio.to_thread(lambda: requests.get(url, timeout=90))
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail="Could not fetch image")
+    return Response(content=r.content, media_type=r.headers.get("content-type", "image/png"))
 
 
 @api_router.post("/ai/generate")
@@ -410,7 +427,6 @@ async def delete_post(post_id: str):
 
 
 @api_router.get("/stats")
-async def stats():
     total = await db.posts.count_documents({})
     drafts = await db.posts.count_documents({"status": "draft"})
     scheduled = await db.posts.count_documents({"status": "scheduled"})
