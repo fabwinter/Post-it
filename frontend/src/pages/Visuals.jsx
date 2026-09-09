@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { toPng } from "html-to-image";
-import { api } from "@/lib/api";
+import { api, apiErrorMessage } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
@@ -54,7 +54,7 @@ export default function Visuals() {
     try {
       const { data: res } = await api.post("/ai/visual", { template, topic, count: Number(count) });
       setData(res.data);
-    } catch { toast.error("Couldn't generate. Check the PoYo key."); } finally { setLoading(false); }
+    } catch (e) { toast.error(apiErrorMessage(e, "Couldn't generate. Check the PoYo key.")); } finally { setLoading(false); }
   };
 
   const download = async () => {
@@ -65,7 +65,7 @@ export default function Visuals() {
       const a = document.createElement("a");
       a.href = url; a.download = `createos-${template}.png`; a.click();
       toast.success("Downloaded PNG");
-    } catch { toast.error("Export failed"); } finally { setExporting(false); }
+    } catch (e) { toast.error(apiErrorMessage(e, "Export failed")); } finally { setExporting(false); }
   };
 
   const useInPost = async () => {
@@ -76,7 +76,7 @@ export default function Visuals() {
       const platforms = template === "tweet" ? ["twitter"] : template === "carousel" || template === "slideshow" ? ["instagram"] : ["instagram"];
       const content = summaryText(template, data);
       navigate("/composer", { state: { mediaUrl: url, mediaType: "image", content, platforms } });
-    } catch { toast.error("Export failed"); } finally { setExporting(false); }
+    } catch (e) { toast.error(apiErrorMessage(e, "Export failed")); } finally { setExporting(false); }
   };
 
   return (

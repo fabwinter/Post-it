@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { api } from "@/lib/api";
+import { api, apiErrorMessage } from "@/lib/api";
 import { PLATFORM_LIST, platformOf } from "@/lib/platforms";
 import { PostPreview } from "@/components/PostPreview";
 import { Button } from "@/components/ui/button";
@@ -50,7 +50,7 @@ export default function Composer() {
     try {
       const { data } = await api.post("/ai/write", { brief: useBrief, platform: platforms[0] || "twitter", tone: "engaging" });
       setContent(data.content);
-    } catch { toast.error("AI write failed."); } finally { setAiLoading(false); }
+    } catch (e) { toast.error(apiErrorMessage(e, "AI write failed.")); } finally { setAiLoading(false); }
   };
 
   const buildPayload = (status) => ({
@@ -73,7 +73,7 @@ export default function Composer() {
       setPostId(res.data.id);
       toast.success(status === "scheduled" ? "Post scheduled" : status === "published" ? "Marked as published" : "Draft saved");
       if (status !== "draft") navigate("/calendar");
-    } catch { toast.error("Save failed."); } finally { setSaving(false); }
+    } catch (e) { toast.error(apiErrorMessage(e, "Save failed.")); } finally { setSaving(false); }
   };
 
   const remove = async () => {

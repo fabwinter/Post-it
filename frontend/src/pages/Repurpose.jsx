@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api } from "@/lib/api";
+import { api, apiErrorMessage } from "@/lib/api";
 import { PLATFORM_LIST, platformOf } from "@/lib/platforms";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -23,7 +23,7 @@ export default function Repurpose() {
     try {
       const { data } = await api.post("/ai/repurpose", { source, platforms: selected });
       setResults(data.posts);
-    } catch { toast.error("Repurpose failed."); } finally { setLoading(false); }
+    } catch (e) { toast.error(apiErrorMessage(e, "Repurpose failed.")); } finally { setLoading(false); }
   };
 
   return (
