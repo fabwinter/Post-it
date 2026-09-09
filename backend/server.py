@@ -1147,7 +1147,7 @@ def _plan_to_assets(plan: dict, theme: str) -> List[Dict[str, Any]]:
                 "caption": sc.get("voiceover", ""),
                 "spec": {
                     "template": "slide", "theme": theme, "index": i + 1,
-                    "total": len(visual.get("script") or []),
+                    "total": len(visual.get("script") or []), "coverCounts": False,
                     "heading": sc.get("on_screen_text") or sc.get("scene", ""),
                     "body": sc.get("voiceover", ""),
                     "video_prompt": sc.get("video_prompt", ""),

@@ -144,7 +144,15 @@ export default function Composer() {
   // ---- slide editing ----
   const patchSlide = (i, patch) => setAssets((s) => s.map((a, idx) => (idx === i ? { ...a, spec: { ...a.spec, ...patch } } : a)));
   const setAllThemes = (theme) => setAssets((s) => s.map((a) => ({ ...a, spec: { ...a.spec, theme } })));
-  const renumber = (list) => list.map((a, i) => ({ ...a, spec: { ...a.spec, index: i, total: list.length } }));
+  // Decks with a cover are numbered from 0 (cover, then 1..N); a reel
+  // storyboard has no cover, so its scenes are numbered from 1.
+  const renumber = (list) => {
+    const hasCover = list[0]?.spec?.template === "cover";
+    return list.map((a, i) => ({
+      ...a,
+      spec: { ...a.spec, index: hasCover ? i : i + 1, total: list.length, coverCounts: hasCover },
+    }));
+  };
 
   const addSlide = () => setAssets((s) => {
     const next = renumber([...s, emptySlide(s.length, s.length + 1)]);
