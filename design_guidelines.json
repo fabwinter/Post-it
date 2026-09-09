@@ -1,0 +1,130 @@
+{
+  "theme": "dark",
+  "brand_name": "CreateOS",
+  "typography": {
+    "fonts": {
+      "headings": "Cabinet Grotesk",
+      "body": "Satoshi",
+      "mono_utility": "JetBrains Mono"
+    },
+    "pairing_strategy": "The 'Editorial Future' meets 'Swiss Brutalist'. Use Cabinet Grotesk for all primary section headers and widget titles to give a distinct, modern edge. Satoshi provides ultra-clean readability for complex dashboard data. JetBrains Mono is strictly for timestamps, platform constraints (character counts), labels, and metadata.",
+    "hierarchy": {
+      "h1": "text-4xl sm:text-5xl tracking-tight font-medium",
+      "h2": "text-2xl sm:text-3xl tracking-tight font-medium",
+      "h3": "text-xl font-medium",
+      "widget_title": "text-sm tracking-[0.2em] uppercase font-mono text-zinc-400",
+      "body": "text-base leading-relaxed text-zinc-300",
+      "small": "text-sm text-zinc-400"
+    }
+  },
+  "colors": {
+    "palette_archetype": "ARCHETYPE 7: ELECTRIC & NEON (Subdued for Premium Professional Context)",
+    "backgrounds": {
+      "page": "#0A0A0A",
+      "surface": "#121212",
+      "surface_hover": "#1A1A1A",
+      "glass": "bg-black/60 backdrop-blur-xl"
+    },
+    "borders": {
+      "default": "border-white/10",
+      "strong": "border-white/20",
+      "active": "#E2FF3D"
+    },
+    "accents": {
+      "primary": "#E2FF3D", 
+      "primary_hover": "#D6F32B",
+      "primary_text": "#0A0A0A",
+      "ai_magic": "#FF6B6B", 
+      "secondary": "#C4B5FD"
+    },
+    "text": {
+      "primary": "#FFFFFF",
+      "secondary": "#A1A1AA",
+      "muted": "#71717A"
+    },
+    "status": {
+      "success": "#4ADE80",
+      "warning": "#FBBF24",
+      "error": "#F87171"
+    }
+  },
+  "visual_enhancers": {
+    "surfaces": "Use 'Grid Borders' (The Technical Look) for the calendar and dense data views. Use 'Crystal Glass' for floating action bars and sticky headers. Never use pure black without grain/noise.",
+    "shadows": "Minimal shadows. Rely on 1px borders (border-white/10) to define edges and create depth.",
+    "ai_states": "For AI generating states, use blurred radial gradients (e.g., bg-gradient-to-r from-[#FF6B6B]/20 to-[#E2FF3D]/20 blur-3xl) behind the active component. No generic AI sparkles."
+  },
+  "layout_and_grids": {
+    "global_spacing": "Generous Spacing Philosophy: use p-6 to p-8 inside cards. Use gap-6 to gap-8 in main grids.",
+    "dashboard_grid": "MODE B: High Density Grid. Start with grid-cols-1, scale to md:grid-cols-3 or lg:grid-cols-4. gap-6.",
+    "alignment": "Strict left-alignment for all dashboard text and data for scanning efficiency. Center only for zero-state/empty screens."
+  },
+  "component_guidelines": {
+    "cards": "Flat background (bg-[#121212]), slightly rounded corners (rounded-xl), 1px subtle border (border-white/10). No drop shadows.",
+    "buttons": "Primary: Solid #E2FF3D background, text-[#0A0A0A]. Secondary: bg-white/5, border border-white/10, text-white. Sharp corners or full pill depending on context.",
+    "inputs": "Shadcn inputs customized to match dark theme: bg-[#121212] border-white/10 focus:border-[#E2FF3D] focus:ring-1 focus:ring-[#E2FF3D].",
+    "tabs": "Minimalist tabs. No background for the tab list. Active tab gets a subtle 1px bottom border in #E2FF3D and white text."
+  },
+  "screens": {
+    "dashboard": "Bento grid layout. Hero widget spanning 2 cols for 'What are we creating today?' AI input. Side widgets for 'Recent Drafts' and 'Next Scheduled'. Multi-platform performance summary at the bottom.",
+    "content_studio": "Split pane interface. Left: Chat/Command interface for poyo.ai integrations. Right: Dynamic preview area that changes based on content type (Text/Video/Image/Music).",
+    "repurpose_tool": "Two columns. Source input (URL/Text) on the left. On the right, a masonry grid of generated platform-specific cards (X, LinkedIn, Threads, Instagram).",
+    "content_calendar": "Dense table/grid view for Month/Week. Distinct visual pills (using brand colors) for different platforms. Drag-and-drop enabled.",
+    "composer": "Main text area on left with AI assist buttons. Right sidebar showing multi-platform previews styled identically to native apps (e.g., Twitter card layout, IG square)."
+  },
+  "motion": {
+    "micro_interactions": "Framer Motion for layout transitions (layoutId for moving items to calendar). hover:-translate-y-1 for interactive cards.",
+    "ai_generation": "Subtle pulsing opacity on borders during generation. Staggered fade-in (delay: 0.1s steps) when content populates."
+  },
+  "media_and_assets": {
+    "icons": "lucide-react (default) or @phosphor-icons/react (for high-end polish). Use Duotone weight.",
+    "image_urls": {
+      "ai_background_1": {
+        "url": "https://images.unsplash.com/photo-1608501821300-4f99e58bba77?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzV8MHwxfHNlYXJjaHwzfHxjcmVhdGl2ZSUyMGFic3RyYWN0JTIwdGV4dHVyZSUyMGRhcmt8ZW58MHx8fHwxNzg4OTMwMTYwfDA&ixlib=rb-4.1.0&q=85",
+        "category": "ai_cover",
+        "description": "Dark blue and black fluid art for AI generation backgrounds."
+      },
+      "ai_background_2": {
+        "url": "https://images.unsplash.com/photo-1557264322-b44d383a2906?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzV8MHwxfHNlYXJjaHwxfHxjcmVhdGl2ZSUyMGFic3RyYWN0JTIwdGV4dHVyZSUyMGRhcmt8ZW58MHx8fHwxNzg4OTMwMTYwfDA&ixlib=rb-4.1.0&q=85",
+        "category": "ai_cover_alt",
+        "description": "Green and pink abstract art for creative moments."
+      },
+      "avatar_1": {
+        "url": "https://images.unsplash.com/photo-1607503873903-c5e95f80d7b9?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1ODR8MHwxfHNlYXJjaHwyfHxwb3J0cmFpdCUyMGRpdmVyc2UlMjBjcmVhdG9yc3xlbnwwfHx8fDE3ODg5MzAxNjB8MA&ixlib=rb-4.1.0&q=85",
+        "category": "user_avatar",
+        "description": "Diverse creator portrait."
+      },
+      "avatar_2": {
+        "url": "https://images.unsplash.com/photo-1518725522904-4b3939358342?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1ODR8MHwxfHNlYXJjaHw0fHxwb3J0cmFpdCUyMGRpdmVyc2UlMjBjcmVhdG9yc3xlbnwwfHx8fDE3ODg5MzAxNjB8MA&ixlib=rb-4.1.0&q=85",
+        "category": "team_avatar",
+        "description": "Diverse creator portrait."
+      },
+      "workspace_mockup": {
+        "url": "https://images.unsplash.com/photo-1639413665566-2f75adf7b7ca?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzN8MHwxfHNlYXJjaHwzfHxtb2Rlcm4lMjBtaW5pbWFsJTIwd29ya3NwYWNlfGVufDB8fHx8MTc4ODkzMDE2OHww&ixlib=rb-4.1.0&q=85",
+        "category": "preview_placeholder",
+        "description": "Modern minimal workspace image for post previews."
+      }
+    }
+  },
+  "libraries": {
+    "3d_and_charts": "Use Recharts for platform analytics.",
+    "motion": "framer-motion",
+    "icons": "lucide-react"
+  },
+  "accessibility": {
+    "contrast": "Ensure all text meets minimum 4.5:1 contrast against #0A0A0A or #121212.",
+    "focus": "All interactive elements must have a visible focus state (e.g., focus:ring-1 focus:ring-[#E2FF3D])."
+  },
+  "testing_attributes": {
+    "instructions": "All interactive and key informational elements MUST include a `data-testid` attribute. Convention: kebab-case, role-based (e.g., data-testid='generate-post-button')."
+  },
+  "universal_guidelines_for_main_agent": [
+    "You MUST NOT apply universal transition (e.g., transition: all). Add transitions for specific properties only (opacity, transform, background-color).",
+    "You MUST NOT center align the app container in App.css. Let the content flow naturally.",
+    "Do not use default generic colors. Stick strictly to the provided dark mode palette.",
+    "Never use AI assistant Emoji characters (\ud83e\udd16\ud83e\udde0\ud83d\udcad\ud83d\udca1\ud83d\udd2e\ud83c\udfaf) for icons. Use proper SVG icons (lucide-react).",
+    "Ensure all dropdowns, modals, and sticky headers use solid background or heavy backdrop-blur. NO completely transparent backgrounds.",
+    "For JavaScript files (.js/.jsx), use standard React functional components. DO NOT use TypeScript (.tsx).",
+    "Use 'sonner' for toast notifications, located at /app/src/components/ui/sonner.jsx.",
+    "Prioritize using pre-existing Shadcn components from src/components/ui and heavily customize their Tailwind classes to match this premium dark theme."
+  ]
+}
