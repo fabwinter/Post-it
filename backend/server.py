@@ -97,6 +97,30 @@ def _poyo_models():
     return resp.json()
 
 
+# Models whose PoYo catalog entry only lists "openai-responses" (not
+# "openai-chat") among supported_protocols — /v1/chat/completions returns a
+# 400 "Supported URIs" error for these, so they need /v1/responses instead.
+RESPONSES_ONLY_MODELS = {"gpt-5-6-luna", "gpt-5-6-sol", "gpt-5-6-terra"}
+
+
+def _poyo_responses(messages: List[Dict[str, str]], model: str, temperature: float = 0.8, max_tokens: int = 1200):
+    resp = requests.post(
+        f"{POYO_BASE_URL}/v1/responses",
+        headers=_poyo_headers(),
+        json={"model": model, "input": messages, "temperature": temperature, "max_output_tokens": max_tokens},
+        timeout=90,
+    )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"PoYo responses error {resp.status_code}: {resp.text[:400]}")
+    body = resp.json()
+    data = body.get("data", body)
+    for item in data.get("output") or []:
+        for block in item.get("content") or []:
+            if block.get("type") == "output_text" and block.get("text"):
+                return block["text"]
+    raise HTTPException(status_code=502, detail=f"PoYo responses returned no text: {str(body)[:300]}")
+
+
 def _poyo_submit(model: str, input_payload: Dict[str, Any]):
     resp = requests.post(
         f"{POYO_BASE_URL}/api/generate/submit",
@@ -126,7 +150,8 @@ def _poyo_status(task_id: str):
 
 
 async def chat(messages, model, temperature=0.8, max_tokens=1200):
-    return await asyncio.to_thread(_poyo_chat, messages, model, temperature, max_tokens)
+    fn = _poyo_responses if model in RESPONSES_ONLY_MODELS else _poyo_chat
+    return await asyncio.to_thread(fn, messages, model, temperature, max_tokens)
 
 
 CHAT_MODEL = "gemini-3-flash-preview"
