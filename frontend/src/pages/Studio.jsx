@@ -8,13 +8,14 @@ import { ModelPicker } from "@/components/ModelPicker";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "sonner";
-import { Sparkles, Image as ImageIcon, Video, Music, Loader2, Type, Download, Send, Copy } from "lucide-react";
+import { Sparkles, Image as ImageIcon, Video, Music, Mic, Loader2, Type, Download, Send, Copy } from "lucide-react";
 
 const TABS = [
   { key: "text", label: "Write", icon: Type },
   { key: "image", label: "Image", icon: ImageIcon },
   { key: "video", label: "Video", icon: Video },
   { key: "music", label: "Music", icon: Music },
+  { key: "voice", label: "Voice Over", icon: Mic },
 ];
 
 export default function Studio() {
@@ -41,6 +42,7 @@ export default function Studio() {
         <TabsContent value="image" className="mt-6"><MediaGen kind="image" /></TabsContent>
         <TabsContent value="video" className="mt-6"><MediaGen kind="video" /></TabsContent>
         <TabsContent value="music" className="mt-6"><MediaGen kind="music" /></TabsContent>
+        <TabsContent value="voice" className="mt-6"><MediaGen kind="voice" /></TabsContent>
       </Tabs>
     </div>
   );
@@ -135,12 +137,105 @@ const IMAGE_MODELS = [
 const IMAGE_SIZES = ["1:1", "4:5", "3:2", "2:3", "16:9", "9:16", "4:3", "3:4"];
 const IMAGE_QUALITY = ["low", "medium", "high"];
 
+// Verified against each model's real input schema (poyo_get_model_schema) —
+// they genuinely differ: some have no resolution field, duration is a fixed
+// enum for some and a free range for others, and the audio flag is named
+// generate_audio, sound, or audio depending on the model (or doesn't exist).
+// resolutions/aspects: null means the model has no such field at all.
 const VIDEO_MODELS = [
-  { value: "seedance-2-fast", label: "Seedance 2 Fast", res: ["480p", "720p"] },
-  { value: "seedance-2", label: "Seedance 2", res: ["720p", "1080p"] },
+  {
+    value: "seedance-2-fast", label: "Seedance 2 Fast",
+    resolutions: ["480p", "720p"], defaultResolution: "720p",
+    durations: { type: "range", min: 4, max: 15 }, defaultDuration: 5,
+    aspects: ["auto", "1:1", "21:9", "4:3", "3:4", "16:9", "9:16"], defaultAspect: "16:9",
+    audioField: "generate_audio", defaultAudio: false,
+  },
+  {
+    value: "seedance-2", label: "Seedance 2",
+    resolutions: ["480p", "720p", "1080p", "4k"], defaultResolution: "720p",
+    durations: { type: "range", min: 4, max: 15 }, defaultDuration: 5,
+    aspects: ["auto", "1:1", "21:9", "4:3", "3:4", "16:9", "9:16"], defaultAspect: "16:9",
+    audioField: "generate_audio", defaultAudio: false,
+  },
+  {
+    value: "seedance-2.5", label: "Seedance 2.5",
+    resolutions: ["480p", "720p", "1080p"], defaultResolution: "720p",
+    durations: { type: "range", min: 4, max: 30 }, defaultDuration: 5,
+    aspects: ["auto", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"], defaultAspect: "16:9",
+    audioField: "generate_audio", defaultAudio: false,
+  },
+  {
+    value: "kling-3.0-turbo/pro", label: "Kling 3.0 Turbo Pro",
+    resolutions: null,
+    durations: { type: "range", min: 3, max: 15 }, defaultDuration: 5,
+    aspects: ["16:9", "9:16", "1:1"], defaultAspect: "16:9",
+    audioField: null,
+  },
+  {
+    value: "veo3.1-quality-official", label: "Veo 3.1 Quality",
+    resolutions: ["720p", "1080p", "4k"], defaultResolution: "1080p",
+    durations: { type: "enum", values: [4, 6, 8] }, defaultDuration: 8,
+    aspects: ["auto", "16:9", "9:16"], defaultAspect: "16:9",
+    audioField: "sound", defaultAudio: true,
+  },
+  {
+    value: "veo3.1-fast-official", label: "Veo 3.1 Fast",
+    resolutions: ["720p", "1080p", "4k"], defaultResolution: "1080p",
+    durations: { type: "enum", values: [4, 6, 8] }, defaultDuration: 8,
+    aspects: ["auto", "16:9", "9:16"], defaultAspect: "16:9",
+    audioField: "sound", defaultAudio: true,
+  },
+  {
+    value: "sora-2-official", label: "Sora 2",
+    resolutions: null,
+    durations: { type: "enum", values: [4, 8, 12, 16, 20] }, defaultDuration: 4,
+    aspects: ["16:9", "9:16"], defaultAspect: "16:9",
+    audioField: null,
+  },
+  {
+    value: "runway-gen-4.5", label: "Runway Gen-4.5",
+    resolutions: null,
+    durations: { type: "enum", values: [5, 10] }, defaultDuration: 5,
+    aspects: ["16:9", "9:16", "4:3", "3:4", "1:1", "21:9"], defaultAspect: "16:9",
+    audioField: null,
+  },
+  {
+    value: "wan3.0-text-to-video", label: "Wan 3.0",
+    resolutions: ["480p", "720p", "1080p"], defaultResolution: "720p",
+    durations: { type: "range", min: 2, max: 30 }, defaultDuration: 5,
+    aspects: ["adaptive", "16:9", "4:3", "1:1", "3:4", "9:16"], defaultAspect: "adaptive",
+    audioField: "audio", defaultAudio: true,
+  },
+  {
+    value: "hailuo-03", label: "Hailuo 03",
+    resolutions: ["2K"], defaultResolution: "2K",
+    durations: { type: "range", min: 5, max: 15 }, defaultDuration: 5,
+    aspects: ["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"], defaultAspect: "16:9",
+    audioField: null,
+  },
+  {
+    value: "hailuo-2.3", label: "Hailuo 2.3",
+    resolutions: ["768p", "1080p"], defaultResolution: "768p",
+    durations: { type: "enum", values: [6, 10] }, defaultDuration: 6,
+    aspects: null,
+    audioField: null,
+  },
 ];
-const VIDEO_ASPECT = ["16:9", "9:16", "1:1", "4:3"];
-const VIDEO_DURATIONS = [4, 5, 6, 8, 10];
+
+const DURATION_CANDIDATES = [2, 3, 4, 5, 6, 8, 10, 12, 15, 16, 20, 30];
+function durationOptions(model) {
+  if (model.durations.type === "enum") return model.durations.values;
+  const { min, max } = model.durations;
+  return DURATION_CANDIDATES.filter((d) => d >= min && d <= max);
+}
+
+// Verified against elevenlabs-tts-turbo-2-5 and elevenlabs-v3-tts's real
+// schemas — turbo-2.5 additionally supports speed/style knobs v3 doesn't.
+const VOICE_MODELS = [
+  { value: "elevenlabs-tts-turbo-2-5", label: "ElevenLabs Turbo v2.5", speed: true },
+  { value: "elevenlabs-v3-tts", label: "ElevenLabs v3", speed: false },
+];
+const VOICE_NAME_SUGGESTIONS = ["Rachel", "Aria", "Sarah", "Laura"];
 
 // Verified against the generate-music model's real input schema
 // (poyo_get_model_schema) — mv is a required enum, exactly these six values.
@@ -193,20 +288,32 @@ function MediaGen({ kind }) {
   const [imgSize, setImgSize] = useState("1:1");
   const [imgQuality, setImgQuality] = useState("medium");
   // video controls
-  const [vidModel, setVidModel] = useState("seedance-2-fast");
-  const [vidRes, setVidRes] = useState("720p");
-  const [vidDuration, setVidDuration] = useState(5);
-  const [vidAspect, setVidAspect] = useState("16:9");
-  const [vidAudio, setVidAudio] = useState(false);
+  const [vidModel, setVidModel] = useState(VIDEO_MODELS[0].value);
+  const [vidRes, setVidRes] = useState(VIDEO_MODELS[0].defaultResolution);
+  const [vidDuration, setVidDuration] = useState(VIDEO_MODELS[0].defaultDuration);
+  const [vidAspect, setVidAspect] = useState(VIDEO_MODELS[0].defaultAspect);
+  const [vidAudio, setVidAudio] = useState(VIDEO_MODELS[0].defaultAudio);
   // music controls
   const [musicVersion, setMusicVersion] = useState("V4_5");
+  // voice controls
+  const [voiceModel, setVoiceModel] = useState(VOICE_MODELS[0].value);
+  const [voiceName, setVoiceName] = useState("Rachel");
+  const [voiceStability, setVoiceStability] = useState(0.5);
+  const [voiceSpeed, setVoiceSpeed] = useState(1);
 
-  const vidResOptions = (VIDEO_MODELS.find((m) => m.value === vidModel) || VIDEO_MODELS[0]).res;
+  const currentVideoModel = VIDEO_MODELS.find((m) => m.value === vidModel) || VIDEO_MODELS[0];
+  const currentVoiceModel = VOICE_MODELS.find((m) => m.value === voiceModel) || VOICE_MODELS[0];
 
-  const onVideoModel = (m) => {
-    setVidModel(m);
-    const allowed = (VIDEO_MODELS.find((x) => x.value === m) || VIDEO_MODELS[0]).res;
-    if (!allowed.includes(vidRes)) setVidRes(allowed[0]);
+  // Switching models resets format options to that model's own defaults —
+  // simpler and safer than trying to carry over a combination the new model
+  // might reject outright (several of these declare additionalProperties: false).
+  const onVideoModel = (v) => {
+    const m = VIDEO_MODELS.find((x) => x.value === v) || VIDEO_MODELS[0];
+    setVidModel(v);
+    setVidRes(m.defaultResolution || "");
+    setVidDuration(m.defaultDuration);
+    setVidAspect(m.defaultAspect || "");
+    setVidAudio(m.defaultAudio || false);
   };
 
   const buildOptions = () => {
@@ -216,7 +323,16 @@ function MediaGen({ kind }) {
       return o;
     }
     if (kind === "video") {
-      return { model: vidModel, resolution: vidRes, duration: Number(vidDuration), aspect_ratio: vidAspect, generate_audio: vidAudio };
+      const o = { model: vidModel, duration: Number(vidDuration) };
+      if (currentVideoModel.resolutions) o.resolution = vidRes;
+      if (currentVideoModel.aspects) o.aspect_ratio = vidAspect;
+      if (currentVideoModel.audioField) o[currentVideoModel.audioField] = vidAudio;
+      return o;
+    }
+    if (kind === "voice") {
+      const o = { model: voiceModel, voice: voiceName, stability: Number(voiceStability) };
+      if (currentVoiceModel.speed) o.speed = Number(voiceSpeed);
+      return o;
     }
     return { instrumental, mv: musicVersion };
   };
@@ -241,13 +357,16 @@ function MediaGen({ kind }) {
   const currentModelLabel = kind === "image"
     ? (IMAGE_MODELS.find((m) => m.value === imgModel) || {}).label
     : kind === "video"
-      ? (VIDEO_MODELS.find((m) => m.value === vidModel) || {}).label
-      : (MUSIC_VERSIONS.find((m) => m.value === musicVersion) || {}).label;
+      ? currentVideoModel.label
+      : kind === "voice"
+        ? currentVoiceModel.label
+        : (MUSIC_VERSIONS.find((m) => m.value === musicVersion) || {}).label;
 
   const labels = {
     image: { title: "Image generation", ph: "A paper-cut illustration of a city at sunrise, editorial style…" },
     video: { title: "Video generation", ph: "A cinematic drone shot flying over a neon city after rain…" },
     music: { title: "Music generation", ph: "An upbeat lo-fi track for a productivity reel, warm and driving…" },
+    voice: { title: "Voice over", ph: "Write the script to turn into a voice over…" },
   }[kind];
 
   return (
@@ -284,21 +403,27 @@ function MediaGen({ kind }) {
             <Field label="Model">
               <StudioSelect value={vidModel} onChange={onVideoModel} options={VIDEO_MODELS} testid="studio-video-model" />
             </Field>
-            <div className="flex gap-3">
-              <Field label="Resolution">
-                <StudioSelect value={vidRes} onChange={setVidRes} options={vidResOptions} testid="studio-video-resolution" />
-              </Field>
+            <div className="flex flex-wrap gap-3">
+              {currentVideoModel.resolutions && (
+                <Field label="Resolution">
+                  <StudioSelect value={vidRes} onChange={setVidRes} options={currentVideoModel.resolutions} testid="studio-video-resolution" />
+                </Field>
+              )}
               <Field label="Duration (s)">
-                <StudioSelect value={vidDuration} onChange={setVidDuration} options={VIDEO_DURATIONS} testid="studio-video-duration" />
+                <StudioSelect value={vidDuration} onChange={setVidDuration} options={durationOptions(currentVideoModel)} testid="studio-video-duration" />
               </Field>
-              <Field label="Aspect">
-                <StudioSelect value={vidAspect} onChange={setVidAspect} options={VIDEO_ASPECT} testid="studio-video-aspect" />
-              </Field>
+              {currentVideoModel.aspects && (
+                <Field label="Aspect">
+                  <StudioSelect value={vidAspect} onChange={setVidAspect} options={currentVideoModel.aspects} testid="studio-video-aspect" />
+                </Field>
+              )}
             </div>
-            <label className="flex items-center gap-2 text-sm text-zinc-400">
-              <input type="checkbox" checked={vidAudio} onChange={(e) => setVidAudio(e.target.checked)} className="accent-lime" data-testid="studio-video-audio" />
-              Generate audio track
-            </label>
+            {currentVideoModel.audioField && (
+              <label className="flex items-center gap-2 text-sm text-zinc-400">
+                <input type="checkbox" checked={vidAudio} onChange={(e) => setVidAudio(e.target.checked)} className="accent-lime" data-testid="studio-video-audio" />
+                Generate audio track
+              </label>
+            )}
           </div>
         )}
 
@@ -314,11 +439,43 @@ function MediaGen({ kind }) {
           </div>
         )}
 
+        {kind === "voice" && (
+          <div className="mt-4 space-y-3" data-testid="voice-controls">
+            <div className="flex gap-3">
+              <Field label="Model">
+                <StudioSelect value={voiceModel} onChange={setVoiceModel} options={VOICE_MODELS} testid="studio-voice-model" />
+              </Field>
+              <Field label="Voice">
+                <input list="studio-voice-suggestions" value={voiceName} onChange={(e) => setVoiceName(e.target.value)}
+                  data-testid="studio-voice-name"
+                  className="w-full rounded-lg border border-white/10 bg-[#0A0A0A] px-3 py-2 text-sm text-white outline-none transition-colors focus:border-lime" />
+                <datalist id="studio-voice-suggestions">
+                  {VOICE_NAME_SUGGESTIONS.map((v) => <option key={v} value={v} />)}
+                </datalist>
+              </Field>
+            </div>
+            <div className="flex gap-3">
+              <Field label={`Stability · ${voiceStability}`}>
+                <input type="range" min="0" max="1" step="0.05" value={voiceStability}
+                  onChange={(e) => setVoiceStability(e.target.value)} data-testid="studio-voice-stability"
+                  className="w-full accent-lime" />
+              </Field>
+              {currentVoiceModel.speed && (
+                <Field label={`Speed · ${voiceSpeed}x`}>
+                  <input type="range" min="0.7" max="1.2" step="0.01" value={voiceSpeed}
+                    onChange={(e) => setVoiceSpeed(e.target.value)} data-testid="studio-voice-speed"
+                    className="w-full accent-lime" />
+                </Field>
+              )}
+            </div>
+          </div>
+        )}
+
         <Button data-testid={`studio-generate-${kind}`} onClick={run} disabled={loading}
           className="mt-5 w-full gap-2 rounded-lg bg-lime font-semibold text-[#0A0A0A] hover:bg-lime-hover">
-          {loading ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />} Generate {kind}
+          {loading ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />} Generate {kind === "voice" ? "voice over" : kind}
         </Button>
-        {kind !== "image" && <p className="mt-3 text-xs text-zinc-600">Video & music can take 1–4 minutes. Keep this tab open.</p>}
+        {kind !== "image" && <p className="mt-3 text-xs text-zinc-600">Video, music & voice over can take 1–4 minutes. Keep this tab open.</p>}
       </div>
 
       <div className={`rounded-xl border bg-[#121212] p-5 ${loading ? "generating-pulse border-lime/40" : "border-white/10"}`}>
@@ -336,7 +493,7 @@ function MediaGen({ kind }) {
           {!loading && !fileUrl && <div className="text-sm text-zinc-600">Output appears here</div>}
           {!loading && fileUrl && kind === "image" && <img src={fileUrl} alt="generated" className="max-h-[360px] w-full rounded-lg object-contain" data-testid="studio-result-image" />}
           {!loading && fileUrl && kind === "video" && <video src={fileUrl} controls className="w-full rounded-lg" data-testid="studio-result-video" />}
-          {!loading && fileUrl && kind === "music" && <audio src={fileUrl} controls className="w-full" data-testid="studio-result-music" />}
+          {!loading && fileUrl && (kind === "music" || kind === "voice") && <audio src={fileUrl} controls className="w-full" data-testid={`studio-result-${kind}`} />}
         </div>
         {fileUrl && (
           <div className="mt-4 flex gap-2">

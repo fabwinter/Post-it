@@ -132,7 +132,7 @@ export default function Composer() {
               </div>
               <div className="mt-3 overflow-hidden rounded-lg">
                 {mediaType === "video" ? <video src={mediaUrl} controls className="w-full" />
-                  : (mediaType === "music" || mediaType === "audio") ? <audio src={mediaUrl} controls className="w-full" />
+                  : (mediaType === "music" || mediaType === "audio" || mediaType === "voice") ? <audio src={mediaUrl} controls className="w-full" />
                   : <img src={mediaUrl} alt="media" className="max-h-64 w-full object-contain" />}
               </div>
             </div>

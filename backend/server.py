@@ -196,7 +196,7 @@ class RepurposeRequest(BaseModel):
 
 
 class GenerateRequest(BaseModel):
-    kind: str  # image | video | music
+    kind: str  # image | video | music | voice
     prompt: str
     options: Optional[Dict[str, Any]] = Field(default_factory=dict)
 
@@ -443,14 +443,15 @@ async def ai_generate(req: GenerateRequest):
         if opts.get("resolution"):
             payload["resolution"] = opts["resolution"]
     elif req.kind == "video":
+        # Video models differ a lot in accepted fields (resolution/aspect_ratio/
+        # duration ranges, and the audio flag is named generate_audio, sound, or
+        # audio depending on the model) — the frontend already knows the selected
+        # model's real shape, so forward whatever it sent rather than guessing a
+        # one-size-fits-all payload here.
         model = opts.get("model", "seedance-2-fast")
-        payload = {
-            "prompt": req.prompt,
-            "resolution": opts.get("resolution", "720p"),
-            "duration": int(opts.get("duration", 5)),
-            "aspect_ratio": opts.get("aspect_ratio", "16:9"),
-            "generate_audio": bool(opts.get("generate_audio", False)),
-        }
+        payload = {"prompt": req.prompt, **{k: v for k, v in opts.items() if k != "model"}}
+        if "duration" in payload:
+            payload["duration"] = int(payload["duration"])
     elif req.kind == "music":
         model = "generate-music"
         payload = {
@@ -459,8 +460,11 @@ async def ai_generate(req: GenerateRequest):
             "instrumental": bool(opts.get("instrumental", False)),
             "mv": opts.get("mv", "V4_5"),
         }
+    elif req.kind == "voice":
+        model = opts.get("model", "elevenlabs-tts-turbo-2-5")
+        payload = {"text": req.prompt, **{k: v for k, v in opts.items() if k != "model"}}
     else:
-        raise HTTPException(status_code=400, detail="kind must be image, video or music")
+        raise HTTPException(status_code=400, detail="kind must be image, video, music, or voice")
 
     task_id, status = await asyncio.to_thread(_poyo_submit, model, payload)
     record = {

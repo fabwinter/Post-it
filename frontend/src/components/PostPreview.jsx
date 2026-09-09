@@ -34,7 +34,7 @@ export const PostPreview = ({ platformKey, content, mediaUrl, mediaType }) => {
               <div className="mt-3 overflow-hidden rounded-lg border border-white/10">
                 {mediaType === "video" ? (
                   <video src={mediaUrl} controls className="w-full" />
-                ) : mediaType === "music" || mediaType === "audio" ? (
+                ) : mediaType === "music" || mediaType === "audio" || mediaType === "voice" ? (
                   <audio src={mediaUrl} controls className="w-full" />
                 ) : (
                   <img src={mediaUrl} alt="attachment" className="w-full object-cover" />

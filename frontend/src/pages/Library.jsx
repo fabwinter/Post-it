@@ -2,9 +2,9 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { Images, Send, Download, Image as ImageIcon, Video, Music } from "lucide-react";
+import { Images, Send, Download, Image as ImageIcon, Video, Music, Mic } from "lucide-react";
 
-const KIND_ICON = { image: ImageIcon, video: Video, music: Music };
+const KIND_ICON = { image: ImageIcon, video: Video, music: Music, voice: Mic };
 
 export default function Library() {
   const navigate = useNavigate();
@@ -42,9 +42,9 @@ export default function Library() {
               <div className="flex aspect-video items-center justify-center overflow-hidden bg-[#0A0A0A]">
                 {m.kind === "image" && <img src={file.file_url} alt={m.prompt} className="h-full w-full object-cover" />}
                 {m.kind === "video" && <video src={file.file_url} className="h-full w-full object-cover" muted />}
-                {m.kind === "music" && (
+                {(m.kind === "music" || m.kind === "voice") && (
                   <div className="flex h-full w-full flex-col items-center justify-center bg-gradient-to-br from-iris/20 to-lime/10">
-                    <Music size={30} className="text-lime" />
+                    <Icon size={30} className="text-lime" />
                   </div>
                 )}
               </div>
@@ -54,7 +54,7 @@ export default function Library() {
                   <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">{m.kind}</span>
                 </div>
                 <p className="mt-2 line-clamp-2 text-sm text-zinc-300">{m.prompt}</p>
-                {m.kind === "music" && <audio src={file.file_url} controls className="mt-3 w-full" />}
+                {(m.kind === "music" || m.kind === "voice") && <audio src={file.file_url} controls className="mt-3 w-full" />}
                 <div className="mt-3 flex gap-2">
                   <a href={file.file_url} target="_blank" rel="noreferrer" className="flex-1">
                     <Button variant="secondary" className="h-8 w-full gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10"><Download size={13} /> Open</Button>
