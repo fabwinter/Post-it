@@ -6,9 +6,11 @@ import Dashboard from "@/pages/Dashboard";
 import Studio from "@/pages/Studio";
 import Visuals from "@/pages/Visuals";
 import Repurpose from "@/pages/Repurpose";
+import Templates from "@/pages/Templates";
 import Composer from "@/pages/Composer";
 import CalendarPage from "@/pages/CalendarPage";
 import Library from "@/pages/Library";
+import Connections from "@/pages/Connections";
 
 function App() {
   return (
@@ -20,9 +22,11 @@ function App() {
             <Route path="/studio" element={<Studio />} />
             <Route path="/visuals" element={<Visuals />} />
             <Route path="/repurpose" element={<Repurpose />} />
+            <Route path="/templates" element={<Templates />} />
             <Route path="/composer" element={<Composer />} />
             <Route path="/calendar" element={<CalendarPage />} />
             <Route path="/library" element={<Library />} />
+            <Route path="/connections" element={<Connections />} />
           </Routes>
         </AppLayout>
         <Toaster position="top-right" theme="dark" />

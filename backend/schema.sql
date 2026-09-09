@@ -33,3 +33,15 @@ CREATE TABLE IF NOT EXISTS generations (
 
 CREATE INDEX IF NOT EXISTS idx_generations_status ON generations(status);
 CREATE INDEX IF NOT EXISTS idx_generations_task_id ON generations(task_id);
+
+-- Platform connections. Rows are only ever "connected" once real OAuth lands
+-- (Phase 1) — until then GET /api/connections reports every platform as
+-- not_connected without needing a row here at all.
+CREATE TABLE IF NOT EXISTS connections (
+  id TEXT PRIMARY KEY,
+  platform TEXT NOT NULL UNIQUE,
+  account_name TEXT,
+  status TEXT NOT NULL DEFAULT 'not_connected',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);

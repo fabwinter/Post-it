@@ -6,7 +6,7 @@ import { PLATFORM_LIST, platformOf } from "@/lib/platforms";
 import { ModelPicker } from "@/components/ModelPicker";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { Repeat, Loader2, Copy, Send, Sparkles } from "lucide-react";
+import { Repeat, Loader2, Copy, Send, Sparkles, Rss, ChevronDown, ChevronUp } from "lucide-react";
 
 const DEFAULTS = ["twitter", "linkedin", "instagram", "threads"];
 
@@ -18,8 +18,26 @@ export default function Repurpose() {
   const [loading, setLoading] = useState(false);
   const { models, default: defaultModel } = useTextModels("gemini-3-flash-preview");
   const [model, setModel] = useState("");
+  const [rssOpen, setRssOpen] = useState(false);
+  const [rssUrl, setRssUrl] = useState("");
+  const [rssItems, setRssItems] = useState([]);
+  const [rssLoading, setRssLoading] = useState(false);
 
   const toggle = (k) => setSelected((s) => (s.includes(k) ? s.filter((x) => x !== k) : [...s, k]));
+
+  const fetchFeed = async () => {
+    if (!rssUrl.trim()) return;
+    setRssLoading(true); setRssItems([]);
+    try {
+      const { data } = await api.post("/rss/import", { url: rssUrl, limit: 10 });
+      setRssItems(data.items);
+    } catch (e) { toast.error(apiErrorMessage(e, "Couldn't read that feed.")); } finally { setRssLoading(false); }
+  };
+
+  const applyRssItem = (item) => {
+    setSource(`${item.title}\n\n${item.summary}${item.link ? `\n\n(${item.link})` : ""}`);
+    toast.success("Loaded into source");
+  };
 
   const run = async () => {
     if (!source.trim() || selected.length === 0) return;
@@ -37,6 +55,39 @@ export default function Repurpose() {
 
       <div className="mt-7 grid gap-6 lg:grid-cols-[minmax(0,420px)_1fr]">
         <div className="rounded-xl border border-white/10 bg-[#121212] p-5">
+          <button onClick={() => setRssOpen((o) => !o)} data-testid="repurpose-rss-toggle"
+            className="flex w-full items-center justify-between text-left">
+            <span className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">
+              <Rss size={13} /> Import from RSS
+            </span>
+            {rssOpen ? <ChevronUp size={14} className="text-zinc-500" /> : <ChevronDown size={14} className="text-zinc-500" />}
+          </button>
+          {rssOpen && (
+            <div className="mt-3">
+              <div className="flex gap-2">
+                <input value={rssUrl} onChange={(e) => setRssUrl(e.target.value)} onKeyDown={(e) => e.key === "Enter" && fetchFeed()}
+                  placeholder="https://example.com/feed.xml" data-testid="repurpose-rss-url"
+                  className="min-w-0 flex-1 rounded-lg border border-white/10 bg-[#0A0A0A] px-3 py-2 text-sm text-white outline-none focus:border-lime" />
+                <Button onClick={fetchFeed} disabled={rssLoading} data-testid="repurpose-rss-fetch"
+                  className="flex-shrink-0 gap-2 rounded-lg border border-white/10 bg-white/5 px-3 text-sm text-white hover:bg-white/10">
+                  {rssLoading ? <Loader2 size={15} className="animate-spin" /> : "Fetch"}
+                </Button>
+              </div>
+              {rssItems.length > 0 && (
+                <div className="mt-3 max-h-52 space-y-1.5 overflow-y-auto">
+                  {rssItems.map((item, i) => (
+                    <button key={i} onClick={() => applyRssItem(item)} data-testid={`repurpose-rss-item-${i}`}
+                      className="block w-full rounded-lg border border-white/10 bg-[#0A0A0A] p-2.5 text-left hover:border-lime/40">
+                      <div className="truncate text-xs font-medium text-white">{item.title}</div>
+                      {item.summary && <div className="mt-0.5 line-clamp-1 text-[11px] text-zinc-500">{item.summary}</div>}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          <div className="my-4 h-px bg-white/10" />
+
           <label className="font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">Source content</label>
           <textarea data-testid="repurpose-source" value={source} onChange={(e) => setSource(e.target.value)} rows={10}
             placeholder="Paste a blog post, transcript, newsletter, raw notes, or a rough idea…"

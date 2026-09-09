@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api } from "@/lib/api";
+import { api, apiErrorMessage } from "@/lib/api";
 import { platformOf } from "@/lib/platforms";
 import { Button } from "@/components/ui/button";
-import { ChevronLeft, ChevronRight, Plus, CalendarDays } from "lucide-react";
+import { toast } from "sonner";
+import { ChevronLeft, ChevronRight, Plus, CalendarDays, Trash2, CheckSquare, Square, Loader2 } from "lucide-react";
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -11,6 +12,8 @@ export default function CalendarPage() {
   const navigate = useNavigate();
   const [cursor, setCursor] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
   const [posts, setPosts] = useState([]);
+  const [selected, setSelected] = useState([]);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   const load = async () => {
     const [sc, pub] = await Promise.all([
@@ -20,6 +23,25 @@ export default function CalendarPage() {
     setPosts([...sc.data, ...pub.data].filter((p) => p.scheduled_time));
   };
   useEffect(() => { load(); }, []);
+
+  const upcoming = useMemo(
+    () => posts.filter((p) => p.status === "scheduled").sort((a, b) => a.scheduled_time.localeCompare(b.scheduled_time)),
+    [posts]
+  );
+
+  const toggleSelect = (id) => setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+  const toggleSelectAll = () => setSelected((s) => (s.length === upcoming.length ? [] : upcoming.map((p) => p.id)));
+
+  const bulkDelete = async () => {
+    if (selected.length === 0) return;
+    setBulkDeleting(true);
+    try {
+      const { data } = await api.post("/posts/bulk-delete", { ids: selected });
+      toast.success(`Deleted ${data.deleted} post${data.deleted === 1 ? "" : "s"}`);
+      setSelected([]);
+      await load();
+    } catch (e) { toast.error(apiErrorMessage(e, "Bulk delete failed.")); } finally { setBulkDeleting(false); }
+  };
 
   const grid = useMemo(() => {
     const year = cursor.getFullYear(); const month = cursor.getMonth();
@@ -103,6 +125,44 @@ export default function CalendarPage() {
       {posts.length === 0 && (
         <div className="mt-6 flex items-center justify-center gap-2 rounded-xl border border-dashed border-white/10 p-8 text-sm text-zinc-600">
           <CalendarDays size={16} /> Nothing scheduled yet. Create a post and pick a date.
+        </div>
+      )}
+
+      {upcoming.length > 0 && (
+        <div className="mt-6 rounded-xl border border-white/10 bg-[#121212]" data-testid="cal-upcoming">
+          <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+            <button onClick={toggleSelectAll} data-testid="cal-select-all"
+              className="flex items-center gap-2 text-xs font-medium text-zinc-400 hover:text-white">
+              {selected.length === upcoming.length ? <CheckSquare size={15} className="text-lime" /> : <Square size={15} />}
+              Upcoming posts &middot; {upcoming.length}
+            </button>
+            {selected.length > 0 && (
+              <Button variant="ghost" onClick={bulkDelete} disabled={bulkDeleting} data-testid="cal-bulk-delete"
+                className="h-8 gap-1.5 rounded-lg px-3 text-xs text-magic hover:bg-magic/10">
+                {bulkDeleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />} Delete {selected.length}
+              </Button>
+            )}
+          </div>
+          <div className="divide-y divide-white/[0.06]">
+            {upcoming.map((p) => {
+              const pk = p.platforms[0] || "twitter"; const P = platformOf(pk); const I = P.icon;
+              const on = selected.includes(p.id);
+              return (
+                <div key={p.id} className="flex items-center gap-3 px-4 py-2.5" data-testid={`cal-upcoming-${p.id}`}>
+                  <button onClick={() => toggleSelect(p.id)} data-testid={`cal-select-${p.id}`} className="flex-shrink-0 text-zinc-500 hover:text-white">
+                    {on ? <CheckSquare size={16} className="text-lime" /> : <Square size={16} />}
+                  </button>
+                  <I size={13} style={{ color: P.color }} className="flex-shrink-0" />
+                  <button onClick={() => navigate("/composer", { state: { postId: p.id } })} className="min-w-0 flex-1 truncate text-left text-sm text-zinc-300 hover:text-white">
+                    {p.content || p.title}
+                  </button>
+                  <span className="flex-shrink-0 font-mono text-[11px] text-zinc-500">
+                    {new Date(p.scheduled_time).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>

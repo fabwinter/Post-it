@@ -8,6 +8,7 @@ import json
 import re
 import logging
 import requests
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
@@ -424,6 +425,69 @@ async def ai_visual(req: VisualRequest):
     return {"data": data}
 
 
+TEMPLATE_GUIDES = {
+    "hooks": "a punchy, scroll-stopping single-line hook followed by 1-2 sentences of payoff. No fluff.",
+    "story": "a short narrative arc: a specific moment, the tension or mistake, what changed, and the lesson.",
+    "listicle": "a numbered list post (e.g. '5 things...'), each point a single punchy line.",
+    "contrarian": "a contrarian take that challenges a common belief in the topic's space, backed by one sharp reason.",
+    "how_to": "a clear how-to post: the outcome promised in the first line, then 3-5 concrete steps.",
+}
+
+
+class TemplateRequest(BaseModel):
+    topic: str
+    template: str = "hooks"  # hooks | story | listicle | contrarian | how_to
+    platform: str = "twitter"
+    count: Optional[int] = 7
+    model: Optional[str] = None
+
+
+@api_router.post("/ai/templates")
+async def ai_templates(req: TemplateRequest):
+    style = TEMPLATE_GUIDES.get(req.template, TEMPLATE_GUIDES["hooks"])
+    guide = PLATFORM_GUIDE.get(req.platform, "Write a high-quality social media post.")
+    n = max(1, min(int(req.count or 7), 14))
+    system = (
+        f"You are a viral content strategist. Write {n} distinct {req.platform} posts about the given topic, "
+        f"each following this template: {style} Platform rules: {guide} "
+        f'Return ONLY JSON: {{"posts": [{n} strings, each a complete ready-to-publish post]}}. No explanations.'
+    )
+    content = await chat(
+        [{"role": "system", "content": system}, {"role": "user", "content": req.topic}],
+        req.model or CHAT_MODEL, 0.9, 2200,
+    )
+    data = _extract_json(content)
+    posts = data.get("posts") if data else None
+    if not posts:
+        posts = [p.strip() for p in re.split(r"\n\s*\n|\n\d+[\.\)]\s*", content) if p.strip()]
+    return {"posts": [{"day": i + 1, "content": p} for i, p in enumerate(posts[:n])]}
+
+
+class CoachRequest(BaseModel):
+    content: str
+    platform: Optional[str] = "general"
+    model: Optional[str] = None
+
+
+@api_router.post("/ai/coach")
+async def ai_coach(req: CoachRequest):
+    guide = PLATFORM_GUIDE.get(req.platform, "General social media best practices.")
+    system = (
+        "You are a blunt, expert social media coach who has studied a million viral posts. "
+        f"Critique the given draft honestly. Platform context: {guide} "
+        'Return ONLY JSON: {"score": integer 0-100, "strengths": [2-3 short strings], '
+        '"improvements": [2-3 short specific actionable strings], "hook_rewrite": "a stronger rewritten opening line"}'
+    )
+    content = await chat(
+        [{"role": "system", "content": system}, {"role": "user", "content": req.content}],
+        req.model or CHAT_MODEL, 0.7,
+    )
+    data = _extract_json(content)
+    if not data:
+        data = {"score": None, "strengths": [], "improvements": [content.strip()], "hook_rewrite": ""}
+    return {"data": data}
+
+
 @api_router.get("/proxy-image")
 async def proxy_image(url: str):
     r = await asyncio.to_thread(lambda: requests.get(url, timeout=90))
@@ -512,6 +576,67 @@ async def list_media(limit: int = 60):
     return [_row_to_generation(r) for r in rows]
 
 
+# ---------------- RSS import ----------------
+def _local(tag: str) -> str:
+    return tag.split("}")[-1] if "}" in tag else tag
+
+
+def _child_text(el, name: str) -> str:
+    for child in el:
+        if _local(child.tag) == name and child.text:
+            return child.text.strip()
+    return ""
+
+
+def _child_link(el) -> str:
+    # RSS: <link>https://...</link> as element text. Atom: <link href="https://.../">.
+    for child in el:
+        if _local(child.tag) == "link":
+            if child.text and child.text.strip():
+                return child.text.strip()
+            href = child.get("href")
+            if href:
+                return href
+    return ""
+
+
+def _parse_feed(xml_text: str, limit: int):
+    root = ET.fromstring(xml_text)
+    entries = [el for el in root.iter() if _local(el.tag) in ("item", "entry")]
+    items = []
+    for el in entries[:limit]:
+        summary = _child_text(el, "description") or _child_text(el, "summary") or _child_text(el, "content")
+        items.append({
+            "title": _child_text(el, "title"),
+            "link": _child_link(el),
+            "summary": summary[:600],
+            "published": _child_text(el, "pubDate") or _child_text(el, "updated") or _child_text(el, "published"),
+        })
+    return items
+
+
+class RssImportRequest(BaseModel):
+    url: str
+    limit: Optional[int] = 10
+
+
+@api_router.post("/rss/import")
+async def rss_import(req: RssImportRequest):
+    limit = max(1, min(int(req.limit or 10), 30))
+    resp = await asyncio.to_thread(
+        lambda: requests.get(req.url, timeout=30, headers={"User-Agent": "CreateOS/1.0"})
+    )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Could not fetch that feed (HTTP {resp.status_code})")
+    try:
+        items = _parse_feed(resp.text, limit)
+    except ET.ParseError as e:
+        raise HTTPException(status_code=400, detail=f"That doesn't look like a valid RSS/Atom feed: {e}")
+    if not items:
+        raise HTTPException(status_code=400, detail="No items found in that feed")
+    return {"items": items}
+
+
 # ---------------- Posts CRUD ----------------
 @api_router.post("/posts", response_model=Post)
 async def create_post(inp: PostCreate):
@@ -567,6 +692,19 @@ async def delete_post(post_id: str):
     return {"ok": True}
 
 
+class BulkDeleteRequest(BaseModel):
+    ids: List[str]
+
+
+@api_router.post("/posts/bulk-delete")
+async def bulk_delete_posts(req: BulkDeleteRequest):
+    if not req.ids:
+        return {"deleted": 0}
+    placeholders = ",".join(["?"] * len(req.ids))
+    rows, _ = await d1_query(f"DELETE FROM posts WHERE id IN ({placeholders}) RETURNING id", req.ids)
+    return {"deleted": len(rows)}
+
+
 @api_router.get("/stats")
 async def get_stats():
     rows, _ = await d1_query(
@@ -582,6 +720,50 @@ async def get_stats():
         "total": r["total"], "drafts": r["drafts"], "scheduled": r["scheduled"],
         "published": r["published"], "media": r["media"],
     }
+
+
+# ---------------- Connections (Phase 0: status only, no OAuth yet) ----------------
+SUPPORTED_PLATFORMS = ["twitter", "linkedin", "instagram", "tiktok", "youtube", "threads", "facebook"]
+
+
+@api_router.get("/connections")
+async def list_connections():
+    rows, _ = await d1_query("SELECT * FROM connections")
+    by_platform = {r["platform"]: r for r in rows}
+    return [
+        {
+            "platform": p,
+            "status": (by_platform.get(p) or {}).get("status", "not_connected"),
+            "account_name": (by_platform.get(p) or {}).get("account_name"),
+        }
+        for p in SUPPORTED_PLATFORMS
+    ]
+
+
+# ---------------- Scheduler ----------------
+# Wired to Vercel Cron (see vercel.json). Reports which scheduled posts are
+# due and why they weren't published, rather than faking a "published" state
+# — there is no real publisher yet (Phase 1: needs OAuth per platform).
+@api_router.get("/cron/publish-due")
+async def cron_publish_due(request: Request):
+    secret = os.environ.get("CRON_SECRET")
+    if secret and request.headers.get("authorization") != f"Bearer {secret}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    rows, _ = await d1_query(
+        "SELECT * FROM posts WHERE status = 'scheduled' AND scheduled_time <= ? ORDER BY scheduled_time ASC LIMIT 50",
+        [now_iso()],
+    )
+    conn_rows, _ = await d1_query("SELECT * FROM connections WHERE status = 'connected'")
+    connected_platforms = {r["platform"] for r in conn_rows}
+
+    results = []
+    for row in rows:
+        post = _row_to_post(row)
+        live = [p for p in post["platforms"] if p in connected_platforms]
+        outcome = "not_yet_implemented" if live else "no_connected_platform"
+        results.append({"id": post["id"], "outcome": outcome, "platforms": post["platforms"]})
+    return {"checked_at": now_iso(), "due_count": len(rows), "results": results}
 
 
 app.include_router(api_router)

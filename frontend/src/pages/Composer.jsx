@@ -7,7 +7,7 @@ import { PostPreview } from "@/components/PostPreview";
 import { ModelPicker } from "@/components/ModelPicker";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { Sparkles, Loader2, Save, CalendarClock, Send, Wand2, Trash2, X } from "lucide-react";
+import { Sparkles, Loader2, Save, CalendarClock, Send, Wand2, Trash2, X, GraduationCap } from "lucide-react";
 
 export default function Composer() {
   const location = useLocation();
@@ -26,6 +26,8 @@ export default function Composer() {
   const [brief, setBrief] = useState(state.brief || "");
   const { models, default: defaultModel } = useTextModels("gemini-3-flash-preview");
   const [model, setModel] = useState("");
+  const [coach, setCoach] = useState(null);
+  const [coachLoading, setCoachLoading] = useState(false);
 
   useEffect(() => {
     if (state.postId) {
@@ -55,6 +57,15 @@ export default function Composer() {
       const { data } = await api.post("/ai/write", { brief: useBrief, platform: platforms[0] || "twitter", tone: "engaging", model: model || defaultModel });
       setContent(data.content);
     } catch (e) { toast.error(apiErrorMessage(e, "AI write failed.")); } finally { setAiLoading(false); }
+  };
+
+  const runCoach = async () => {
+    if (!content.trim()) { toast.error("Write something first."); return; }
+    setCoachLoading(true); setCoach(null);
+    try {
+      const { data } = await api.post("/ai/coach", { content, platform: platforms[0] || "general", model: model || defaultModel });
+      setCoach(data.data);
+    } catch (e) { toast.error(apiErrorMessage(e, "Coach feedback failed.")); } finally { setCoachLoading(false); }
   };
 
   const buildPayload = (status) => ({
@@ -121,7 +132,45 @@ export default function Composer() {
                 className="gap-2 rounded-lg bg-iris/90 font-semibold text-[#0A0A0A] hover:bg-iris">
                 {aiLoading ? <Loader2 size={16} className="animate-spin" /> : <Wand2 size={16} />} AI write
               </Button>
+              <Button variant="secondary" onClick={runCoach} disabled={coachLoading} data-testid="composer-coach"
+                className="gap-2 rounded-lg border border-white/10 bg-white/5 text-white hover:bg-white/10">
+                {coachLoading ? <Loader2 size={16} className="animate-spin" /> : <GraduationCap size={16} />} Coach
+              </Button>
             </div>
+
+            {coach && (
+              <div className="mt-4 rounded-lg border border-white/10 bg-[#0A0A0A] p-4" data-testid="composer-coach-panel">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">Coach feedback</span>
+                  {typeof coach.score === "number" && (
+                    <span className={`font-display text-lg font-semibold ${coach.score >= 70 ? "text-lime" : coach.score >= 40 ? "text-amber-400" : "text-magic"}`}>{coach.score}/100</span>
+                  )}
+                </div>
+                {coach.strengths?.length > 0 && (
+                  <div className="mt-3">
+                    <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-lime">Working</div>
+                    <ul className="mt-1.5 space-y-1 text-sm text-zinc-300">
+                      {coach.strengths.map((s, i) => <li key={i}>&bull; {s}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {coach.improvements?.length > 0 && (
+                  <div className="mt-3">
+                    <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-amber-400">Fix</div>
+                    <ul className="mt-1.5 space-y-1 text-sm text-zinc-300">
+                      {coach.improvements.map((s, i) => <li key={i}>&bull; {s}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {coach.hook_rewrite && (
+                  <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-white/10 bg-[#121212] p-3">
+                    <span className="text-sm italic text-zinc-200">&ldquo;{coach.hook_rewrite}&rdquo;</span>
+                    <Button variant="secondary" onClick={() => setContent(coach.hook_rewrite + "\n\n" + content)}
+                      className="h-7 flex-shrink-0 rounded-md border border-white/10 bg-white/5 px-2.5 text-xs text-white hover:bg-white/10">Use</Button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {mediaUrl && (
