@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { api, pollTask } from "@/lib/api";
+import { api, pollTask, apiErrorMessage } from "@/lib/api";
 import { PLATFORM_LIST } from "@/lib/platforms";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -58,7 +58,7 @@ function TextGen() {
     try {
       const { data } = await api.post("/ai/write", { brief, platform, tone });
       setOut(data.content);
-    } catch { toast.error("Generation failed."); } finally { setLoading(false); }
+    } catch (e) { toast.error(apiErrorMessage(e, "Generation failed.")); } finally { setLoading(false); }
   };
 
   return (
@@ -210,7 +210,7 @@ function MediaGen({ kind }) {
       setStatus("finished");
       toast.success(`${kind} generated`);
     } catch (e) {
-      toast.error(e.message || "Generation failed");
+      toast.error(apiErrorMessage(e, "Generation failed"));
       setStatus("failed");
     } finally { setLoading(false); }
   };

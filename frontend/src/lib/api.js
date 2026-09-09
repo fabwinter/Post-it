@@ -8,6 +8,13 @@ export const API = `${BACKEND_URL}/api`;
 
 export const api = axios.create({ baseURL: API });
 
+// FastAPI errors arrive as { detail: "..." } in the response body — axios's
+// own e.message is usually just "Request failed with status code 500",
+// so pull the real reason out when there is one.
+export function apiErrorMessage(e, fallback) {
+  return e?.response?.data?.detail || e?.message || fallback;
+}
+
 export async function pollTask(taskId, onUpdate, { interval = 3000, timeout = 360000 } = {}) {
   const start = Date.now();
   // eslint-disable-next-line no-constant-condition
