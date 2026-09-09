@@ -131,6 +131,10 @@ export const VisualCard = forwardRef(function VisualCard(
   // a reel scene.
   const isCover = t === "cover";
   const total = spec.total || 1;
+  // A carousel's cover is slide 0 of N+1; a reel storyboard has no cover, so
+  // its scenes are 1..N. `coverCounts` says which numbering this card is in.
+  const hasCover = spec.coverCounts !== false;
+  const dot = hasCover ? (spec.index || 0) : (spec.index || 1) - 1;
   return (
     <div ref={ref} className={`relative flex h-full w-full flex-col justify-between ${className}`} style={{ ...base, ...pad }}>
       {spec.image_url && (
@@ -139,7 +143,7 @@ export const VisualCard = forwardRef(function VisualCard(
       )}
       <div className="absolute inset-0" style={patt} />
       <div className="relative flex items-center justify-between font-mono" style={{ color: theme.accent, fontSize: f(11), letterSpacing: f(2) }}>
-        <span>{isCover ? "SWIPE →" : total > 1 ? `${spec.index}/${total - (spec.coverCounts === false ? 0 : 1)}` : ""}</span>
+        <span>{isCover ? "SWIPE →" : total > 1 ? `${spec.index}/${hasCover ? total - 1 : total}` : ""}</span>
         <span style={{ color: theme.sub }}>{wordmark(brand)}</span>
       </div>
       <div className="relative flex flex-1 flex-col justify-center">
@@ -155,7 +159,7 @@ export const VisualCard = forwardRef(function VisualCard(
       {total > 1 && (
         <div className="relative flex" style={{ gap: f(6) }}>
           {Array.from({ length: total }).map((_, i) => (
-            <span key={i} style={{ height: f(4), flex: 1, borderRadius: f(4), background: i === (spec.index || 0) ? theme.accent : "rgba(150,150,150,0.3)" }} />
+            <span key={i} style={{ height: f(4), flex: 1, borderRadius: f(4), background: i === dot ? theme.accent : "rgba(150,150,150,0.3)" }} />
           ))}
         </div>
       )}
