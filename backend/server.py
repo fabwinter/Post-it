@@ -25,6 +25,8 @@ CF_API_TOKEN = os.environ.get('CF_API_TOKEN')
 POYO_API_KEY = os.environ.get('POYO_API_KEY')
 POYO_BASE_URL = os.environ.get('POYO_BASE_URL', 'https://api.poyo.ai')
 
+PEXELS_API_KEY = os.environ.get('PEXELS_API_KEY')
+
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
@@ -386,7 +388,7 @@ def _row_to_generation(row: dict):
 # Text kinds have no PoYo task behind them, so they land already finished with
 # their result in `output`. task_id stays '' rather than NULL because the column
 # predates them and is NOT NULL.
-TEXT_KINDS = ("ideate", "write", "repurpose", "templates", "coach", "visual", "post_plan")
+TEXT_KINDS = ("ideate", "write", "repurpose", "templates", "coach", "visual", "post_plan", "restyle")
 
 
 async def record_generation(kind: str, prompt: str, model: str, output: Any = None,
@@ -585,13 +587,26 @@ async def ai_visual(req: VisualRequest):
     return {"data": data, "generation_id": gid}
 
 
+# Keyed the same as the frontend's TEMPLATES card list — style is the prompt
+# instruction, label/desc are display copy served via GET /template-styles so
+# the two never drift apart.
 TEMPLATE_GUIDES = {
-    "hooks": "a punchy, scroll-stopping single-line hook followed by 1-2 sentences of payoff. No fluff.",
-    "story": "a short narrative arc: a specific moment, the tension or mistake, what changed, and the lesson.",
-    "listicle": "a numbered list post (e.g. '5 things...'), each point a single punchy line.",
-    "contrarian": "a contrarian take that challenges a common belief in the topic's space, backed by one sharp reason.",
-    "how_to": "a clear how-to post: the outcome promised in the first line, then 3-5 concrete steps.",
+    "hooks": {"label": "Hooks", "desc": "Scroll-stopping one-liners",
+              "style": "a punchy, scroll-stopping single-line hook followed by 1-2 sentences of payoff. No fluff."},
+    "story": {"label": "Story Arc", "desc": "Moment, tension, lesson",
+              "style": "a short narrative arc: a specific moment, the tension or mistake, what changed, and the lesson."},
+    "listicle": {"label": "Listicle", "desc": "Numbered, punchy points",
+                 "style": "a numbered list post (e.g. '5 things...'), each point a single punchy line."},
+    "contrarian": {"label": "Contrarian", "desc": "Challenge the consensus",
+                   "style": "a contrarian take that challenges a common belief in the topic's space, backed by one sharp reason."},
+    "how_to": {"label": "How-To", "desc": "Outcome, then steps",
+               "style": "a clear how-to post: the outcome promised in the first line, then 3-5 concrete steps."},
 }
+
+
+@api_router.get("/template-styles")
+async def template_styles():
+    return {"templates": [{"key": k, **v} for k, v in TEMPLATE_GUIDES.items()]}
 
 
 class TemplateRequest(BaseModel):
@@ -605,7 +620,7 @@ class TemplateRequest(BaseModel):
 
 @api_router.post("/ai/templates")
 async def ai_templates(req: TemplateRequest):
-    style = TEMPLATE_GUIDES.get(req.template, TEMPLATE_GUIDES["hooks"])
+    style = TEMPLATE_GUIDES.get(req.template, TEMPLATE_GUIDES["hooks"])["style"]
     guide = PLATFORM_GUIDE.get(req.platform, "Write a high-quality social media post.")
     n = max(1, min(int(req.count or 7), 14))
     system = (
@@ -629,6 +644,40 @@ async def ai_templates(req: TemplateRequest):
         meta={"template": req.template, "platform": req.platform},
     )
     return {"posts": out, "generation_id": gid}
+
+
+class RestyleRequest(BaseModel):
+    content: str
+    template: str = "hooks"  # one of TEMPLATE_GUIDES
+    platform: str = "twitter"
+    model: Optional[str] = None
+    use_brand: bool = True
+
+
+@api_router.post("/ai/restyle")
+async def ai_restyle(req: RestyleRequest):
+    """Rewrite an existing draft into a template's voice, rather than
+    generating fresh copy from a topic — the difference between ai_templates
+    (topic -> N new posts) and this (one draft -> the same draft, restyled)."""
+    tpl = TEMPLATE_GUIDES.get(req.template, TEMPLATE_GUIDES["hooks"])
+    guide = PLATFORM_GUIDE.get(req.platform, "Write a high-quality social media post.")
+    system = (
+        f"You are an elite editor. Rewrite the given draft as {tpl['style']} "
+        f"Keep the same core message and facts — restructure and rephrase the delivery, don't invent new claims. "
+        f"Platform rules: {guide} "
+        "Return ONLY the rewritten post text, no explanations, no quotation marks, no markdown headers."
+        + (brand_prompt(await load_brand()) if req.use_brand else "")
+    )
+    model = req.model or CHAT_MODEL
+    content = await chat(
+        [{"role": "system", "content": system}, {"role": "user", "content": req.content}], model, 0.8,
+    )
+    text = content.strip()
+    gid = await record_generation(
+        "restyle", req.content, model, output=text, title=f"{tpl['label']} restyle — {req.content[:50]}",
+        meta={"template": req.template, "platform": req.platform},
+    )
+    return {"content": text, "generation_id": gid}
 
 
 class CoachRequest(BaseModel):
@@ -666,6 +715,72 @@ async def proxy_image(url: str):
     if r.status_code != 200:
         raise HTTPException(status_code=502, detail="Could not fetch image")
     return Response(content=r.content, media_type=r.headers.get("content-type", "image/png"))
+
+
+# ---------------- Stock media (Pexels) ----------------
+# Free stock photos and video, licensed for commercial use with no attribution
+# required (credit is still returned so the UI can offer it). One provider
+# covers both media types with one free API key, unlike Unsplash (photos only)
+# — see backend/.env.example for how to get PEXELS_API_KEY.
+def _pexels_headers():
+    if not PEXELS_API_KEY:
+        raise HTTPException(status_code=500, detail="Stock media is not configured (need PEXELS_API_KEY)")
+    return {"Authorization": PEXELS_API_KEY}
+
+
+def _pexels_photo(item: dict) -> dict:
+    src = item.get("src", {})
+    return {
+        "id": f"photo-{item.get('id')}", "type": "image",
+        "url": src.get("large2x") or src.get("large") or src.get("original"),
+        "thumbnail": src.get("medium") or src.get("small"),
+        "width": item.get("width"), "height": item.get("height"),
+        "credit": item.get("photographer"), "credit_url": item.get("photographer_url"),
+        "source_url": item.get("url"),
+    }
+
+
+def _pexels_video(item: dict) -> dict:
+    files = sorted(
+        [f for f in item.get("video_files", []) if f.get("file_type") == "video/mp4"],
+        key=lambda f: f.get("width") or 0,
+    )
+    # Prefer a file around 720p — plenty for a social post and far lighter
+    # than the 4K masters Pexels also lists — falling back to whatever exists.
+    pick = next((f for f in files if (f.get("width") or 0) >= 1280), None) or (files[-1] if files else None)
+    user = item.get("user") or {}
+    return {
+        "id": f"video-{item.get('id')}", "type": "video",
+        "url": pick.get("link") if pick else None,
+        "thumbnail": item.get("image"),
+        "width": item.get("width"), "height": item.get("height"),
+        "credit": user.get("name"), "credit_url": user.get("url"),
+        "source_url": item.get("url"),
+    }
+
+
+@api_router.get("/stock/search")
+async def stock_search(q: str, type: str = "image", page: int = 1, per_page: int = 24, orientation: Optional[str] = None):
+    if type not in ("image", "video"):
+        raise HTTPException(status_code=400, detail="type must be image or video")
+    per_page = max(1, min(int(per_page), 40))
+    params = {"query": q, "page": max(1, int(page)), "per_page": per_page}
+    if orientation in ("landscape", "portrait", "square"):
+        params["orientation"] = orientation
+    base = "https://api.pexels.com/videos/search" if type == "video" else "https://api.pexels.com/v1/search"
+
+    def call():
+        r = requests.get(base, headers=_pexels_headers(), params=params, timeout=30)
+        if r.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"Pexels error {r.status_code}: {r.text[:400]}")
+        return r.json()
+
+    body = await asyncio.to_thread(call)
+    items = body.get("videos" if type == "video" else "photos", [])
+    mapper = _pexels_video if type == "video" else _pexels_photo
+    results = [mapper(it) for it in items]
+    return {"results": [r for r in results if r["url"]], "page": params["page"], "per_page": per_page,
+            "total_results": body.get("total_results", len(results))}
 
 
 @api_router.post("/ai/generate")

@@ -6,7 +6,7 @@ import { PLATFORM_LIST } from "@/lib/platforms";
 import { ModelPicker } from "@/components/ModelPicker";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { Flame, MessageCircleQuestion, ListOrdered, Swords, GraduationCap, Loader2, Copy, Send, Sparkles } from "lucide-react";
+import { Flame, MessageCircleQuestion, ListOrdered, Swords, GraduationCap, Loader2, Copy, Send, Sparkles, Wand } from "lucide-react";
 
 const TEMPLATES = [
   { key: "hooks", label: "Hooks", icon: Flame, desc: "Scroll-stopping one-liners" },
@@ -95,6 +95,13 @@ export default function Templates() {
             className="mt-5 w-full gap-2 rounded-lg bg-lime font-semibold text-[#0A0A0A] hover:bg-lime-hover">
             {loading ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />} Generate {count} posts
           </Button>
+
+          <Button variant="secondary" data-testid="templates-apply-existing"
+            onClick={() => navigate("/composer", { state: { applyTemplate: template } })}
+            className="mt-2 w-full gap-2 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
+            <Wand size={14} /> Apply this style to a draft instead
+          </Button>
+          <p className="mt-2 text-xs text-zinc-600">Already have a draft? Skip generating from a topic — open it in the Composer and restyle it as {TEMPLATES.find((t) => t.key === template)?.label}.</p>
         </div>
 
         <div className="grid gap-3 sm:grid-cols-2">

@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import {
   History, Loader2, Trash2, Star, Pencil, Send, Check, X, RefreshCw,
   Image as ImageIcon, Video, Music, Mic, Lightbulb, PenLine, Repeat, Flame,
-  GraduationCap, Shapes, LayoutTemplate,
+  GraduationCap, Shapes, LayoutTemplate, Wand,
 } from "lucide-react";
 
 const KIND_META = {
@@ -16,6 +16,7 @@ const KIND_META = {
   write: { label: "Copy", icon: PenLine },
   repurpose: { label: "Repurpose", icon: Repeat },
   templates: { label: "Templates", icon: Flame },
+  restyle: { label: "Restyle", icon: Wand },
   coach: { label: "Coach", icon: GraduationCap },
   visual: { label: "Visual", icon: Shapes },
   post_plan: { label: "Post plan", icon: LayoutTemplate },
@@ -90,7 +91,7 @@ export function HistoryDrawer() {
     setOpen(false);
     if (g.kind === "post_plan" && out) {
       navigate("/composer", { state: { plan: out } });
-    } else if (g.kind === "write") {
+    } else if (g.kind === "write" || g.kind === "restyle") {
       navigate("/composer", { state: { content: g.output || "" } });
     } else if (g.kind === "ideate" && out?.ideas?.length) {
       navigate("/composer", { state: { brief: out.ideas[0] } });

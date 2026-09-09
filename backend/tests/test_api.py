@@ -37,12 +37,27 @@ def fake_post(url, headers=None, json=None, timeout=None, **kw):
         return Resp({"data": {"task_id": "task-123", "status": "running"}})
     raise AssertionError("unexpected POST " + url)
 
-def fake_get(url, headers=None, timeout=None, **kw):
+def fake_get(url, headers=None, timeout=None, params=None, **kw):
     if "/api/generate/status/" in url:
         return Resp({"data": {"status": "finished", "progress": 100,
                               "files": [{"file_url": "https://cdn/x.png"}]}})
     if "/v1/models" in url:
         return Resp({"data": []})
+    if "api.pexels.com/v1/search" in url:
+        return Resp({"total_results": 1, "photos": [{
+            "id": 111, "width": 1000, "height": 1000, "url": "https://pexels.com/photo/111",
+            "photographer": "Ada Lovelace", "photographer_url": "https://pexels.com/@ada",
+            "src": {"large2x": "https://images.pexels.com/111-large2x.jpg", "medium": "https://images.pexels.com/111-medium.jpg"},
+        }]})
+    if "api.pexels.com/videos/search" in url:
+        return Resp({"total_results": 1, "videos": [{
+            "id": 222, "width": 1920, "height": 1080, "image": "https://images.pexels.com/222.jpg",
+            "url": "https://pexels.com/video/222", "user": {"name": "Grace Hopper", "url": "https://pexels.com/@grace"},
+            "video_files": [
+                {"file_type": "video/mp4", "width": 640, "link": "https://videos.pexels.com/222-sd.mp4"},
+                {"file_type": "video/mp4", "width": 1920, "link": "https://videos.pexels.com/222-hd.mp4"},
+            ],
+        }]})
     raise AssertionError("unexpected GET " + url)
 
 SUBMITTED = []
@@ -170,6 +185,43 @@ check("post round-trips assets", r.json()["assets"][0]["spec"]["template"] == "s
 # --- legacy: media library still only shows real media ---
 r = c.get("/api/media")
 check("media excludes text generations", all(m["task_id"] for m in r.json()), r.text[:200])
+
+# --- template styles + restyle ---
+r = c.get("/api/template-styles")
+keys = [t["key"] for t in r.json()["templates"]]
+check("template styles listed", set(keys) == {"hooks", "story", "listicle", "contrarian", "how_to"}, keys)
+check("template styles carry display copy", all("label" in t and "desc" in t for t in r.json()["templates"]))
+
+CHAT_REPLY["value"] = "Nobody remembers safe. Ship the ugly version today."
+r = c.post("/api/ai/restyle", json={"content": "You should post consistently.", "template": "contrarian", "platform": "linkedin"})
+check("restyle rewrites the draft", r.json()["content"] == "Nobody remembers safe. Ship the ugly version today.", r.text[:200])
+check("restyle auto-saved", bool(r.json().get("generation_id")), r.text)
+gid = r.json()["generation_id"]
+saved = c.get(f"/api/generations/{gid}").json()
+check("restyle recorded under its own kind", saved["kind"] == "restyle", saved)
+check("restyle keeps original prompt for context", saved["prompt"] == "You should post consistently.", saved)
+r = c.get("/api/generations?group=text")
+check("restyle shows up in text history", any(g["kind"] == "restyle" for g in r.json()))
+
+# --- stock media (Pexels) ---
+server.PEXELS_API_KEY = None
+r = c.get("/api/stock/search", params={"q": "sunset", "type": "image"})
+check("stock search reports not configured", r.status_code == 500 and "not configured" in r.json()["detail"], r.text)
+
+server.PEXELS_API_KEY = "test-key"
+r = c.get("/api/stock/search", params={"q": "sunset", "type": "image"})
+b = r.json()
+check("stock image search", len(b["results"]) == 1 and b["results"][0]["type"] == "image", b)
+check("stock image picks large url + credit", b["results"][0]["url"].endswith("large2x.jpg") and b["results"][0]["credit"] == "Ada Lovelace", b["results"][0])
+
+r = c.get("/api/stock/search", params={"q": "ocean", "type": "video", "orientation": "portrait"})
+b = r.json()
+check("stock video search", len(b["results"]) == 1 and b["results"][0]["type"] == "video", b)
+check("stock video prefers the hd file", b["results"][0]["url"].endswith("hd.mp4"), b["results"][0])
+check("stock video carries thumbnail + credit", b["results"][0]["thumbnail"] and b["results"][0]["credit"] == "Grace Hopper", b["results"][0])
+
+r = c.get("/api/stock/search", params={"q": "x", "type": "bogus"})
+check("stock search rejects a bad type", r.status_code == 400, r.text)
 
 print("\n" + ("ALL PASS" if not FAILS else f"{len(FAILS)} FAILED: {FAILS}"))
 sys.exit(1 if FAILS else 0)
