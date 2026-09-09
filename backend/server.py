@@ -2,7 +2,6 @@ from fastapi import FastAPI, APIRouter, HTTPException
 from fastapi.responses import Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import asyncio
 import json
@@ -18,9 +17,9 @@ from datetime import datetime, timezone
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+CF_ACCOUNT_ID = os.environ.get('CF_ACCOUNT_ID')
+CF_D1_DATABASE_ID = os.environ.get('CF_D1_DATABASE_ID')
+CF_API_TOKEN = os.environ.get('CF_API_TOKEN')
 
 POYO_API_KEY = os.environ.get('POYO_API_KEY')
 POYO_BASE_URL = os.environ.get('POYO_BASE_URL', 'https://api.poyo.ai')
@@ -34,6 +33,33 @@ logger = logging.getLogger(__name__)
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
+
+
+# ---------------- Cloudflare D1 client (HTTP query API, run in threadpool) ----------------
+def _d1_query(sql: str, params: Optional[list] = None):
+    if not (CF_ACCOUNT_ID and CF_D1_DATABASE_ID and CF_API_TOKEN):
+        raise HTTPException(
+            status_code=500,
+            detail="Cloudflare D1 is not configured (need CF_ACCOUNT_ID, CF_D1_DATABASE_ID, CF_API_TOKEN)",
+        )
+    url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_D1_DATABASE_ID}/query"
+    resp = requests.post(
+        url,
+        headers={"Authorization": f"Bearer {CF_API_TOKEN}", "Content-Type": "application/json"},
+        json={"sql": sql, "params": params or []},
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"D1 error {resp.status_code}: {resp.text[:400]}")
+    body = resp.json()
+    if not body.get("success"):
+        raise HTTPException(status_code=502, detail=f"D1 query failed: {str(body.get('errors'))[:400]}")
+    result = (body.get("result") or [{}])[0]
+    return result.get("results", []), result.get("meta", {})
+
+
+async def d1_query(sql: str, params: Optional[list] = None):
+    return await asyncio.to_thread(_d1_query, sql, params)
 
 
 # ---------------- PoYo client (sync helpers, run in threadpool) ----------------
@@ -169,6 +195,43 @@ class PostUpdate(BaseModel):
     scheduled_time: Optional[str] = None
     media_urls: Optional[List[str]] = None
     media_type: Optional[str] = None
+
+
+def _post_row(post: dict):
+    return [
+        post["id"], post.get("title") or "Untitled post", post.get("content") or "",
+        json.dumps(post.get("platforms") or []), post.get("status") or "draft", post.get("scheduled_time"),
+        json.dumps(post.get("media_urls") or []), post.get("media_type"),
+        post["created_at"], post["updated_at"],
+    ]
+
+
+def _row_to_post(row: dict):
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "content": row["content"],
+        "platforms": json.loads(row["platforms"] or "[]"),
+        "status": row["status"],
+        "scheduled_time": row["scheduled_time"],
+        "media_urls": json.loads(row["media_urls"] or "[]"),
+        "media_type": row["media_type"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _row_to_generation(row: dict):
+    return {
+        "id": row["id"],
+        "kind": row["kind"],
+        "prompt": row["prompt"],
+        "model": row["model"],
+        "task_id": row["task_id"],
+        "status": row["status"],
+        "files": json.loads(row["files"] or "[]"),
+        "created_at": row["created_at"],
+    }
 
 
 # ---------------- AI routes ----------------
@@ -356,7 +419,12 @@ async def ai_generate(req: GenerateRequest):
         "files": [],
         "created_at": now_iso(),
     }
-    await db.generations.insert_one({**record})
+    await d1_query(
+        "INSERT INTO generations (id, kind, prompt, model, task_id, status, files, progress, error_message, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [record["id"], record["kind"], record["prompt"], record["model"], record["task_id"], record["status"],
+         json.dumps(record["files"]), 0, None, record["created_at"]],
+    )
     return {"id": record["id"], "task_id": task_id, "status": status, "kind": req.kind}
 
 
@@ -365,9 +433,9 @@ async def ai_task(task_id: str):
     data = await asyncio.to_thread(_poyo_status, task_id)
     status = data.get("status", "running")
     files = data.get("files", []) or []
-    await db.generations.update_one(
-        {"task_id": task_id},
-        {"$set": {"status": status, "files": files, "progress": data.get("progress", 0)}},
+    await d1_query(
+        "UPDATE generations SET status = ?, files = ?, progress = ? WHERE task_id = ?",
+        [status, json.dumps(files), data.get("progress", 0), task_id],
     )
     return {
         "task_id": task_id,
@@ -380,60 +448,82 @@ async def ai_task(task_id: str):
 
 @api_router.get("/media")
 async def list_media(limit: int = 60):
-    docs = await db.generations.find({"status": "finished"}, {"_id": 0}).sort("created_at", -1).to_list(limit)
-    return docs
+    rows, _ = await d1_query(
+        "SELECT * FROM generations WHERE status = 'finished' ORDER BY created_at DESC LIMIT ?", [limit]
+    )
+    return [_row_to_generation(r) for r in rows]
 
 
 # ---------------- Posts CRUD ----------------
 @api_router.post("/posts", response_model=Post)
 async def create_post(inp: PostCreate):
     post = Post(**{k: v for k, v in inp.model_dump().items() if v is not None})
-    await db.posts.insert_one({**post.model_dump()})
+    await d1_query(
+        "INSERT INTO posts (id, title, content, platforms, status, scheduled_time, media_urls, media_type, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        _post_row(post.model_dump()),
+    )
     return post
 
 
 @api_router.get("/posts", response_model=List[Post])
 async def list_posts(status: Optional[str] = None):
-    query = {"status": status} if status else {}
-    docs = await db.posts.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
-    return docs
+    if status:
+        rows, _ = await d1_query("SELECT * FROM posts WHERE status = ? ORDER BY created_at DESC LIMIT 500", [status])
+    else:
+        rows, _ = await d1_query("SELECT * FROM posts ORDER BY created_at DESC LIMIT 500")
+    return [_row_to_post(r) for r in rows]
 
 
 @api_router.get("/posts/{post_id}", response_model=Post)
 async def get_post(post_id: str):
-    doc = await db.posts.find_one({"id": post_id}, {"_id": 0})
-    if not doc:
+    rows, _ = await d1_query("SELECT * FROM posts WHERE id = ?", [post_id])
+    if not rows:
         raise HTTPException(status_code=404, detail="Post not found")
-    return doc
+    return _row_to_post(rows[0])
 
 
 @api_router.put("/posts/{post_id}", response_model=Post)
 async def update_post(post_id: str, upd: PostUpdate):
     changes = {k: v for k, v in upd.model_dump().items() if v is not None}
     changes["updated_at"] = now_iso()
-    result = await db.posts.update_one({"id": post_id}, {"$set": changes})
-    if result.matched_count == 0:
+    set_clauses = []
+    params = []
+    for k, v in changes.items():
+        if k in ("platforms", "media_urls"):
+            v = json.dumps(v)
+        set_clauses.append(f"{k} = ?")
+        params.append(v)
+    params.append(post_id)
+    rows, _ = await d1_query(f"UPDATE posts SET {', '.join(set_clauses)} WHERE id = ? RETURNING *", params)
+    if not rows:
         raise HTTPException(status_code=404, detail="Post not found")
-    doc = await db.posts.find_one({"id": post_id}, {"_id": 0})
-    return doc
+    return _row_to_post(rows[0])
 
 
 @api_router.delete("/posts/{post_id}")
 async def delete_post(post_id: str):
-    result = await db.posts.delete_one({"id": post_id})
-    if result.deleted_count == 0:
+    rows, _ = await d1_query("DELETE FROM posts WHERE id = ? RETURNING id", [post_id])
+    if not rows:
         raise HTTPException(status_code=404, detail="Post not found")
     return {"ok": True}
 
 
 @api_router.get("/stats")
 async def get_stats():
-    total = await db.posts.count_documents({})
-    drafts = await db.posts.count_documents({"status": "draft"})
-    scheduled = await db.posts.count_documents({"status": "scheduled"})
-    published = await db.posts.count_documents({"status": "published"})
-    media = await db.generations.count_documents({"status": "finished"})
-    return {"total": total, "drafts": drafts, "scheduled": scheduled, "published": published, "media": media}
+    rows, _ = await d1_query(
+        "SELECT "
+        "(SELECT COUNT(*) FROM posts) AS total, "
+        "(SELECT COUNT(*) FROM posts WHERE status='draft') AS drafts, "
+        "(SELECT COUNT(*) FROM posts WHERE status='scheduled') AS scheduled, "
+        "(SELECT COUNT(*) FROM posts WHERE status='published') AS published, "
+        "(SELECT COUNT(*) FROM generations WHERE status='finished') AS media"
+    )
+    r = rows[0]
+    return {
+        "total": r["total"], "drafts": r["drafts"], "scheduled": r["scheduled"],
+        "published": r["published"], "media": r["media"],
+    }
 
 
 app.include_router(api_router)
@@ -445,8 +535,3 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
