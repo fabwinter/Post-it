@@ -90,6 +90,13 @@ def _poyo_chat(messages: List[Dict[str, str]], model: str, temperature: float = 
     return choices[0]["message"]["content"]
 
 
+def _poyo_models():
+    resp = requests.get(f"{POYO_BASE_URL}/v1/models", headers=_poyo_headers(), timeout=30)
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"PoYo models error {resp.status_code}: {resp.text[:400]}")
+    return resp.json()
+
+
 def _poyo_submit(model: str, input_payload: Dict[str, Any]):
     resp = requests.post(
         f"{POYO_BASE_URL}/api/generate/submit",
@@ -147,17 +154,20 @@ class IdeateRequest(BaseModel):
     topic: str
     platform: Optional[str] = "general"
     count: Optional[int] = 6
+    model: Optional[str] = None
 
 
 class WriteRequest(BaseModel):
     brief: str
     platform: str = "twitter"
     tone: Optional[str] = "engaging"
+    model: Optional[str] = None
 
 
 class RepurposeRequest(BaseModel):
     source: str
     platforms: List[str] = Field(default_factory=lambda: ["twitter", "linkedin", "instagram", "threads"])
+    model: Optional[str] = None
 
 
 class GenerateRequest(BaseModel):
@@ -246,6 +256,18 @@ async def root():
     return {"message": "CreateOS API"}
 
 
+@api_router.get("/ai/models")
+async def ai_models():
+    try:
+        body = await asyncio.to_thread(_poyo_models)
+    except HTTPException:
+        return {"models": [], "default": CHAT_MODEL}
+    raw = body.get("data", body.get("models", body))
+    items = raw if isinstance(raw, list) else raw.get("data", [])
+    ids = sorted({m.get("id") if isinstance(m, dict) else m for m in items if m})
+    return {"models": ids, "default": CHAT_MODEL}
+
+
 @api_router.post("/ai/chat")
 async def ai_chat(req: ChatRequest):
     model = req.model or CHAT_MODEL
@@ -268,7 +290,7 @@ async def ai_ideate(req: IdeateRequest):
         "No preamble, no closing remarks. Each idea is one line: a punchy hook or angle."
     )
     user = f"Give me {req.count} fresh content ideas{platform_note} about: {req.topic}"
-    content = await chat([{"role": "system", "content": system}, {"role": "user", "content": user}], CHAT_MODEL, 0.95)
+    content = await chat([{"role": "system", "content": system}, {"role": "user", "content": user}], req.model or CHAT_MODEL, 0.95)
     ideas = []
     for line in content.splitlines():
         line = line.strip()
@@ -289,7 +311,7 @@ async def ai_write(req: WriteRequest):
         f"Tone: {req.tone}. Platform rules: {guide} "
         "Return ONLY the post text, no explanations, no quotation marks, no markdown headers."
     )
-    content = await chat([{"role": "system", "content": system}, {"role": "user", "content": req.brief}], CHAT_MODEL, 0.85)
+    content = await chat([{"role": "system", "content": system}, {"role": "user", "content": req.brief}], req.model or CHAT_MODEL, 0.85)
     return {"content": content.strip()}
 
 
@@ -304,7 +326,7 @@ async def ai_repurpose(req: RepurposeRequest):
         )
         txt = await chat(
             [{"role": "system", "content": system}, {"role": "user", "content": f"Source content:\n{req.source}"}],
-            CHAT_MODEL, 0.8,
+            req.model or CHAT_MODEL, 0.8,
         )
         results[platform] = txt.strip()
     await asyncio.gather(*[one(p) for p in req.platforms])
@@ -328,6 +350,7 @@ class VisualRequest(BaseModel):
     template: str  # quote | tweet | infographic | carousel | slideshow
     topic: str
     count: Optional[int] = 5
+    model: Optional[str] = None
 
 
 @api_router.post("/ai/visual")
@@ -358,7 +381,7 @@ async def ai_visual(req: VisualRequest):
                       '{"heading": "max 40 chars", "body": "max 120 chars"}]}. The first slide is the hook/cover.')
         user = f"Topic: {req.topic}. Make exactly {n} slides."
 
-    content = await chat([{"role": "system", "content": system}, {"role": "user", "content": user}], CHAT_MODEL, 0.85)
+    content = await chat([{"role": "system", "content": system}, {"role": "user", "content": user}], req.model or CHAT_MODEL, 0.85)
     data = _extract_json(content)
     if not data:
         # graceful fallback
