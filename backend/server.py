@@ -133,6 +133,7 @@ _ADD_COLUMNS = {
         ("assets", "ALTER TABLE posts ADD COLUMN assets TEXT NOT NULL DEFAULT '[]'"),
         ("format", "ALTER TABLE posts ADD COLUMN format TEXT NOT NULL DEFAULT 'single'"),
         ("hashtags", "ALTER TABLE posts ADD COLUMN hashtags TEXT NOT NULL DEFAULT '[]'"),
+        ("brand_kit_id", "ALTER TABLE posts ADD COLUMN brand_kit_id TEXT"),
     ],
     "generations": [
         ("output", "ALTER TABLE generations ADD COLUMN output TEXT"),
@@ -143,6 +144,7 @@ _ADD_COLUMNS = {
     ],
     "brand_kits": [
         ("style", "ALTER TABLE brand_kits ADD COLUMN style TEXT"),
+        ("color_mode", "ALTER TABLE brand_kits ADD COLUMN color_mode TEXT NOT NULL DEFAULT 'dark'"),
     ],
 }
 
@@ -299,6 +301,7 @@ class IdeateRequest(BaseModel):
     count: Optional[int] = 6
     model: Optional[str] = None
     use_brand: bool = True
+    brand_kit_id: Optional[str] = None
 
 
 class WriteRequest(BaseModel):
@@ -307,6 +310,7 @@ class WriteRequest(BaseModel):
     tone: Optional[str] = "engaging"
     model: Optional[str] = None
     use_brand: bool = True
+    brand_kit_id: Optional[str] = None
 
 
 class RepurposeRequest(BaseModel):
@@ -337,6 +341,7 @@ class Post(BaseModel):
     assets: List[Dict[str, Any]] = Field(default_factory=list)
     format: str = "single"  # single | carousel | reel | story | thread
     hashtags: List[str] = Field(default_factory=list)
+    brand_kit_id: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
 
@@ -352,6 +357,7 @@ class PostCreate(BaseModel):
     assets: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
     format: Optional[str] = "single"
     hashtags: Optional[List[str]] = Field(default_factory=list)
+    brand_kit_id: Optional[str] = None
 
 
 class PostUpdate(BaseModel):
@@ -365,6 +371,7 @@ class PostUpdate(BaseModel):
     assets: Optional[List[Dict[str, Any]]] = None
     format: Optional[str] = None
     hashtags: Optional[List[str]] = None
+    brand_kit_id: Optional[str] = None
 
 
 # Post columns whose Python value is a list/dict and whose D1 value is JSON text.
@@ -377,7 +384,7 @@ def _post_row(post: dict):
         json.dumps(post.get("platforms") or []), post.get("status") or "draft", post.get("scheduled_time"),
         json.dumps(post.get("media_urls") or []), post.get("media_type"),
         json.dumps(post.get("assets") or []), post.get("format") or "single",
-        json.dumps(post.get("hashtags") or []),
+        json.dumps(post.get("hashtags") or []), post.get("brand_kit_id"),
         post["created_at"], post["updated_at"],
     ]
 
@@ -395,6 +402,7 @@ def _row_to_post(row: dict):
         "assets": json.loads(row.get("assets") or "[]"),
         "format": row.get("format") or "single",
         "hashtags": json.loads(row.get("hashtags") or "[]"),
+        "brand_kit_id": row.get("brand_kit_id"),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -489,7 +497,7 @@ async def ai_ideate(req: IdeateRequest):
         "You are a world-class social media strategist and viral content ideator. "
         "You output ONLY a numbered list of distinct, specific, scroll-stopping content ideas. "
         "No preamble, no closing remarks. Each idea is one line: a punchy hook or angle."
-        + (brand_prompt(await load_brand()) if req.use_brand else "")
+        + (brand_prompt(await load_brand(req.brand_kit_id)) if req.use_brand else "")
     )
     user = f"Give me {req.count} fresh content ideas{platform_note} about: {req.topic}"
     model = req.model or CHAT_MODEL
@@ -518,7 +526,7 @@ async def ai_write(req: WriteRequest):
         f"You are an elite copywriter. Write a single ready-to-publish {req.platform} post. "
         f"Tone: {req.tone}. Platform rules: {guide} "
         "Return ONLY the post text, no explanations, no quotation marks, no markdown headers."
-        + (brand_prompt(await load_brand()) if req.use_brand else "")
+        + (brand_prompt(await load_brand(req.brand_kit_id)) if req.use_brand else "")
     )
     model = req.model or CHAT_MODEL
     content = await chat([{"role": "system", "content": system}, {"role": "user", "content": req.brief}], model, 0.85)
@@ -651,6 +659,7 @@ class TemplateRequest(BaseModel):
     count: Optional[int] = 7
     model: Optional[str] = None
     use_brand: bool = True
+    brand_kit_id: Optional[str] = None
 
 
 @api_router.post("/ai/templates")
@@ -662,7 +671,7 @@ async def ai_templates(req: TemplateRequest):
         f"You are a viral content strategist. Write {n} distinct {req.platform} posts about the given topic, "
         f"each following this template: {style} Platform rules: {guide} "
         f'Return ONLY JSON: {{"posts": [{n} strings, each a complete ready-to-publish post]}}. No explanations.'
-        + (brand_prompt(await load_brand()) if req.use_brand else "")
+        + (brand_prompt(await load_brand(req.brand_kit_id)) if req.use_brand else "")
     )
     content = await chat(
         [{"role": "system", "content": system}, {"role": "user", "content": req.topic}],
@@ -687,6 +696,7 @@ class RestyleRequest(BaseModel):
     platform: str = "twitter"
     model: Optional[str] = None
     use_brand: bool = True
+    brand_kit_id: Optional[str] = None
 
 
 @api_router.post("/ai/restyle")
@@ -701,7 +711,7 @@ async def ai_restyle(req: RestyleRequest):
         f"Keep the same core message and facts — restructure and rephrase the delivery, don't invent new claims. "
         f"Platform rules: {guide} "
         "Return ONLY the rewritten post text, no explanations, no quotation marks, no markdown headers."
-        + (brand_prompt(await load_brand()) if req.use_brand else "")
+        + (brand_prompt(await load_brand(req.brand_kit_id)) if req.use_brand else "")
     )
     model = req.model or CHAT_MODEL
     content = await chat(
@@ -1302,8 +1312,8 @@ async def ai_generate(req: GenerateRequest):
     opts = req.options or {}
     prompt = req.prompt
     if opts.get("use_brand"):
-        brand = await load_brand()
-        colors = brand.get("colors") or {}
+        brand = await load_brand(opts.get("brand_kit_id"))
+        colors = (brand.get("colors") or {}).get(brand.get("color_mode") or "dark", {})
         palette = ", ".join(v for v in [colors.get("bg"), colors.get("accent"), colors.get("fg")] if v)
         if palette:
             prompt = f"{prompt}. Colour palette: {palette}. Keep the image free of any text or lettering."
@@ -1457,12 +1467,19 @@ async def rss_import(req: RssImportRequest):
 
 
 # ---------------- Brand kit ----------------
-# One kit per workspace for now. It is the single place the app learns what the
-# brand sounds and looks like, and it feeds three different consumers: copy
-# prompts, image prompts, and the client-side visual renderer.
+# Any number of named kits per workspace, one marked default. Each kit feeds
+# three consumers: copy prompts, image prompts, and the client-side visual
+# renderer. Colors are two full palettes (dark/light) under the bg/fg/accent/
+# sub role names every renderer already speaks — labeled to the user as
+# Primary/Secondary/Tertiary/Muted, but kept under those keys so VisualCard,
+# PostPreview and the image-prompt palette injection don't need to know about
+# the rename. color_mode picks which palette this kit currently renders with.
+DEFAULT_DARK_COLORS = {"bg": "#0A0A0A", "fg": "#FFFFFF", "accent": "#E2FF3D", "sub": "#a1a1aa"}
+DEFAULT_LIGHT_COLORS = {"bg": "#FFFFFF", "fg": "#0A0A0A", "accent": "#0047FF", "sub": "#6b7280"}
 DEFAULT_BRAND = {
     "name": "Default brand",
-    "colors": {"bg": "#0A0A0A", "fg": "#FFFFFF", "accent": "#E2FF3D", "sub": "#a1a1aa"},
+    "colors": {"dark": DEFAULT_DARK_COLORS, "light": DEFAULT_LIGHT_COLORS},
+    "color_mode": "dark",
     "fonts": {"display": "Inter", "body": "Inter"},
     "logo_url": None,
     "handle": "",
@@ -1477,7 +1494,8 @@ DEFAULT_BRAND = {
 
 class BrandKitUpdate(BaseModel):
     name: Optional[str] = None
-    colors: Optional[Dict[str, str]] = None
+    colors: Optional[Dict[str, Dict[str, str]]] = None
+    color_mode: Optional[str] = None
     fonts: Optional[Dict[str, str]] = None
     logo_url: Optional[str] = None
     handle: Optional[str] = None
@@ -1487,13 +1505,28 @@ class BrandKitUpdate(BaseModel):
     hashtags: Optional[List[str]] = None
     cta: Optional[str] = None
     banned_words: Optional[List[str]] = None
+    is_default: Optional[bool] = None
+
+
+def _normalize_colors(raw) -> dict:
+    """Upgrades a legacy flat {bg,fg,accent,sub} palette (every kit saved
+    before dark/light existed) into {dark:{...}, light:{...}}."""
+    if isinstance(raw, dict) and "dark" in raw:
+        return {
+            "dark": {**DEFAULT_DARK_COLORS, **(raw.get("dark") or {})},
+            "light": {**DEFAULT_LIGHT_COLORS, **(raw.get("light") or {})},
+        }
+    flat = raw if isinstance(raw, dict) else {}
+    return {"dark": {**DEFAULT_DARK_COLORS, **flat}, "light": DEFAULT_LIGHT_COLORS}
 
 
 def _row_to_brand(row: dict):
     return {
         "id": row["id"],
         "name": row["name"],
-        "colors": json.loads(row["colors"] or "{}") or DEFAULT_BRAND["colors"],
+        "is_default": bool(row.get("is_default")),
+        "colors": _normalize_colors(json.loads(row["colors"] or "{}")),
+        "color_mode": row.get("color_mode") or "dark",
         "fonts": json.loads(row["fonts"] or "{}") or DEFAULT_BRAND["fonts"],
         "logo_url": row["logo_url"],
         "handle": row["handle"] or "",
@@ -1507,17 +1540,23 @@ def _row_to_brand(row: dict):
     }
 
 
-async def load_brand() -> dict:
-    """The brand kit, or sane defaults. Never raises — an unconfigured or
-    unreachable kit degrades to generic copy rather than a failed generation."""
+async def load_brand(brand_kit_id: Optional[str] = None) -> dict:
+    """A brand kit, or sane defaults. Never raises — an unconfigured or
+    unreachable kit degrades to generic copy rather than a failed generation.
+    An id that no longer exists (a deleted kit an old post still points at)
+    falls back to the account's default kit rather than failing."""
     try:
         await ensure_schema()
+        if brand_kit_id:
+            rows, _ = await d1_query("SELECT * FROM brand_kits WHERE id = ?", [brand_kit_id])
+            if rows:
+                return _row_to_brand(rows[0])
         rows, _ = await d1_query("SELECT * FROM brand_kits ORDER BY is_default DESC, created_at ASC LIMIT 1")
         if rows:
             return _row_to_brand(rows[0])
     except Exception:
         logger.exception("Could not load brand kit")
-    return {"id": None, **DEFAULT_BRAND, "updated_at": None}
+    return {"id": None, "is_default": True, **DEFAULT_BRAND, "updated_at": None}
 
 
 def brand_prompt(brand: dict) -> str:
@@ -1543,37 +1582,82 @@ def brand_prompt(brand: dict) -> str:
     return " BRAND CONTEXT — follow it closely: " + " ".join(bits)
 
 
-@api_router.get("/brand-kit")
-async def get_brand_kit():
-    return await load_brand()
-
-
-@api_router.put("/brand-kit")
-async def put_brand_kit(upd: BrandKitUpdate):
+@api_router.get("/brand-kits")
+async def list_brand_kits():
     await ensure_schema()
-    changes = {k: v for k, v in upd.model_dump().items() if v is not None}
-    rows, _ = await d1_query("SELECT * FROM brand_kits ORDER BY is_default DESC, created_at ASC LIMIT 1")
+    rows, _ = await d1_query("SELECT * FROM brand_kits ORDER BY is_default DESC, created_at ASC")
+    if not rows:
+        return [{"id": None, "is_default": True, **DEFAULT_BRAND, "updated_at": None}]
+    return [_row_to_brand(r) for r in rows]
+
+
+@api_router.post("/brand-kits")
+async def create_brand_kit(upd: BrandKitUpdate):
+    await ensure_schema()
+    changes = {k: v for k, v in upd.model_dump().items() if v is not None and k != "is_default"}
+    merged = {**DEFAULT_BRAND, **changes}
+    if not changes.get("name"):
+        merged["name"] = "New brand kit"
+    merged["colors"] = _normalize_colors(merged["colors"])
     ts = now_iso()
-    merged = {**DEFAULT_BRAND, **({k: v for k, v in _row_to_brand(rows[0]).items() if k != "id"} if rows else {}), **changes}
-    values = [
-        merged["name"], json.dumps(merged["colors"]), json.dumps(merged["fonts"]),
-        merged["logo_url"], merged["handle"], merged["voice"], merged["style"], merged["audience"],
-        json.dumps(merged["hashtags"]), merged["cta"], json.dumps(merged["banned_words"]), ts,
-    ]
-    if rows:
-        out, _ = await d1_query(
-            "UPDATE brand_kits SET name=?, colors=?, fonts=?, logo_url=?, handle=?, voice=?, style=?, audience=?, "
-            "hashtags=?, cta=?, banned_words=?, updated_at=? WHERE id=? RETURNING *",
-            values + [rows[0]["id"]],
-        )
-    else:
-        out, _ = await d1_query(
-            "INSERT INTO brand_kits (id, name, colors, fonts, logo_url, handle, voice, style, audience, hashtags, "
-            "cta, banned_words, updated_at, is_default, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?) RETURNING *",
-            [str(uuid.uuid4())] + values + [ts],
-        )
+    rows, _ = await d1_query("SELECT COUNT(*) AS n FROM brand_kits")
+    is_first = not rows or not rows[0]["n"]
+    out, _ = await d1_query(
+        "INSERT INTO brand_kits (id, name, colors, color_mode, fonts, logo_url, handle, voice, style, audience, "
+        "hashtags, cta, banned_words, is_default, updated_at, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
+        [str(uuid.uuid4()), merged["name"], json.dumps(merged["colors"]), merged["color_mode"],
+         json.dumps(merged["fonts"]), merged["logo_url"], merged["handle"], merged["voice"], merged["style"],
+         merged["audience"], json.dumps(merged["hashtags"]), merged["cta"], json.dumps(merged["banned_words"]),
+         1 if is_first else 0, ts, ts],
+    )
     return _row_to_brand(out[0])
+
+
+@api_router.get("/brand-kits/{kit_id}")
+async def get_brand_kit(kit_id: str):
+    await ensure_schema()
+    rows, _ = await d1_query("SELECT * FROM brand_kits WHERE id = ?", [kit_id])
+    if not rows:
+        raise HTTPException(status_code=404, detail="Brand kit not found")
+    return _row_to_brand(rows[0])
+
+
+@api_router.put("/brand-kits/{kit_id}")
+async def update_brand_kit(kit_id: str, upd: BrandKitUpdate):
+    await ensure_schema()
+    rows, _ = await d1_query("SELECT * FROM brand_kits WHERE id = ?", [kit_id])
+    if not rows:
+        raise HTTPException(status_code=404, detail="Brand kit not found")
+    changes = {k: v for k, v in upd.model_dump().items() if v is not None and k != "is_default"}
+    merged = {**_row_to_brand(rows[0]), **changes}
+    merged["colors"] = _normalize_colors(merged["colors"])
+    ts = now_iso()
+    out, _ = await d1_query(
+        "UPDATE brand_kits SET name=?, colors=?, color_mode=?, fonts=?, logo_url=?, handle=?, voice=?, style=?, "
+        "audience=?, hashtags=?, cta=?, banned_words=?, updated_at=? WHERE id=? RETURNING *",
+        [merged["name"], json.dumps(merged["colors"]), merged["color_mode"], json.dumps(merged["fonts"]),
+         merged["logo_url"], merged["handle"], merged["voice"], merged["style"], merged["audience"],
+         json.dumps(merged["hashtags"]), merged["cta"], json.dumps(merged["banned_words"]), ts, kit_id],
+    )
+    if upd.is_default:
+        await d1_query("UPDATE brand_kits SET is_default = 0 WHERE id != ?", [kit_id])
+        await d1_query("UPDATE brand_kits SET is_default = 1 WHERE id = ?", [kit_id])
+        out, _ = await d1_query("SELECT * FROM brand_kits WHERE id = ?", [kit_id])
+    return _row_to_brand(out[0])
+
+
+@api_router.delete("/brand-kits/{kit_id}")
+async def delete_brand_kit(kit_id: str):
+    await ensure_schema()
+    rows, _ = await d1_query("DELETE FROM brand_kits WHERE id = ? RETURNING is_default", [kit_id])
+    if not rows:
+        raise HTTPException(status_code=404, detail="Brand kit not found")
+    if rows[0]["is_default"]:
+        remaining, _ = await d1_query("SELECT id FROM brand_kits ORDER BY created_at ASC LIMIT 1")
+        if remaining:
+            await d1_query("UPDATE brand_kits SET is_default = 1 WHERE id = ?", [remaining[0]["id"]])
+    return {"ok": True}
 
 
 # ---------------- Generation history ----------------
@@ -1777,6 +1861,7 @@ class BuildPostRequest(BaseModel):
     model: Optional[str] = None
     use_brand: bool = True
     custom_template_id: Optional[str] = None
+    brand_kit_id: Optional[str] = None
 
 
 @api_router.get("/platform-specs")
@@ -1875,7 +1960,7 @@ async def ai_build_post(req: BuildPostRequest):
         if template["slides"]:
             n = max(spec["slides"]["min"], min(len(template["slides"]), spec["slides"]["max"]))
 
-    brand = await load_brand() if req.use_brand else {}
+    brand = await load_brand(req.brand_kit_id) if req.use_brand else {}
     brand_note = brand_prompt(brand) if brand else ""
     tone = req.tone or (brand.get("voice") if brand else "") or "confident, specific, no fluff"
 
@@ -1982,8 +2067,8 @@ async def create_post(inp: PostCreate):
     post = Post(**{k: v for k, v in inp.model_dump().items() if v is not None})
     await d1_query(
         "INSERT INTO posts (id, title, content, platforms, status, scheduled_time, media_urls, media_type, "
-        "assets, format, hashtags, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "assets, format, hashtags, brand_kit_id, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         _post_row(post.model_dump()),
     )
     return post

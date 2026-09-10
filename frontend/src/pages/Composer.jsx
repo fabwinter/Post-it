@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { toPng } from "html-to-image";
 import { api, pollTask, apiErrorMessage } from "@/lib/api";
 import { useTextModels } from "@/lib/useTextModels";
-import { useBrand } from "@/lib/useBrand";
+import { useBrandKit, useBrandKits, activeColors } from "@/lib/useBrand";
 import { PLATFORM_LIST } from "@/lib/platforms";
 import { usePlatformSpecs, specFor, aspectFor, FORMAT_LABEL, FALLBACK_SPECS } from "@/lib/platformSpecs";
 import { openHistory } from "@/lib/historyBus";
@@ -18,7 +18,7 @@ import { toast } from "sonner";
 import {
   Sparkles, Loader2, Save, CalendarClock, Send, Wand2, Trash2, X, GraduationCap,
   Plus, ChevronLeft, ChevronRight, Download, ImagePlus, History, Hash, Film, Layers,
-  Search, Wand,
+  Search, Wand, Palette, Upload, FileText, Image as ImageIcon, Presentation,
 } from "lucide-react";
 
 // Pexels only accepts these three; map a platform's aspect onto the closest one
@@ -39,7 +39,9 @@ export default function Composer() {
   const navigate = useNavigate();
   const state = location.state || {};
   const specs = usePlatformSpecs();
-  const { brand } = useBrand();
+  const [brandKitId, setBrandKitId] = useState(state.brandKitId || null);
+  const { brand } = useBrandKit(brandKitId);
+  const { kits: brandKits } = useBrandKits();
 
   const [postId, setPostId] = useState(state.postId || null);
   const [title, setTitle] = useState("Untitled post");
@@ -70,8 +72,15 @@ export default function Composer() {
   const [restyling, setRestyling] = useState(false);
   const templates = useTemplateStyles();
   const [customTemplateId, setCustomTemplateId] = useState(state.applyCustomTemplateId || null);
-  const { templates: customTemplates } = useCustomTemplates();
+  const pendingTemplateSync = useRef(!!state.applyCustomTemplateId);
+  const { templates: customTemplates, loading: customTemplatesLoading, reload: reloadCustomTemplates } = useCustomTemplates();
+  const [templateUploadType, setTemplateUploadType] = useState("pptx");
+  const [templateUploading, setTemplateUploading] = useState(false);
+  const templateFileRef = useRef(null);
   const cardRef = useRef(null);
+  // Only templates built for the currently chosen format make sense to build
+  // from — a single-image template has nothing to offer a carousel.
+  const filteredCustomTemplates = customTemplates.filter((t) => t.format === format);
 
   const primary = platforms[0] || "instagram";
   const pspec = specFor(specs, primary);
@@ -100,6 +109,7 @@ export default function Composer() {
         setAssets(data.assets || []);
         setHashtags(data.hashtags || []);
         setMediaUrl((data.media_urls || [])[0] || ""); setMediaType(data.media_type || "");
+        if (data.brand_kit_id) setBrandKitId(data.brand_kit_id);
         if (data.scheduled_time) setScheduleAt(toLocalInput(data.scheduled_time));
       }).catch((e) => toast.error(apiErrorMessage(e, "Couldn't load that post.")));
       return;
@@ -125,6 +135,26 @@ export default function Composer() {
 
   useEffect(() => { if (active > assets.length - 1) setActive(Math.max(0, assets.length - 1)); }, [assets, active]);
 
+  // Keeps a selected custom template's format in sync with the composer's,
+  // in one atomic pass (two separate effects racing a plain ref against
+  // not-yet-flushed state let a stale format value slip through and clear a
+  // selection that had actually just been reconciled). Arriving from
+  // Templates.jsx with a template already picked adopts that template's
+  // format; any later mismatch (the user changed format manually) drops
+  // the selection instead.
+  useEffect(() => {
+    if (customTemplatesLoading || !customTemplateId) return;
+    const t = customTemplates.find((x) => x.id === customTemplateId);
+    if (!t) { pendingTemplateSync.current = false; setCustomTemplateId(null); return; }
+    if (t.format !== format) {
+      if (pendingTemplateSync.current) { pendingTemplateSync.current = false; setFormat(t.format); }
+      else setCustomTemplateId(null);
+      return;
+    }
+    pendingTemplateSync.current = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [format, customTemplates, customTemplatesLoading]);
+
   const togglePlatform = (k) => setPlatforms((s) => (s.includes(k) ? s.filter((x) => x !== k) : [...s, k]));
 
   const generate = async (b) => {
@@ -132,7 +162,7 @@ export default function Composer() {
     if (!useBrief.trim()) { toast.error("Add a brief or some text first."); return; }
     setAiLoading(true);
     try {
-      const { data } = await api.post("/ai/write", { brief: useBrief, platform: primary, tone: "engaging", model: model || defaultModel });
+      const { data } = await api.post("/ai/write", { brief: useBrief, platform: primary, tone: "engaging", model: model || defaultModel, brand_kit_id: brandKitId || undefined });
       setContent(data.content);
     } catch (e) { toast.error(apiErrorMessage(e, "AI write failed.")); } finally { setAiLoading(false); }
   };
@@ -144,7 +174,7 @@ export default function Composer() {
     try {
       const { data } = await api.post("/ai/build-post", {
         topic, platform: primary, format, slides: pspec.slides?.default, model: model || defaultModel,
-        custom_template_id: customTemplateId || undefined,
+        custom_template_id: customTemplateId || undefined, brand_kit_id: brandKitId || undefined,
       });
       applyPlan({ ...data, platform: primary });
       toast.success(`Built a ${FORMAT_LABEL[data.format] || data.format} for ${pspec.label}.`);
@@ -168,11 +198,30 @@ export default function Composer() {
     try {
       const { data } = await api.post("/ai/restyle", {
         content, template: styleTemplate, platform: primary, model: model || defaultModel,
+        brand_kit_id: brandKitId || undefined,
       });
       setContent(data.content);
       const label = templates.find((t) => t.key === styleTemplate)?.label || styleTemplate;
       toast.success(`Restyled as ${label}`);
     } catch (e) { toast.error(apiErrorMessage(e, "Restyle failed.")); } finally { setRestyling(false); }
+  };
+
+  // Upload a PPTX/PDF/image straight from the Composer and turn it into a
+  // saved template for the format currently selected, then select it —
+  // mirrors Templates.jsx's converter without leaving this page.
+  const convertFileToTemplate = async (file) => {
+    if (!file) return;
+    setTemplateUploading(true);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const { data: up } = await api.post("/upload", body);
+      const { data: tpl } = await api.post("/templates/from-file", { source_type: templateUploadType, source_url: up.url });
+      await reloadCustomTemplates();
+      if (tpl.format === format) setCustomTemplateId(tpl.id);
+      toast.success(`Template saved${tpl.format === format ? " and selected" : ` (built for ${FORMAT_LABEL[tpl.format] || tpl.format} — switch format to use it)`}.`);
+    } catch (e) { toast.error(apiErrorMessage(e, "Couldn't convert that file.")); }
+    finally { setTemplateUploading(false); if (templateFileRef.current) templateFileRef.current.value = ""; }
   };
 
   // ---- slide editing ----
@@ -246,6 +295,7 @@ export default function Composer() {
     content, platforms, status, format, assets, hashtags,
     media_urls: mediaUrl ? [mediaUrl] : [],
     media_type: mediaType || null,
+    brand_kit_id: brandKitId || null,
     scheduled_time: status === "scheduled" && scheduleAt ? new Date(scheduleAt).toISOString() : null,
   });
 
@@ -320,6 +370,20 @@ export default function Composer() {
             </button>
           ))}
         </div>
+
+        {brandKits.length > 0 && (
+          <>
+            <label className="mt-5 block font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">Brand kit</label>
+            <div className="mt-3 flex items-center gap-2">
+              <Palette size={14} className="flex-shrink-0 text-zinc-600" />
+              <select value={brandKitId || ""} onChange={(e) => setBrandKitId(e.target.value || null)} data-testid="composer-brand-kit-select"
+                className="w-full max-w-xs rounded-lg border border-white/10 bg-[#0A0A0A] px-2.5 py-1.5 text-xs text-white outline-none focus:border-lime [color-scheme:dark]">
+                {brandKits.map((k) => <option key={k.id || "default"} value={k.id || ""}>{k.name}{k.is_default ? " (default)" : ""}</option>)}
+              </select>
+              <span className="text-xs text-zinc-600">colors, fonts &amp; voice for this post</span>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_minmax(0,460px)]">
@@ -372,18 +436,33 @@ export default function Composer() {
               <span className="text-xs text-zinc-600">rewrites the draft above in that template's voice</span>
             </div>
 
-            {customTemplates.length > 0 && (
-              <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-3">
-                <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Build from</span>
-                <select value={customTemplateId || ""} onChange={(e) => setCustomTemplateId(e.target.value || null)}
-                  data-testid="composer-custom-template-select"
-                  className="rounded-lg border border-white/10 bg-[#0A0A0A] px-2.5 py-1.5 text-xs text-white outline-none focus:border-iris [color-scheme:dark]">
-                  <option value="">No template — AI picks the format</option>
-                  {customTemplates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                </select>
-                <span className="text-xs text-zinc-600">Build whole post follows its outline, theme &amp; slide count</span>
+            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-3">
+              <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Build from</span>
+              <select value={customTemplateId || ""} onChange={(e) => setCustomTemplateId(e.target.value || null)}
+                data-testid="composer-custom-template-select"
+                className="rounded-lg border border-white/10 bg-[#0A0A0A] px-2.5 py-1.5 text-xs text-white outline-none focus:border-iris [color-scheme:dark]">
+                <option value="">No template — AI picks the format</option>
+                {filteredCustomTemplates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+              {filteredCustomTemplates.length === 0 && (
+                <span className="text-xs text-zinc-600">No saved templates for {FORMAT_LABEL[format] || format} yet —</span>
+              )}
+              <input ref={templateFileRef} type="file"
+                accept={templateUploadType === "pptx" ? ".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation" : templateUploadType === "pdf" ? ".pdf,application/pdf" : "image/*"}
+                className="hidden" data-testid="composer-template-upload-input" onChange={(e) => convertFileToTemplate(e.target.files?.[0])} />
+              <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-[#0A0A0A] p-0.5">
+                {[{ k: "pptx", I: Presentation }, { k: "pdf", I: FileText }, { k: "image", I: ImageIcon }].map(({ k, I }) => (
+                  <button key={k} onClick={() => setTemplateUploadType(k)} data-testid={`composer-template-upload-type-${k}`} title={k}
+                    className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors ${templateUploadType === k ? "bg-lime/10 text-lime" : "text-zinc-500 hover:text-white"}`}>
+                    <I size={12} />
+                  </button>
+                ))}
               </div>
-            )}
+              <Button variant="secondary" onClick={() => templateFileRef.current?.click()} disabled={templateUploading} data-testid="composer-template-upload"
+                className="h-7 gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 text-xs text-white hover:bg-white/10">
+                {templateUploading ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />} Upload template
+              </Button>
+            </div>
 
             {coach && <CoachPanel coach={coach} onUseHook={(h) => setContent(h + "\n\n" + content)} />}
           </div>
@@ -395,7 +474,7 @@ export default function Composer() {
                 {format === "reel" ? "Storyboard" : format === "carousel" ? "Slides" : "Visual"}
               </span>
               <div className="flex items-center gap-1.5">
-                {THEME_LIST.concat([{ key: "brand", label: brand.name || "Brand", bg: brand.colors?.bg || "#0A0A0A" }]).map((th) => (
+                {THEME_LIST.concat([{ key: "brand", label: brand.name || "Brand", bg: activeColors(brand).bg }]).map((th) => (
                   <button key={th.key} onClick={() => setAllThemes(th.key)} title={th.label}
                     data-testid={`composer-theme-${th.key}`}
                     className={`h-6 w-6 rounded-full border transition-transform hover:scale-110 ${activeAsset?.spec?.theme === th.key ? "border-lime" : "border-white/20"}`}

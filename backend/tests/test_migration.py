@@ -40,11 +40,12 @@ check("legacy post reads back", r.status_code == 200 and r.json()[0]["assets"] =
 check("legacy post defaults format", r.json()[0]["format"] == "single", r.text[:200])
 cols = {x[1] for x in DB.execute("PRAGMA table_info(posts)")}
 check("posts altered in place", {"assets","format","hashtags"} <= cols, cols)
+check("posts gets its brand_kit_id column via the ALTER path", "brand_kit_id" in cols, cols)
 cols = {x[1] for x in DB.execute("PRAGMA table_info(generations)")}
 check("generations altered in place", {"output","title","meta","favorite","updated_at"} <= cols, cols)
 check("brand_kits created", DB.execute("SELECT count(*) FROM sqlite_master WHERE name='brand_kits'").fetchone()[0] == 1)
 cols = {x[1] for x in DB.execute("PRAGMA table_info(brand_kits)")}
-check("brand_kits gets its style column via the ALTER path", "style" in cols, cols)
+check("brand_kits gets its style and color_mode columns via the ALTER path", {"style", "color_mode"} <= cols, cols)
 check("connections created", DB.execute("SELECT count(*) FROM sqlite_master WHERE name='connections'").fetchone()[0] == 1)
 check("visual_templates created", DB.execute("SELECT count(*) FROM sqlite_master WHERE name='visual_templates'").fetchone()[0] == 1)
 check("uploads created", DB.execute("SELECT count(*) FROM sqlite_master WHERE name='uploads'").fetchone()[0] == 1)

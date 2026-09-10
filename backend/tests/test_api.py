@@ -122,15 +122,45 @@ check("all tables created", {"posts", "generations", "connections", "brand_kits"
 cols = {r[1] for r in DB.execute("PRAGMA table_info(posts)")}
 check("posts has assets/format/hashtags", {"assets", "format", "hashtags"} <= cols, cols)
 
-# --- brand kit ---
-r = c.get("/api/brand-kit")
-check("brand kit defaults", r.status_code == 200 and r.json()["colors"]["accent"] == "#E2FF3D", r.text)
-r = c.put("/api/brand-kit", json={"name": "Acme", "voice": "dry and technical",
-                                  "hashtags": ["#acme"], "banned_words": ["synergy"]})
-check("brand kit saves", r.status_code == 200 and r.json()["name"] == "Acme", r.text)
-r = c.get("/api/brand-kit")
+# --- brand kits (multiple, named, one default) ---
+# Acme ends this block back as the default kit — later tests (brand hashtag
+# merge, palette injection) expect it active, same as when this was a
+# singleton.
+r = c.get("/api/brand-kits")
+check("brand kits default list", r.status_code == 200 and len(r.json()) == 1
+      and r.json()[0]["colors"]["dark"]["accent"] == "#E2FF3D" and r.json()[0]["color_mode"] == "dark", r.text)
+
+r = c.post("/api/brand-kits", json={"name": "Acme", "voice": "dry and technical",
+                                     "hashtags": ["#acme"], "banned_words": ["synergy"]})
+check("brand kit creates and becomes default (first kit)", r.status_code == 200 and r.json()["name"] == "Acme" and r.json()["is_default"] is True, r.text)
+acme_id = r.json()["id"]
+r = c.get(f"/api/brand-kits/{acme_id}")
 check("brand kit persists", r.json()["voice"] == "dry and technical", r.text)
 check("brand_prompt renders", "dry and technical" in server.brand_prompt(r.json()), server.brand_prompt(r.json()))
+
+r = c.post("/api/brand-kits", json={"name": "Side project"})
+check("second brand kit creates, not default", r.status_code == 200 and r.json()["is_default"] is False, r.text)
+side_id = r.json()["id"]
+r = c.get("/api/brand-kits")
+check("brand kits list has both, default first", len(r.json()) == 2 and r.json()[0]["id"] == acme_id, r.text)
+
+r = c.put(f"/api/brand-kits/{side_id}", json={"is_default": True})
+check("set-default switches it", r.status_code == 200 and r.json()["is_default"] is True, r.text)
+r = c.get(f"/api/brand-kits/{acme_id}")
+check("old default is demoted", r.json()["is_default"] is False, r.text)
+
+r = c.put(f"/api/brand-kits/{acme_id}", json={"is_default": True, "color_mode": "light", "colors": {"light": {"bg": "#FFFFFF"}}})
+check("color_mode switches, light palette merges without clobbering dark, and default moves back",
+      r.json()["color_mode"] == "light" and r.json()["colors"]["light"]["bg"] == "#FFFFFF"
+      and r.json()["colors"]["dark"]["accent"] == "#E2FF3D" and r.json()["is_default"] is True, r.text)
+
+r = c.get("/api/brand-kits/does-not-exist")
+check("unknown brand kit 404s", r.status_code == 404, r.text)
+
+r = c.delete(f"/api/brand-kits/{side_id}")
+check("delete a non-default kit", r.status_code == 200, r.text)
+r = c.get("/api/brand-kits")
+check("acme remains, still the default", len(r.json()) == 1 and r.json()[0]["id"] == acme_id and r.json()[0]["is_default"] is True, r.text)
 
 # --- auto-saved text generations ---
 CHAT_REPLY["value"] = "1. First idea\n2. Second idea"
@@ -338,9 +368,11 @@ check("timeout detail is a clean message, not a raw exception repr", "ReadTimeou
 # --- brand kit: logo upload + a style field ---
 r = c.post("/api/upload", files={"file": ("logo.png", b"fakepngbytes", "image/png")})
 logo_upload = r.json()
-r = c.put("/api/brand-kit", json={"logo_url": logo_upload["url"], "style": "Minimal, high-contrast, lots of negative space."})
+r = c.post("/api/brand-kits", json={"name": "Logo test kit"})
+logo_kit_id = r.json()["id"]
+r = c.put(f"/api/brand-kits/{logo_kit_id}", json={"logo_url": logo_upload["url"], "style": "Minimal, high-contrast, lots of negative space."})
 check("brand kit accepts a logo_url and a style field", r.json()["logo_url"] == logo_upload["url"] and "negative space" in r.json()["style"], r.text[:200])
-r = c.get("/api/brand-kit")
+r = c.get(f"/api/brand-kits/{logo_kit_id}")
 check("brand kit style persists", "negative space" in r.json()["style"], r.text[:200])
 check("brand_prompt includes style", "Visual style" in server.brand_prompt(r.json()))
 
