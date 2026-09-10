@@ -9,16 +9,20 @@ import { usePlatformSpecs, specFor, aspectFor, FORMAT_LABEL, FALLBACK_SPECS } fr
 import { openHistory } from "@/lib/historyBus";
 import { PostPreview } from "@/components/PostPreview";
 import { ModelPicker } from "@/components/ModelPicker";
-import { VisualCard, ASPECT_CLASS, THEME_LIST } from "@/components/VisualCard";
+import { VisualCard, ASPECT_CLASS, THEME_LIST, themeFor } from "@/components/VisualCard";
+import { SlideEditor } from "@/components/SlideEditor";
 import { MediaPicker } from "@/components/MediaPicker";
 import { useTemplateStyles } from "@/lib/templateStyles";
 import { useCustomTemplates } from "@/lib/useCustomTemplates";
+import { elementsFromSpec, newElement } from "@/lib/slideElements";
+import { BRAND_FONTS } from "@/lib/fonts";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
   Sparkles, Loader2, Save, CalendarClock, Send, Wand2, Trash2, X, GraduationCap,
   Plus, ChevronLeft, ChevronRight, Download, ImagePlus, History, Hash, Film, Layers,
   Search, Wand, Palette, Upload, FileText, Image as ImageIcon, Presentation,
+  Type, Square, LayoutTemplate, Undo2, Copy, ChevronsUp, ChevronsDown, AlignLeft, AlignCenter, AlignRight,
 } from "lucide-react";
 
 // Pexels only accepts these three; map a platform's aspect onto the closest one
@@ -66,6 +70,7 @@ export default function Composer() {
   const [coach, setCoach] = useState(null);
   const [coachLoading, setCoachLoading] = useState(false);
   const [active, setActive] = useState(0);
+  const [selectedElementId, setSelectedElementId] = useState(null);
   const [renderingSlide, setRenderingSlide] = useState(null);
   const [stockTarget, setStockTarget] = useState(null); // "slide-image" | "slide-video" | "media"
   const [styleTemplate, setStyleTemplate] = useState(state.applyTemplate || "hooks");
@@ -134,6 +139,7 @@ export default function Composer() {
   }, [primary]);
 
   useEffect(() => { if (active > assets.length - 1) setActive(Math.max(0, assets.length - 1)); }, [assets, active]);
+  useEffect(() => { setSelectedElementId(null); }, [active]);
 
   // Keeps a selected custom template's format in sync with the composer's,
   // in one atomic pass (two separate effects racing a plain ref against
@@ -250,6 +256,52 @@ export default function Composer() {
     setActive(j);
     return renumber(next);
   });
+
+  // ---- freeform layout editing (drag/pinch/resize elements on a slide) ----
+  // "Edit layout" is a one-way door per slide: once elements exists, it (not
+  // heading/body/title) is the source of truth for that slide's content.
+  const enterLayoutEdit = (i) => {
+    const spec = assets[i].spec;
+    const theme = themeFor(spec.theme, brand);
+    const els = elementsFromSpec(spec, theme, brand);
+    patchSlide(i, { elements: els });
+    setSelectedElementId(els[0]?.id || null);
+  };
+  const resetSlideLayout = (i) => setAssets((s) => s.map((a, idx) => {
+    if (idx !== i) return a;
+    const { elements, bg_color, ...rest } = a.spec;
+    return { ...a, spec: rest };
+  }));
+  const patchElement = (elId, patch) => setAssets((s) => s.map((a, idx) => (idx !== active ? a : {
+    ...a, spec: { ...a.spec, elements: (a.spec.elements || []).map((el) => (el.id === elId ? { ...el, ...patch } : el)) },
+  })));
+  const addElementToSlide = (type) => {
+    const theme = themeFor(activeAsset.spec.theme, brand);
+    const el = newElement(type, theme, brand);
+    patchSlide(active, { elements: [...(activeAsset.spec.elements || []), el] });
+    setSelectedElementId(el.id);
+  };
+  const removeElement = (elId) => {
+    patchSlide(active, { elements: (activeAsset.spec.elements || []).filter((el) => el.id !== elId) });
+    setSelectedElementId(null);
+  };
+  const duplicateElement = (elId) => {
+    const el = (activeAsset.spec.elements || []).find((x) => x.id === elId);
+    if (!el) return;
+    const copy = { ...el, id: `el_${Math.random().toString(36).slice(2, 9)}`, x: Math.min(el.x + 4, 100 - el.w), y: Math.min(el.y + 4, 100 - el.h) };
+    patchSlide(active, { elements: [...activeAsset.spec.elements, copy] });
+    setSelectedElementId(copy.id);
+  };
+  // Paint order = array order, so the front of the array is the back layer.
+  const reorderElement = (elId, dir) => {
+    const els = activeAsset.spec.elements || [];
+    const i = els.findIndex((x) => x.id === elId);
+    const j = dir === "front" ? els.length - 1 : 0;
+    if (i < 0 || i === j) return;
+    const next = els.filter((x) => x.id !== elId);
+    next.splice(j, 0, els[i]);
+    patchSlide(active, { elements: next });
+  };
 
   // A slide's image_prompt is generated art, not a stock lookup — render it and
   // hang the resulting URL on the slide so the card composites it as a backdrop.
@@ -527,7 +579,14 @@ export default function Composer() {
                       </div>
                     </div>
 
-                    {activeAsset.spec.template === "cover" ? (
+                    {activeAsset.spec.elements ? (
+                      <ElementPropertyPanel
+                        elements={activeAsset.spec.elements} selectedId={selectedElementId}
+                        onSelect={setSelectedElementId} onPatch={patchElement} onAdd={addElementToSlide}
+                        onRemove={removeElement} onDuplicate={duplicateElement} onReorder={reorderElement}
+                        brand={brand}
+                      />
+                    ) : activeAsset.spec.template === "cover" ? (
                       <SlideField label="Cover title" value={activeAsset.spec.title} testid="composer-slide-title"
                         onChange={(v) => patchSlide(active, { title: v })} />
                     ) : (
@@ -582,7 +641,21 @@ export default function Composer() {
                         className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
                         <Download size={13} /> PNG
                       </Button>
+                      {activeAsset.spec.elements ? (
+                        <Button variant="ghost" onClick={() => resetSlideLayout(active)} data-testid="composer-slide-reset-layout"
+                          className="h-8 gap-1.5 px-2.5 text-xs text-zinc-500 hover:text-white">
+                          <Undo2 size={13} /> Reset to template
+                        </Button>
+                      ) : (
+                        <Button variant="secondary" onClick={() => enterLayoutEdit(active)} data-testid="composer-slide-edit-layout"
+                          className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
+                          <LayoutTemplate size={13} /> Edit layout
+                        </Button>
+                      )}
                     </div>
+                    {activeAsset.spec.elements && (
+                      <p className="mt-2 text-[11px] text-zinc-600">Drag to move, the corner handle to resize, the top handle to rotate — or pinch with two fingers on mobile.</p>
+                    )}
                   </div>
                 )}
               </>
@@ -648,11 +721,17 @@ export default function Composer() {
           {assets.length > 0 && (
             <div className="rounded-xl border border-white/10 bg-[#121212] p-4">
               <div className="mx-auto w-full max-w-[380px]">
-                <div className={`${aspectCls} w-full overflow-hidden rounded-xl`}>
-                  <div ref={cardRef} className="h-full w-full">
-                    <VisualCard spec={activeAsset?.spec} brand={brand} scale={0.86} />
+                {activeAsset?.spec?.elements ? (
+                  <SlideEditor spec={activeAsset.spec} brand={brand} aspectCls={aspectCls} cardRef={cardRef}
+                    selectedId={selectedElementId} onSelect={setSelectedElementId}
+                    onChangeElement={patchElement} />
+                ) : (
+                  <div className={`${aspectCls} w-full overflow-hidden rounded-xl`}>
+                    <div ref={cardRef} className="h-full w-full">
+                      <VisualCard spec={activeAsset?.spec} brand={brand} scale={0.86} />
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
               {isDeck && (
                 <div className="mt-3 flex items-center justify-center gap-3">
@@ -701,6 +780,117 @@ const SlideField = ({ label, value, onChange, rows, testid }) => (
     )}
   </div>
 );
+
+// The property panel for a slide's freeform elements — shown instead of the
+// fixed heading/body fields once a slide has entered layout-edit mode.
+function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, onRemove, onDuplicate, onReorder, brand }) {
+  const el = elements.find((x) => x.id === selectedId);
+  const fontOptions = brand?.fonts?.display && !BRAND_FONTS.some((f) => f.key === brand.fonts.display)
+    ? [{ key: brand.fonts.display, label: `${brand.fonts.display} (brand)` }, ...BRAND_FONTS] : BRAND_FONTS;
+
+  return (
+    <div className="mt-3" data-testid="composer-element-panel">
+      <div className="flex flex-wrap gap-1.5">
+        {[{ t: "text", I: Type, l: "Text" }, { t: "image", I: ImageIcon, l: "Image" }, { t: "logo", I: Upload, l: "Logo" }, { t: "shape", I: Square, l: "Shape" }].map(({ t, I, l }) => (
+          <Button key={t} variant="secondary" onClick={() => onAdd(t)} data-testid={`composer-add-element-${t}`}
+            className="h-7 gap-1 rounded-lg border border-white/10 bg-white/5 px-2 text-[11px] text-white hover:bg-white/10">
+            <I size={11} /> {l}
+          </Button>
+        ))}
+      </div>
+
+      {elements.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5" data-testid="composer-element-list">
+          {elements.map((e, i) => (
+            <button key={e.id} onClick={() => onSelect(e.id)} data-testid={`composer-element-chip-${e.id}`}
+              className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${e.id === selectedId ? "border-lime bg-lime/10 text-lime" : "border-white/10 text-zinc-400 hover:text-white"}`}>
+              {e.type === "text" ? (e.text || "Text").slice(0, 14) || `Text ${i + 1}` : e.type === "shape" ? "Shape" : "Image"}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {el && (
+        <div className="mt-3 rounded-lg border border-white/10 bg-[#121212] p-3">
+          {el.type === "text" && (
+            <>
+              <textarea value={el.text || ""} onChange={(e) => onPatch(el.id, { text: e.target.value })} rows={2}
+                data-testid="composer-element-text" className="w-full resize-none rounded-lg border border-white/10 bg-[#0A0A0A] px-2.5 py-2 text-sm text-white outline-none focus:border-lime" />
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <select value={el.fontFamily || "Inter"} onChange={(e) => onPatch(el.id, { fontFamily: e.target.value })} data-testid="composer-element-font"
+                  className="rounded-lg border border-white/10 bg-[#0A0A0A] px-2 py-1.5 text-xs text-white outline-none [color-scheme:dark]">
+                  {fontOptions.map((f) => <option key={f.key} value={f.key}>{f.label || f.key}</option>)}
+                </select>
+                <select value={el.fontWeight || 600} onChange={(e) => onPatch(el.id, { fontWeight: Number(e.target.value) })} data-testid="composer-element-weight"
+                  className="rounded-lg border border-white/10 bg-[#0A0A0A] px-2 py-1.5 text-xs text-white outline-none [color-scheme:dark]">
+                  {[400, 500, 600, 700, 800, 900].map((w) => <option key={w} value={w}>{w}</option>)}
+                </select>
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <label className="font-mono text-[10px] text-zinc-500">Size</label>
+                <input type="number" min={8} max={120} value={el.fontSize || 16} onChange={(e) => onPatch(el.id, { fontSize: Number(e.target.value) })}
+                  data-testid="composer-element-size" className="w-16 rounded-lg border border-white/10 bg-[#0A0A0A] px-2 py-1 text-xs text-white outline-none" />
+                <input type="color" value={el.color || "#FFFFFF"} onChange={(e) => onPatch(el.id, { color: e.target.value })}
+                  data-testid="composer-element-color" className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent p-0" />
+                <div className="ml-auto flex gap-1">
+                  {[{ v: "left", I: AlignLeft }, { v: "center", I: AlignCenter }, { v: "right", I: AlignRight }].map(({ v, I }) => (
+                    <button key={v} onClick={() => onPatch(el.id, { align: v })} data-testid={`composer-element-align-${v}`}
+                      className={`flex h-7 w-7 items-center justify-center rounded-md border ${(el.align || "left") === v ? "border-lime text-lime" : "border-white/10 text-zinc-500"}`}>
+                      <I size={12} />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+          {el.type === "image" && (
+            <>
+              <input value={el.url || ""} onChange={(e) => onPatch(el.id, { url: e.target.value })} placeholder="Image URL"
+                data-testid="composer-element-url" className="w-full rounded-lg border border-white/10 bg-[#0A0A0A] px-2.5 py-2 text-xs text-zinc-300 outline-none focus:border-lime" />
+              <div className="mt-2 flex items-center gap-2">
+                <label className="font-mono text-[10px] text-zinc-500">Fit</label>
+                {["cover", "contain"].map((f) => (
+                  <button key={f} onClick={() => onPatch(el.id, { fit: f })} data-testid={`composer-element-fit-${f}`}
+                    className={`rounded-full border px-2 py-0.5 text-[11px] ${(el.fit || "cover") === f ? "border-lime text-lime" : "border-white/10 text-zinc-500"}`}>{f}</button>
+                ))}
+                <label className="ml-2 font-mono text-[10px] text-zinc-500">Opacity</label>
+                <input type="range" min={0} max={1} step={0.05} value={el.opacity ?? 1} onChange={(e) => onPatch(el.id, { opacity: Number(e.target.value) })}
+                  data-testid="composer-element-opacity" className="w-16" />
+              </div>
+            </>
+          )}
+          {el.type === "shape" && (
+            <div className="flex items-center gap-2">
+              <input type="color" value={el.color || "#E2FF3D"} onChange={(e) => onPatch(el.id, { color: e.target.value })}
+                data-testid="composer-element-color" className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent p-0" />
+              {["rect", "ellipse"].map((s) => (
+                <button key={s} onClick={() => onPatch(el.id, { shape: s })} data-testid={`composer-element-shape-${s}`}
+                  className={`rounded-full border px-2 py-0.5 text-[11px] ${(el.shape || "rect") === s ? "border-lime text-lime" : "border-white/10 text-zinc-500"}`}>{s}</button>
+              ))}
+              <label className="ml-2 font-mono text-[10px] text-zinc-500">Opacity</label>
+              <input type="range" min={0} max={1} step={0.05} value={el.opacity ?? 1} onChange={(e) => onPatch(el.id, { opacity: Number(e.target.value) })}
+                data-testid="composer-element-opacity" className="w-16" />
+            </div>
+          )}
+
+          <div className="mt-2 flex items-center gap-1 border-t border-white/5 pt-2">
+            <label className="font-mono text-[10px] text-zinc-500">Rotate</label>
+            <input type="number" value={Math.round(el.rotation || 0)} onChange={(e) => onPatch(el.id, { rotation: Number(e.target.value) })}
+              data-testid="composer-element-rotation" className="w-14 rounded-lg border border-white/10 bg-[#0A0A0A] px-2 py-1 text-xs text-white outline-none" />
+            <span className="text-xs text-zinc-600">°</span>
+            <div className="ml-auto flex gap-1">
+              <IconBtn onClick={() => onReorder(el.id, "back")} testid="composer-element-send-back"><ChevronsDown size={13} /></IconBtn>
+              <IconBtn onClick={() => onReorder(el.id, "front")} testid="composer-element-bring-front"><ChevronsUp size={13} /></IconBtn>
+              <IconBtn onClick={() => onDuplicate(el.id)} testid="composer-element-duplicate"><Copy size={13} /></IconBtn>
+              <IconBtn onClick={() => onRemove(el.id)} testid="composer-element-remove" danger><Trash2 size={13} /></IconBtn>
+            </div>
+          </div>
+        </div>
+      )}
+      {!el && elements.length > 0 && <p className="mt-2 text-xs text-zinc-600">Tap an element above, or on the preview, to edit it.</p>}
+    </div>
+  );
+}
 
 function HashtagBar({ hashtags, setHashtags, max }) {
   const [draft, setDraft] = useState("");
