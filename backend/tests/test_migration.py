@@ -43,7 +43,11 @@ check("posts altered in place", {"assets","format","hashtags"} <= cols, cols)
 cols = {x[1] for x in DB.execute("PRAGMA table_info(generations)")}
 check("generations altered in place", {"output","title","meta","favorite","updated_at"} <= cols, cols)
 check("brand_kits created", DB.execute("SELECT count(*) FROM sqlite_master WHERE name='brand_kits'").fetchone()[0] == 1)
+cols = {x[1] for x in DB.execute("PRAGMA table_info(brand_kits)")}
+check("brand_kits gets its style column via the ALTER path", "style" in cols, cols)
 check("connections created", DB.execute("SELECT count(*) FROM sqlite_master WHERE name='connections'").fetchone()[0] == 1)
+check("visual_templates created", DB.execute("SELECT count(*) FROM sqlite_master WHERE name='visual_templates'").fetchone()[0] == 1)
+check("uploads created", DB.execute("SELECT count(*) FROM sqlite_master WHERE name='uploads'").fetchone()[0] == 1)
 r = c.get("/api/generations")
 check("legacy generation reads back", r.json()[0]["kind"] == "image" and r.json()[0]["favorite"] is False, r.text[:200])
 check("legacy generation gets a title", r.json()[0]["title"] == "cat", r.text[:200])

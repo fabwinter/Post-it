@@ -5,7 +5,7 @@ export const EMPTY_BRAND = {
   name: "Default brand",
   colors: { bg: "#0A0A0A", fg: "#FFFFFF", accent: "#E2FF3D", sub: "#a1a1aa" },
   fonts: { display: "Inter", body: "Inter" },
-  logo_url: null, handle: "", voice: "", audience: "",
+  logo_url: null, handle: "", voice: "", style: "", audience: "",
   hashtags: [], cta: "", banned_words: [],
 };
 

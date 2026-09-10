@@ -1,6 +1,6 @@
 """Offline harness: D1 is backed by a real in-memory sqlite3 so the SQL is
 genuinely validated; PoYo is faked."""
-import json, os, pathlib, sqlite3, sys
+import io, json, os, pathlib, sqlite3, sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 os.environ.update(CF_ACCOUNT_ID="a", CF_D1_DATABASE_ID="d", CF_API_TOKEN="t", POYO_API_KEY="k",
                   PEXELS_API_KEY="p", BLOB_READ_WRITE_TOKEN="b")
@@ -9,10 +9,18 @@ DB = sqlite3.connect(":memory:", check_same_thread=False)
 DB.row_factory = sqlite3.Row
 
 CHAT_REPLY = {"value": "hello"}
+RAISE_TIMEOUT = {"value": False}
 
 class Resp:
     def __init__(self, body, code=200):
-        self._b, self.status_code, self.text = body, code, json.dumps(body)
+        self._b, self.status_code = body, code
+        if isinstance(body, bytes):
+            self.content, self.text = body, ""
+        elif isinstance(body, str):
+            self.content, self.text = body.encode(), body
+        else:
+            self.text = json.dumps(body)
+            self.content = self.text.encode()
         self.headers = {"content-type": "application/json"}
     def json(self): return self._b
 
@@ -29,6 +37,9 @@ def fake_post(url, headers=None, json=None, timeout=None, **kw):
         DB.commit()
         return Resp({"success": True, "result": [{"results": rows, "meta": {}}]})
     if "/v1/chat/completions" in url or "/v1/responses" in url:
+        if RAISE_TIMEOUT["value"]:
+            import requests as _requests
+            raise _requests.exceptions.ReadTimeout("Read timed out. (read timeout=110)")
         txt = CHAT_REPLY["value"]
         if "/v1/responses" in url:
             return Resp({"data": {"output": [{"content": [{"type": "output_text", "text": txt}]}]}})
@@ -59,7 +70,22 @@ def fake_get(url, headers=None, timeout=None, params=None, **kw):
                 {"file_type": "video/mp4", "width": 1920, "link": "https://videos.pexels.com/222-hd.mp4"},
             ],
         }]})
+    if url in BLOBS:
+        return Resp(BLOBS[url])
+    if url == FAKE_WEBSITE_URL:
+        return Resp(FAKE_WEBSITE_HTML)
     raise AssertionError("unexpected GET " + url)
+
+FAKE_WEBSITE_URL = "https://example-brand.test/"
+FAKE_WEBSITE_HTML = """<html><head>
+<title>Acme Coffee Co.</title>
+<meta name="description" content="Small-batch coffee, roasted for people who read the label.">
+<meta property="og:image" content="/static/logo.png">
+<style>.hero{color:#1a2b3c;background:#f5e6c8;} .cta{font-family: 'Poppins', sans-serif;}</style>
+</head><body>
+<p>We roast in small batches every Tuesday. No jargon, no nonsense — just really good coffee
+made by people who care about where it comes from and who it reaches.</p>
+</body></html>"""
 
 BLOBS = {}
 def fake_put(url, headers=None, data=None, timeout=None, **kw):
@@ -301,6 +327,147 @@ check("mashup rejects anything but exactly two tracks", r.status_code == 400, r.
 # plain music generation (no references) still works unchanged
 r = c.post("/api/ai/generate", json={"kind": "music", "prompt": "a calm piano piece", "options": {"mv": "V4_5"}})
 check("plain music generation still uses generate-music", SUBMITTED[-1]["model"] == "generate-music", SUBMITTED[-1])
+
+# --- a PoYo timeout must surface as a clean 504, never a raw exception string ---
+RAISE_TIMEOUT["value"] = True
+r = c.post("/api/ai/build-post", json={"topic": "x", "platform": "instagram"})
+RAISE_TIMEOUT["value"] = False
+check("PoYo timeout returns 504", r.status_code == 504, r.text)
+check("timeout detail is a clean message, not a raw exception repr", "ReadTimeout" not in r.json()["detail"] and "didn't respond" in r.json()["detail"], r.text)
+
+# --- brand kit: logo upload + a style field ---
+r = c.post("/api/upload", files={"file": ("logo.png", b"fakepngbytes", "image/png")})
+logo_upload = r.json()
+r = c.put("/api/brand-kit", json={"logo_url": logo_upload["url"], "style": "Minimal, high-contrast, lots of negative space."})
+check("brand kit accepts a logo_url and a style field", r.json()["logo_url"] == logo_upload["url"] and "negative space" in r.json()["style"], r.text[:200])
+r = c.get("/api/brand-kit")
+check("brand kit style persists", "negative space" in r.json()["style"], r.text[:200])
+check("brand_prompt includes style", "Visual style" in server.brand_prompt(r.json()))
+
+# --- brand kit analysis: image (real pixel colors, no AI) ---
+from PIL import Image as _Image
+buf = io.BytesIO()
+img = _Image.new("RGB", (40, 20))
+for x in range(40):
+    for y in range(20):
+        img.putpixel((x, y), (10, 10, 10) if x < 20 else (226, 255, 61))  # half dark, half lime
+img.save(buf, format="PNG")
+r = c.post("/api/upload", files={"file": ("brandimg.png", buf.getvalue(), "image/png")})
+img_upload = r.json()
+
+r = c.post("/api/brand-kit/analyze", json={"source_type": "image", "source_url": img_upload["url"]})
+b = r.json()
+check("image analysis extracts real colors", set(b["colors"].keys()) == {"bg", "fg", "accent", "sub"}, b["colors"])
+check("image analysis colors are actually the two pixel colors", set(b["colors"].values()) <= {"#0a0a0a", "#e2ff3d"}, b["colors"])
+check("image analysis sets logo_url to the image itself", b["logo_url"] == img_upload["url"], b)
+check("image analysis is honest about not reading fonts/voice", "can't be read from a picture" in b["source_note"], b["source_note"])
+check("brand analysis auto-saved", bool(b.get("generation_id")), b)
+
+# --- brand kit analysis: SVG (real markup parsing, no AI) ---
+svg_bytes = b"""<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+<rect width="100" height="100" fill="#1a2b3c"/><circle cx="50" cy="50" r="30" fill="#ffcc00"/>
+<text font-family="Poppins, sans-serif" fill="#ffffff">Acme</text></svg>"""
+r = c.post("/api/upload", files={"file": ("logo.svg", svg_bytes, "image/svg+xml")})
+svg_upload = r.json()
+r = c.post("/api/brand-kit/analyze", json={"source_type": "svg", "source_url": svg_upload["url"]})
+b = r.json()
+check("svg analysis finds real hex colors", "#1a2b3c" in b["colors"].values(), b["colors"])
+check("svg analysis finds the real font-family", b["fonts"]["display"] == "Poppins", b["fonts"])
+check("svg analysis sets logo_url to the svg itself", b["logo_url"] == svg_upload["url"])
+
+# --- brand kit analysis: PDF (real text extraction feeds a text-only AI call) ---
+minimal_pdf = (
+    b"%PDF-1.4\n1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj\n"
+    b"2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj\n"
+    b"3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
+    b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>endobj\n"
+    b"4 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj\n"
+    b"5 0 obj<< /Length 60 >>\nstream\nBT /F1 18 Tf 10 100 Td (Bold modern coffee brand) Tj ET\nendstream\nendobj\n"
+    b"xref\n0 6\n0000000000 65535 f \n"
+    b"trailer<< /Size 6 /Root 1 0 R >>\nstartxref\n0\n%%EOF"
+)
+r = c.post("/api/upload", files={"file": ("deck.pdf", minimal_pdf, "application/pdf")})
+pdf_upload = r.json()
+CHAT_REPLY["value"] = '{"voice": "Direct, technical, confident.", "style": "Bold and modern.", "suggested_name": "Acme"}'
+r = c.post("/api/brand-kit/analyze", json={"source_type": "pdf", "source_url": pdf_upload["url"]})
+b = r.json()
+check("pdf analysis infers voice from real extracted text", b["voice"] == "Direct, technical, confident.", b)
+check("pdf analysis infers a suggested name", b["detected_name"] == "Acme", b)
+check("pdf source_note mentions page count", "1-page" in b["source_note"] or "1 page" in b["source_note"], b["source_note"])
+
+# --- brand kit analysis: URL (real page fetch, regex colors, text-only AI) ---
+CHAT_REPLY["value"] = '{"voice": "Warm, unpretentious, a little wry.", "style": "Earthy and handcrafted.", "suggested_name": "Acme Coffee Co."}'
+r = c.post("/api/brand-kit/analyze", json={"source_type": "url", "source_url": FAKE_WEBSITE_URL})
+b = r.json()
+check("url analysis reads real page colors", "#1a2b3c" in b["colors"].values(), b["colors"])
+check("url analysis reads a real font-family from CSS", b["fonts"]["display"] == "Poppins", b["fonts"])
+check("url analysis resolves a relative og:image to an absolute logo_url", b["logo_url"] == "https://example-brand.test/static/logo.png", b["logo_url"])
+check("url analysis infers voice from the real page text", "wry" in b["voice"], b)
+
+r = c.post("/api/brand-kit/analyze", json={"source_type": "bogus", "source_url": "x"})
+check("brand analysis rejects a bad source_type", r.status_code == 400, r.text)
+
+# --- templates from a file: PPTX (real per-slide text, abstracted by AI) ---
+from pptx import Presentation as _Presentation
+pptx_buf = io.BytesIO()
+prs = _Presentation()
+layout = prs.slide_layouts[1]
+s1 = prs.slides.add_slide(layout)
+s1.shapes.title.text = "Why consistency wins"
+s1.placeholders[1].text_frame.text = "Most people quit in week 6."
+s2 = prs.slides.add_slide(layout)
+s2.shapes.title.text = "The 20-week curve"
+s2.placeholders[1].text_frame.text = "Growth looks flat until it doesn't."
+prs.save(pptx_buf)
+r = c.post("/api/upload", files={"file": ("deck.pptx", pptx_buf.getvalue(),
+                                          "application/vnd.openxmlformats-officedocument.presentationml.presentation")})
+pptx_upload = r.json()
+
+CHAT_REPLY["value"] = '{"slides": [{"heading": "State the core claim", "body": "Name the timeframe when most people quit."}, {"heading": "Show the payoff curve", "body": "Describe what changes once you push past that point."}]}'
+r = c.post("/api/templates/from-file", json={"source_type": "pptx", "source_url": pptx_upload["url"], "name": "Consistency deck"})
+tpl = r.json()
+check("pptx template has the right slide count", len(tpl["slides"]) == 2, tpl["slides"])
+check("pptx template slides are abstracted, not the deck's literal words", tpl["slides"][0]["heading"] == "State the core claim", tpl["slides"])
+check("pptx template format defaults to carousel", tpl["format"] == "carousel", tpl)
+pptx_template_id = tpl["id"]
+
+# --- templates from a file: PDF (falls back to real text if AI abstraction misbehaves) ---
+CHAT_REPLY["value"] = "not valid json"
+r = c.post("/api/templates/from-file", json={"source_type": "pdf", "source_url": pdf_upload["url"]})
+tpl = r.json()
+check("pdf template falls back to the real page text when AI output can't be parsed", tpl["slides"][0]["heading"] == "Page 1", tpl["slides"])
+
+# --- templates from a file: image (palette only, no slides) ---
+r = c.post("/api/templates/from-file", json={"source_type": "image", "source_url": img_upload["url"]})
+tpl = r.json()
+check("image template has no slide structure", tpl["slides"] == [], tpl)
+check("image template format is single", tpl["format"] == "single", tpl)
+check("image template carries the real extracted palette", set(tpl["colors"].values()) <= {"#0a0a0a", "#e2ff3d"}, tpl["colors"])
+
+r = c.get("/api/templates/custom")
+check("custom templates list returns saved templates", len(r.json()) == 3, len(r.json()))
+
+r = c.delete(f"/api/templates/custom/{pptx_template_id}")
+check("custom template delete succeeds", r.status_code == 200, r.text)
+check("deleted template is gone from the list", all(t["id"] != pptx_template_id for t in c.get("/api/templates/custom").json()))
+r = c.delete(f"/api/templates/custom/{pptx_template_id}")
+check("deleting twice 404s", r.status_code == 404)
+
+r = c.post("/api/templates/from-file", json={"source_type": "bogus", "source_url": "x"})
+check("templates-from-file rejects a bad source_type", r.status_code == 400, r.text)
+
+# --- build-post follows a saved template's outline ---
+remaining = c.get("/api/templates/custom").json()
+image_template_id = next(t["id"] for t in remaining if t["source_kind"] == "image")
+r = c.post("/api/ai/build-post", json={"topic": "y", "platform": "instagram", "custom_template_id": "does-not-exist"})
+check("build-post 404s on an unknown template id", r.status_code == 404, r.text)
+
+CHAT_REPLY["value"] = json.dumps({
+    "format": "single", "title": "T", "caption": "c", "hashtags": [], "visual": {"style": "quote"},
+})
+r = c.post("/api/ai/build-post", json={"topic": "why coffee matters", "platform": "instagram", "custom_template_id": image_template_id})
+b = r.json()
+check("build-post with an image template uses the template's theme", b["theme"] == "midnight", b)
 
 print("\n" + ("ALL PASS" if not FAILS else f"{len(FAILS)} FAILED: {FAILS}"))
 sys.exit(1 if FAILS else 0)

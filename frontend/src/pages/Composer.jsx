@@ -12,6 +12,7 @@ import { ModelPicker } from "@/components/ModelPicker";
 import { VisualCard, ASPECT_CLASS, THEME_LIST } from "@/components/VisualCard";
 import { MediaPicker } from "@/components/MediaPicker";
 import { useTemplateStyles } from "@/lib/templateStyles";
+import { useCustomTemplates } from "@/lib/useCustomTemplates";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
@@ -68,6 +69,8 @@ export default function Composer() {
   const [styleTemplate, setStyleTemplate] = useState(state.applyTemplate || "hooks");
   const [restyling, setRestyling] = useState(false);
   const templates = useTemplateStyles();
+  const [customTemplateId, setCustomTemplateId] = useState(state.applyCustomTemplateId || null);
+  const { templates: customTemplates } = useCustomTemplates();
   const cardRef = useRef(null);
 
   const primary = platforms[0] || "instagram";
@@ -141,6 +144,7 @@ export default function Composer() {
     try {
       const { data } = await api.post("/ai/build-post", {
         topic, platform: primary, format, slides: pspec.slides?.default, model: model || defaultModel,
+        custom_template_id: customTemplateId || undefined,
       });
       applyPlan({ ...data, platform: primary });
       toast.success(`Built a ${FORMAT_LABEL[data.format] || data.format} for ${pspec.label}.`);
@@ -367,6 +371,19 @@ export default function Composer() {
               </Button>
               <span className="text-xs text-zinc-600">rewrites the draft above in that template's voice</span>
             </div>
+
+            {customTemplates.length > 0 && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-3">
+                <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Build from</span>
+                <select value={customTemplateId || ""} onChange={(e) => setCustomTemplateId(e.target.value || null)}
+                  data-testid="composer-custom-template-select"
+                  className="rounded-lg border border-white/10 bg-[#0A0A0A] px-2.5 py-1.5 text-xs text-white outline-none focus:border-iris [color-scheme:dark]">
+                  <option value="">No template — AI picks the format</option>
+                  {customTemplates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+                <span className="text-xs text-zinc-600">Build whole post follows its outline, theme &amp; slide count</span>
+              </div>
+            )}
 
             {coach && <CoachPanel coach={coach} onUseHook={(h) => setContent(h + "\n\n" + content)} />}
           </div>
