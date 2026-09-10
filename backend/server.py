@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Request
+from fastapi import FastAPI, APIRouter, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import Response, JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -26,6 +26,12 @@ POYO_API_KEY = os.environ.get('POYO_API_KEY')
 POYO_BASE_URL = os.environ.get('POYO_BASE_URL', 'https://api.poyo.ai')
 
 PEXELS_API_KEY = os.environ.get('PEXELS_API_KEY')
+
+# Vercel Blob — where a user's own uploads live. Enabled per-project in the
+# Vercel dashboard (Storage -> Blob -> Create), which sets this token
+# automatically; no separate third-party account needed since the app is
+# already hosted on Vercel.
+BLOB_READ_WRITE_TOKEN = os.environ.get('BLOB_READ_WRITE_TOKEN')
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -103,6 +109,10 @@ _CREATE_TABLES = [
         audience TEXT, hashtags TEXT NOT NULL DEFAULT '[]', cta TEXT,
         banned_words TEXT NOT NULL DEFAULT '[]',
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS uploads (
+        id TEXT PRIMARY KEY, url TEXT NOT NULL, pathname TEXT,
+        filename TEXT NOT NULL, content_type TEXT, kind TEXT NOT NULL DEFAULT 'file',
+        size INTEGER DEFAULT 0, created_at TEXT NOT NULL)""",
 ]
 
 # Columns added after the first release. Existing databases predate them, so
@@ -783,6 +793,116 @@ async def stock_search(q: str, type: str = "image", page: int = 1, per_page: int
             "total_results": body.get("total_results", len(results))}
 
 
+# ---------------- Uploads (Vercel Blob) ----------------
+# The user's own images, video and audio — not generated, not stock. Stored in
+# Vercel Blob (the app is already hosted on Vercel, so this is a checkbox in
+# the same dashboard rather than a new account) and tracked in D1 so the
+# Library/pickers can list, filter and delete them like any other asset.
+MAX_UPLOAD_BYTES = 40 * 1024 * 1024  # 40MB — generous for a phone photo or a short clip
+
+
+def _upload_kind(content_type: str) -> str:
+    ct = (content_type or "").lower()
+    if ct.startswith("image/"):
+        return "image"
+    if ct.startswith("video/"):
+        return "video"
+    if ct.startswith("audio/"):
+        return "audio"
+    return "file"
+
+
+def _safe_filename(name: str) -> str:
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", (name or "upload").strip()) or "upload"
+    return name[-120:]
+
+
+def _blob_headers():
+    if not BLOB_READ_WRITE_TOKEN:
+        raise HTTPException(status_code=500, detail="Uploads are not configured (need BLOB_READ_WRITE_TOKEN)")
+    return {"Authorization": f"Bearer {BLOB_READ_WRITE_TOKEN}", "x-api-version": "7"}
+
+
+def _blob_put(pathname: str, content: bytes, content_type: str) -> dict:
+    resp = requests.put(
+        f"https://blob.vercel-storage.com/{pathname}",
+        headers={**_blob_headers(), "x-content-type": content_type or "application/octet-stream",
+                 "x-add-random-suffix": "1"},
+        data=content, timeout=90,
+    )
+    if resp.status_code not in (200, 201):
+        raise HTTPException(status_code=502, detail=f"Upload storage error {resp.status_code}: {resp.text[:400]}")
+    return resp.json()
+
+
+def _blob_delete(urls: List[str]):
+    if not urls:
+        return
+    requests.delete(
+        "https://blob.vercel-storage.com/delete",
+        headers={**_blob_headers(), "Content-Type": "application/json"},
+        json={"urls": urls}, timeout=30,
+    )
+
+
+def _row_to_upload(row: dict):
+    return {
+        "id": row["id"], "url": row["url"], "filename": row["filename"],
+        "content_type": row["content_type"], "kind": row["kind"],
+        "size": row["size"], "created_at": row["created_at"],
+    }
+
+
+@api_router.post("/upload")
+async def create_upload(file: UploadFile = File(...)):
+    await ensure_schema()
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"File is larger than {MAX_UPLOAD_BYTES // (1024*1024)}MB")
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file")
+    content_type = file.content_type or "application/octet-stream"
+    filename = _safe_filename(file.filename)
+    pathname = f"uploads/{filename}"
+    blob = await asyncio.to_thread(_blob_put, pathname, content, content_type)
+    record = {
+        "id": str(uuid.uuid4()), "url": blob.get("url"), "pathname": blob.get("pathname"),
+        "filename": filename, "content_type": content_type, "kind": _upload_kind(content_type),
+        "size": len(content), "created_at": now_iso(),
+    }
+    await d1_query(
+        "INSERT INTO uploads (id, url, pathname, filename, content_type, kind, size, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [record["id"], record["url"], record["pathname"], record["filename"], record["content_type"],
+         record["kind"], record["size"], record["created_at"]],
+    )
+    return _row_to_upload(record)
+
+
+@api_router.get("/uploads")
+async def list_uploads(kind: Optional[str] = None, limit: int = 60):
+    await ensure_schema()
+    limit = max(1, min(int(limit), 200))
+    if kind:
+        rows, _ = await d1_query("SELECT * FROM uploads WHERE kind = ? ORDER BY created_at DESC LIMIT ?", [kind, limit])
+    else:
+        rows, _ = await d1_query("SELECT * FROM uploads ORDER BY created_at DESC LIMIT ?", [limit])
+    return [_row_to_upload(r) for r in rows]
+
+
+@api_router.delete("/uploads/{upload_id}")
+async def delete_upload(upload_id: str):
+    await ensure_schema()
+    rows, _ = await d1_query("DELETE FROM uploads WHERE id = ? RETURNING *", [upload_id])
+    if not rows:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    try:
+        await asyncio.to_thread(_blob_delete, [rows[0]["url"]])
+    except Exception:
+        logger.exception("Could not delete blob for upload %s (D1 row already removed)", upload_id)
+    return {"ok": True}
+
+
 @api_router.post("/ai/generate")
 async def ai_generate(req: GenerateRequest):
     opts = req.options or {}
@@ -801,6 +921,12 @@ async def ai_generate(req: GenerateRequest):
             payload["quality"] = opts.get("quality", "medium")
         if opts.get("resolution"):
             payload["resolution"] = opts["resolution"]
+        # A non-empty image_urls turns every one of these models from
+        # text-to-image into reference-image editing (verified per-model:
+        # gpt-image-2, nano-banana-2/-pro, qwen-image-3, flux-dev, z-image all
+        # accept it under this exact field name).
+        if opts.get("image_urls"):
+            payload["image_urls"] = opts["image_urls"]
     elif req.kind == "video":
         # Video models differ a lot in accepted fields (resolution/aspect_ratio/
         # duration ranges, and the audio flag is named generate_audio, sound, or
@@ -812,13 +938,28 @@ async def ai_generate(req: GenerateRequest):
         if "duration" in payload:
             payload["duration"] = int(payload["duration"])
     elif req.kind == "music":
-        model = "generate-music"
-        payload = {
-            "prompt": prompt,
-            "custom_mode": False,
-            "instrumental": bool(opts.get("instrumental", False)),
-            "mv": opts.get("mv", "V4_5"),
-        }
+        reference_urls = opts.get("reference_urls") or []
+        if reference_urls:
+            # Mashup is a distinct PoYo model, not an option on generate-music:
+            # it blends exactly two uploaded tracks into a new one.
+            if len(reference_urls) != 2:
+                raise HTTPException(status_code=400, detail="Mashup needs exactly two reference tracks")
+            model = "generate-mashup"
+            payload = {
+                "prompt": prompt,
+                "custom_mode": False,
+                "instrumental": bool(opts.get("instrumental", False)),
+                "mv": opts.get("mv", "V4_5"),
+                "upload_url_list": reference_urls,
+            }
+        else:
+            model = "generate-music"
+            payload = {
+                "prompt": prompt,
+                "custom_mode": False,
+                "instrumental": bool(opts.get("instrumental", False)),
+                "mv": opts.get("mv", "V4_5"),
+            }
     elif req.kind == "voice":
         model = opts.get("model", "elevenlabs-tts-turbo-2-5")
         payload = {"text": req.prompt, **{k: v for k, v in opts.items() if k not in ("model", "use_brand")}}

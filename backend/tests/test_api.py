@@ -2,7 +2,8 @@
 genuinely validated; PoYo is faked."""
 import json, os, pathlib, sqlite3, sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-os.environ.update(CF_ACCOUNT_ID="a", CF_D1_DATABASE_ID="d", CF_API_TOKEN="t", POYO_API_KEY="k")
+os.environ.update(CF_ACCOUNT_ID="a", CF_D1_DATABASE_ID="d", CF_API_TOKEN="t", POYO_API_KEY="k",
+                  PEXELS_API_KEY="p", BLOB_READ_WRITE_TOKEN="b")
 
 DB = sqlite3.connect(":memory:", check_same_thread=False)
 DB.row_factory = sqlite3.Row
@@ -60,9 +61,23 @@ def fake_get(url, headers=None, timeout=None, params=None, **kw):
         }]})
     raise AssertionError("unexpected GET " + url)
 
+BLOBS = {}
+def fake_put(url, headers=None, data=None, timeout=None, **kw):
+    assert "blob.vercel-storage.com" in url
+    pathname = url.split("blob.vercel-storage.com/")[-1] + "-rand"
+    blob_url = f"https://blob.example/{pathname}"
+    BLOBS[blob_url] = data
+    return Resp({"url": blob_url, "pathname": pathname, "contentType": headers.get("x-content-type")})
+
+DELETED_BLOBS = []
+def fake_delete(url, headers=None, json=None, timeout=None, **kw):
+    assert url.endswith("/delete")
+    DELETED_BLOBS.extend(json.get("urls", []))
+    return Resp({})
+
 SUBMITTED = []
 import requests
-requests.post, requests.get = fake_post, fake_get
+requests.post, requests.get, requests.put, requests.delete = fake_post, fake_get, fake_put, fake_delete
 
 import server
 from fastapi.testclient import TestClient
@@ -222,6 +237,70 @@ check("stock video carries thumbnail + credit", b["results"][0]["thumbnail"] and
 
 r = c.get("/api/stock/search", params={"q": "x", "type": "bogus"})
 check("stock search rejects a bad type", r.status_code == 400, r.text)
+
+# --- uploads (Vercel Blob) ---
+server.BLOB_READ_WRITE_TOKEN = None
+r = c.post("/api/upload", files={"file": ("photo.png", b"fakepngbytes", "image/png")})
+check("upload reports not configured", r.status_code == 500 and "not configured" in r.json()["detail"], r.text)
+
+server.BLOB_READ_WRITE_TOKEN = "test-token"
+r = c.post("/api/upload", files={"file": ("my photo!!.png", b"fakepngbytes", "image/png")})
+up = r.json()
+check("upload stores in blob and D1", r.status_code == 200 and up["url"].startswith("https://blob.example/"), r.text)
+check("upload infers kind from content-type", up["kind"] == "image", up)
+check("upload sanitises the filename", up["filename"] == "my-photo-.png", up["filename"])
+check("upload sends the real bytes to blob", BLOBS[up["url"]] == b"fakepngbytes")
+image_upload_id = up["id"]
+
+r = c.post("/api/upload", files={"file": ("clip.mp4", b"fakevideobytes", "video/mp4")})
+video_upload = r.json()
+check("upload of a video infers kind", video_upload["kind"] == "video", video_upload)
+
+r = c.post("/api/upload", files={"file": ("empty.png", b"", "image/png")})
+check("upload rejects an empty file", r.status_code == 400, r.text)
+
+r = c.get("/api/uploads")
+check("uploads list returns newest first", [u["id"] for u in r.json()][:2] == [video_upload["id"], image_upload_id], r.text[:200])
+r = c.get("/api/uploads", params={"kind": "video"})
+check("uploads list filters by kind", len(r.json()) == 1 and r.json()[0]["kind"] == "video", r.text[:200])
+
+r = c.delete(f"/api/uploads/{image_upload_id}")
+check("upload delete succeeds", r.status_code == 200, r.text)
+check("upload delete removes the blob too", up["url"] in DELETED_BLOBS, DELETED_BLOBS)
+check("deleted upload is gone from the list", all(u["id"] != image_upload_id for u in c.get("/api/uploads").json()))
+r = c.delete(f"/api/uploads/{image_upload_id}")
+check("deleting twice 404s", r.status_code == 404, r.text)
+
+# --- an uploaded image as a reference for image generation ---
+r = c.post("/api/ai/generate", json={
+    "kind": "image", "prompt": "restyle this product shot",
+    "options": {"model": "gpt-image-2", "image_urls": [video_upload["url"]]},
+})
+check("reference image forwarded to PoYo", SUBMITTED[-1]["input"]["image_urls"] == [video_upload["url"]], SUBMITTED[-1])
+
+# a video model's own reference fields pass straight through untouched
+r = c.post("/api/ai/generate", json={
+    "kind": "video", "prompt": "animate this photo",
+    "options": {"model": "seedance-2-fast", "resolution": "720p", "duration": 5, "image_urls": [video_upload["url"]]},
+})
+check("video image_urls (first-frame) forwarded", SUBMITTED[-1]["input"]["image_urls"] == [video_upload["url"]], SUBMITTED[-1])
+
+# --- music mashup from two uploaded tracks ---
+r = c.post("/api/ai/generate", json={
+    "kind": "music", "prompt": "blend these into something upbeat",
+    "options": {"reference_urls": ["https://blob.example/a.mp3", "https://blob.example/b.mp3"], "mv": "V4_5"},
+})
+check("mashup switches to generate-mashup", r.json()["task_id"] == "task-123" and SUBMITTED[-1]["model"] == "generate-mashup", SUBMITTED[-1])
+check("mashup sends exactly the two tracks", SUBMITTED[-1]["input"]["upload_url_list"] == ["https://blob.example/a.mp3", "https://blob.example/b.mp3"])
+
+r = c.post("/api/ai/generate", json={
+    "kind": "music", "prompt": "x", "options": {"reference_urls": ["https://blob.example/only-one.mp3"]},
+})
+check("mashup rejects anything but exactly two tracks", r.status_code == 400, r.text)
+
+# plain music generation (no references) still works unchanged
+r = c.post("/api/ai/generate", json={"kind": "music", "prompt": "a calm piano piece", "options": {"mv": "V4_5"}})
+check("plain music generation still uses generate-music", SUBMITTED[-1]["model"] == "generate-music", SUBMITTED[-1])
 
 print("\n" + ("ALL PASS" if not FAILS else f"{len(FAILS)} FAILED: {FAILS}"))
 sys.exit(1 if FAILS else 0)

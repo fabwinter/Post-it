@@ -1,39 +1,76 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api } from "@/lib/api";
+import { api, apiErrorMessage } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { Images, Send, Download, Image as ImageIcon, Video, Music, Mic } from "lucide-react";
+import { toast } from "sonner";
+import { Images, Send, Download, Trash2, Image as ImageIcon, Video, Music, Mic, Upload, Sparkles } from "lucide-react";
 
-const KIND_ICON = { image: ImageIcon, video: Video, music: Music, voice: Mic };
+const KIND_ICON = { image: ImageIcon, video: Video, music: Music, voice: Mic, audio: Music, file: Upload };
+
+const TABS = [
+  { key: "generated", label: "Generated", icon: Sparkles },
+  { key: "uploads", label: "Your uploads", icon: Upload },
+];
 
 export default function Library() {
   const navigate = useNavigate();
+  const [tab, setTab] = useState("generated");
   const [media, setMedia] = useState([]);
+  const [uploads, setUploads] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api.get("/media").then(({ data }) => setMedia(data)).finally(() => setLoading(false));
-  }, []);
+    setLoading(true);
+    const req = tab === "uploads" ? api.get("/uploads") : api.get("/media");
+    req.then(({ data }) => (tab === "uploads" ? setUploads(data) : setMedia(data)))
+      .catch((e) => toast.error(apiErrorMessage(e, "Couldn't load.")))
+      .finally(() => setLoading(false));
+  }, [tab]);
+
+  const removeUpload = async (id) => {
+    const prev = uploads;
+    setUploads((s) => s.filter((u) => u.id !== id));
+    try { await api.delete(`/uploads/${id}`); toast.success("Deleted"); }
+    catch (e) { toast.error(apiErrorMessage(e, "Delete failed.")); setUploads(prev); }
+  };
+
+  const items = tab === "uploads" ? uploads : media;
 
   return (
     <div data-testid="library-page">
       <div className="font-mono text-xs uppercase tracking-[0.25em] text-zinc-500">Media library</div>
-      <h1 className="mt-2 font-display text-4xl font-semibold tracking-tight">Everything you've generated</h1>
+      <h1 className="mt-2 font-display text-4xl font-semibold tracking-tight">Everything you can drop into a post</h1>
+
+      <div className="mt-6 flex gap-1.5">
+        {TABS.map((t) => {
+          const Icon = t.icon;
+          return (
+            <button key={t.key} onClick={() => setTab(t.key)} data-testid={`library-tab-${t.key}`}
+              className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${tab === t.key ? "border-lime bg-lime/10 text-lime" : "border-white/10 text-zinc-400 hover:text-white"}`}>
+              <Icon size={13} /> {t.label}
+            </button>
+          );
+        })}
+      </div>
 
       {loading && <div className="mt-10 text-sm text-zinc-600">Loading…</div>}
 
-      {!loading && media.length === 0 && (
+      {!loading && items.length === 0 && (
         <div className="mt-10 flex flex-col items-center justify-center rounded-xl border border-dashed border-white/10 p-16 text-center">
           <Images size={28} className="text-zinc-600" />
-          <div className="mt-3 text-sm text-zinc-500">No media yet.</div>
-          <Button onClick={() => navigate("/studio")} className="mt-4 rounded-lg bg-lime font-semibold text-[#0A0A0A] hover:bg-lime-hover" data-testid="library-go-studio">
-            Generate in Studio
-          </Button>
+          <div className="mt-3 text-sm text-zinc-500">{tab === "uploads" ? "Nothing uploaded yet." : "No media yet."}</div>
+          {tab === "generated" ? (
+            <Button onClick={() => navigate("/studio")} className="mt-4 rounded-lg bg-lime font-semibold text-[#0A0A0A] hover:bg-lime-hover" data-testid="library-go-studio">
+              Generate in Studio
+            </Button>
+          ) : (
+            <p className="mt-2 max-w-xs text-xs text-zinc-600">Upload your own photos, video or audio from any "Add media" button in the Composer or Studio — they show up here automatically.</p>
+          )}
         </div>
       )}
 
       <div className="mt-7 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {media.map((m) => {
+        {tab === "generated" && media.map((m) => {
           const file = (m.files || []).find((f) => f.file_url);
           if (!file) return null;
           const Icon = KIND_ICON[m.kind] || ImageIcon;
@@ -61,6 +98,37 @@ export default function Library() {
                   </a>
                   <Button onClick={() => navigate("/composer", { state: { mediaUrl: file.file_url, mediaType: m.kind } })}
                     className="h-8 flex-1 gap-1.5 rounded-lg bg-lime text-xs font-semibold text-[#0A0A0A] hover:bg-lime-hover" data-testid={`library-use-${m.id}`}><Send size={13} /> Use</Button>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+
+        {tab === "uploads" && uploads.map((u) => {
+          const Icon = KIND_ICON[u.kind] || Upload;
+          return (
+            <div key={u.id} className="group overflow-hidden rounded-xl border border-white/10 bg-[#121212]" data-testid={`library-upload-${u.id}`}>
+              <div className="flex aspect-video items-center justify-center overflow-hidden bg-[#0A0A0A]">
+                {u.kind === "image" && <img src={u.url} alt={u.filename} className="h-full w-full object-cover" />}
+                {u.kind === "video" && <video src={u.url} className="h-full w-full object-cover" muted />}
+                {(u.kind === "audio" || u.kind === "file") && (
+                  <div className="flex h-full w-full flex-col items-center justify-center bg-gradient-to-br from-iris/20 to-lime/10">
+                    <Icon size={30} className="text-lime" />
+                  </div>
+                )}
+              </div>
+              <div className="p-4">
+                <div className="flex items-center gap-2">
+                  <Icon size={13} className="text-lime" />
+                  <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">{u.kind}</span>
+                </div>
+                <p className="mt-2 line-clamp-2 text-sm text-zinc-300">{u.filename}</p>
+                {u.kind === "audio" && <audio src={u.url} controls className="mt-3 w-full" />}
+                <div className="mt-3 flex gap-2">
+                  <Button onClick={() => navigate("/composer", { state: { mediaUrl: u.url, mediaType: u.kind } })}
+                    className="h-8 flex-1 gap-1.5 rounded-lg bg-lime text-xs font-semibold text-[#0A0A0A] hover:bg-lime-hover" data-testid={`library-use-${u.id}`}><Send size={13} /> Use</Button>
+                  <Button variant="ghost" onClick={() => removeUpload(u.id)} data-testid={`library-delete-${u.id}`}
+                    className="h-8 px-2.5 text-zinc-500 hover:text-magic"><Trash2 size={14} /></Button>
                 </div>
               </div>
             </div>

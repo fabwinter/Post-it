@@ -5,10 +5,14 @@ import { api, pollTask, apiErrorMessage } from "@/lib/api";
 import { useTextModels } from "@/lib/useTextModels";
 import { PLATFORM_LIST } from "@/lib/platforms";
 import { ModelPicker } from "@/components/ModelPicker";
+import { MediaPicker } from "@/components/MediaPicker";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "sonner";
-import { Sparkles, Image as ImageIcon, Video, Music, Mic, Loader2, Type, Download, Send, Copy } from "lucide-react";
+import {
+  Sparkles, Image as ImageIcon, Video, Music, Mic, Loader2, Type, Download, Send, Copy,
+  Plus, X, Upload, Shuffle,
+} from "lucide-react";
 
 const TABS = [
   { key: "text", label: "Write", icon: Type },
@@ -134,22 +138,29 @@ function TextGen() {
   );
 }
 
+// refMax: how many reference images each model's real schema (image_urls)
+// accepts — verified per model (poyo_search_models). Every one of these
+// models uses reference images to edit rather than to strictly clone, so the
+// same field doubles as "turn this photo into..." and "combine these into...".
 const IMAGE_MODELS = [
-  { value: "gpt-image-2", label: "GPT Image 2" },
-  { value: "nano-banana-2", label: "Nano Banana 2" },
-  { value: "nano-banana-pro", label: "Nano Banana Pro" },
-  { value: "qwen-image-3", label: "Qwen Image 3" },
-  { value: "flux-dev", label: "FLUX Dev" },
-  { value: "z-image", label: "Z-Image" },
+  { value: "gpt-image-2", label: "GPT Image 2", refMax: 4 },
+  { value: "nano-banana-2", label: "Nano Banana 2", refMax: 4 },
+  { value: "nano-banana-pro", label: "Nano Banana Pro", refMax: 4 },
+  { value: "qwen-image-3", label: "Qwen Image 3", refMax: 3 },
+  { value: "flux-dev", label: "FLUX Dev", refMax: 1 },
+  { value: "z-image", label: "Z-Image", refMax: 1 },
 ];
 const IMAGE_SIZES = ["1:1", "4:5", "3:2", "2:3", "16:9", "9:16", "4:3", "3:4"];
 const IMAGE_QUALITY = ["low", "medium", "high"];
 
-// Verified against each model's real input schema (poyo_get_model_schema) —
+// Verified against each model's real input schema (poyo_search_models) —
 // they genuinely differ: some have no resolution field, duration is a fixed
 // enum for some and a free range for others, and the audio flag is named
 // generate_audio, sound, or audio depending on the model (or doesn't exist).
 // resolutions/aspects: null means the model has no such field at all.
+// refImages: the reference-image field this model's schema actually declares
+// — field name, how many, and (hailuo-2.3 only) a single scalar URL rather
+// than an array. null means this model has no image-to-video path at all.
 const VIDEO_MODELS = [
   {
     value: "seedance-2-fast", label: "Seedance 2 Fast",
@@ -157,6 +168,7 @@ const VIDEO_MODELS = [
     durations: { type: "range", min: 4, max: 15 }, defaultDuration: 5,
     aspects: ["auto", "1:1", "21:9", "4:3", "3:4", "16:9", "9:16"], defaultAspect: "16:9",
     audioField: "generate_audio", defaultAudio: false,
+    refImages: { field: "image_urls", max: 2 },
   },
   {
     value: "seedance-2", label: "Seedance 2",
@@ -164,6 +176,7 @@ const VIDEO_MODELS = [
     durations: { type: "range", min: 4, max: 15 }, defaultDuration: 5,
     aspects: ["auto", "1:1", "21:9", "4:3", "3:4", "16:9", "9:16"], defaultAspect: "16:9",
     audioField: "generate_audio", defaultAudio: false,
+    refImages: { field: "image_urls", max: 2 },
   },
   {
     value: "seedance-2.5", label: "Seedance 2.5",
@@ -171,6 +184,7 @@ const VIDEO_MODELS = [
     durations: { type: "range", min: 4, max: 30 }, defaultDuration: 5,
     aspects: ["auto", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"], defaultAspect: "16:9",
     audioField: "generate_audio", defaultAudio: false,
+    refImages: { field: "image_urls", max: 2 },
   },
   {
     value: "kling-3.0-turbo/pro", label: "Kling 3.0 Turbo Pro",
@@ -178,6 +192,7 @@ const VIDEO_MODELS = [
     durations: { type: "range", min: 3, max: 15 }, defaultDuration: 5,
     aspects: ["16:9", "9:16", "1:1"], defaultAspect: "16:9",
     audioField: null,
+    refImages: { field: "image_urls", max: 1 },
   },
   {
     value: "veo3.1-quality-official", label: "Veo 3.1 Quality",
@@ -185,6 +200,7 @@ const VIDEO_MODELS = [
     durations: { type: "enum", values: [4, 6, 8] }, defaultDuration: 8,
     aspects: ["auto", "16:9", "9:16"], defaultAspect: "16:9",
     audioField: "sound", defaultAudio: true,
+    refImages: { field: "image_urls", max: 3 },
   },
   {
     value: "veo3.1-fast-official", label: "Veo 3.1 Fast",
@@ -192,6 +208,7 @@ const VIDEO_MODELS = [
     durations: { type: "enum", values: [4, 6, 8] }, defaultDuration: 8,
     aspects: ["auto", "16:9", "9:16"], defaultAspect: "16:9",
     audioField: "sound", defaultAudio: true,
+    refImages: { field: "image_urls", max: 3 },
   },
   {
     value: "sora-2-official", label: "Sora 2",
@@ -199,6 +216,7 @@ const VIDEO_MODELS = [
     durations: { type: "enum", values: [4, 8, 12, 16, 20] }, defaultDuration: 4,
     aspects: ["16:9", "9:16"], defaultAspect: "16:9",
     audioField: null,
+    refImages: { field: "image_urls", max: 1 },
   },
   {
     value: "runway-gen-4.5", label: "Runway Gen-4.5",
@@ -206,6 +224,7 @@ const VIDEO_MODELS = [
     durations: { type: "enum", values: [5, 10] }, defaultDuration: 5,
     aspects: ["16:9", "9:16", "4:3", "3:4", "1:1", "21:9"], defaultAspect: "16:9",
     audioField: null,
+    refImages: { field: "image_urls", max: 1 },
   },
   {
     value: "wan3.0-text-to-video", label: "Wan 3.0",
@@ -213,6 +232,7 @@ const VIDEO_MODELS = [
     durations: { type: "range", min: 2, max: 30 }, defaultDuration: 5,
     aspects: ["adaptive", "16:9", "4:3", "1:1", "3:4", "9:16"], defaultAspect: "adaptive",
     audioField: "audio", defaultAudio: true,
+    refImages: { field: "image_urls", max: 2 },
   },
   {
     value: "hailuo-03", label: "Hailuo 03",
@@ -220,6 +240,7 @@ const VIDEO_MODELS = [
     durations: { type: "range", min: 5, max: 15 }, defaultDuration: 5,
     aspects: ["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"], defaultAspect: "16:9",
     audioField: null,
+    refImages: { field: "image_urls", max: 2 },
   },
   {
     value: "hailuo-2.3", label: "Hailuo 2.3",
@@ -227,6 +248,7 @@ const VIDEO_MODELS = [
     durations: { type: "enum", values: [6, 10] }, defaultDuration: 6,
     aspects: null,
     audioField: null,
+    refImages: { field: "start_image_url", max: 1, single: true },
   },
 ];
 
@@ -308,13 +330,29 @@ function MediaGen({ kind, initialPrompt = "" }) {
   const [voiceName, setVoiceName] = useState("Rachel");
   const [voiceStability, setVoiceStability] = useState(0.5);
   const [voiceSpeed, setVoiceSpeed] = useState(1);
+  // reference images (image + video) — a still turned into an edit or into
+  // the first/last frame of a clip, not just described in the prompt.
+  const [refImages, setRefImages] = useState([]);
+  // mashup (music only) — two of your own tracks blended into a new one.
+  const [mashupTracks, setMashupTracks] = useState([null, null]);
+  // One MediaPicker instance serves three different actions — which one
+  // depends on why it was opened: add a reference image, fill a mashup slot,
+  // or attach an existing file in place of generating.
+  const [picker, setPicker] = useState(null); // null | {mode:"ref"} | {mode:"mashup", slot} | {mode:"use"}
 
+  const currentImageModel = IMAGE_MODELS.find((m) => m.value === imgModel) || IMAGE_MODELS[0];
   const currentVideoModel = VIDEO_MODELS.find((m) => m.value === vidModel) || VIDEO_MODELS[0];
   const currentVoiceModel = VOICE_MODELS.find((m) => m.value === voiceModel) || VOICE_MODELS[0];
+  const refMax = kind === "image" ? currentImageModel.refMax : currentVideoModel.refImages?.max || 0;
 
   // Switching models resets format options to that model's own defaults —
   // simpler and safer than trying to carry over a combination the new model
   // might reject outright (several of these declare additionalProperties: false).
+  const onImageModel = (v) => {
+    const m = IMAGE_MODELS.find((x) => x.value === v) || IMAGE_MODELS[0];
+    setImgModel(v);
+    setRefImages((s) => s.slice(0, m.refMax));
+  };
   const onVideoModel = (v) => {
     const m = VIDEO_MODELS.find((x) => x.value === v) || VIDEO_MODELS[0];
     setVidModel(v);
@@ -322,12 +360,17 @@ function MediaGen({ kind, initialPrompt = "" }) {
     setVidDuration(m.defaultDuration);
     setVidAspect(m.defaultAspect || "");
     setVidAudio(m.defaultAudio || false);
+    setRefImages((s) => s.slice(0, m.refImages?.max || 0));
   };
+
+  const addRefImage = (item) => setRefImages((s) => [...s, item].slice(0, refMax));
+  const removeRefImage = (i) => setRefImages((s) => s.filter((_, idx) => idx !== i));
 
   const buildOptions = () => {
     if (kind === "image") {
       const o = { model: imgModel, size: imgSize };
       if (imgModel.startsWith("gpt-image")) o.quality = imgQuality;
+      if (refImages.length) o.image_urls = refImages.map((r) => r.url);
       return o;
     }
     if (kind === "video") {
@@ -335,6 +378,10 @@ function MediaGen({ kind, initialPrompt = "" }) {
       if (currentVideoModel.resolutions) o.resolution = vidRes;
       if (currentVideoModel.aspects) o.aspect_ratio = vidAspect;
       if (currentVideoModel.audioField) o[currentVideoModel.audioField] = vidAudio;
+      if (currentVideoModel.refImages && refImages.length) {
+        const urls = refImages.map((r) => r.url);
+        o[currentVideoModel.refImages.field] = currentVideoModel.refImages.single ? urls[0] : urls;
+      }
       return o;
     }
     if (kind === "voice") {
@@ -342,8 +389,12 @@ function MediaGen({ kind, initialPrompt = "" }) {
       if (currentVoiceModel.speed) o.speed = Number(voiceSpeed);
       return o;
     }
-    return { instrumental, mv: musicVersion };
+    const o = { instrumental, mv: musicVersion };
+    if (mashupTracks[0] && mashupTracks[1]) o.reference_urls = mashupTracks.map((t) => t.url);
+    return o;
   };
+
+  const isMashup = kind === "music" && mashupTracks[0] && mashupTracks[1];
 
   const run = async () => {
     if (!prompt.trim()) return;
@@ -360,6 +411,20 @@ function MediaGen({ kind, initialPrompt = "" }) {
       toast.error(apiErrorMessage(e, "Generation failed"));
       setStatus("failed");
     } finally { setLoading(false); }
+  };
+
+  const onPickerSelect = (item) => {
+    if (picker?.mode === "ref") {
+      addRefImage(item);
+    } else if (picker?.mode === "mashup") {
+      setMashupTracks((s) => s.map((t, i) => (i === picker.slot ? item : t)));
+    } else {
+      // Skips generation entirely — an uploaded or stock file is already the
+      // finished thing, so it lands straight in the same preview + "Use in
+      // post" flow a generated result would.
+      setFileUrl(item.url); setStatus("finished"); setProgress(100); setLoading(false);
+      toast.success("Attached");
+    }
   };
 
   const currentModelLabel = kind === "image"
@@ -391,7 +456,7 @@ function MediaGen({ kind, initialPrompt = "" }) {
         {kind === "image" && (
           <div className="mt-4 space-y-3" data-testid="image-controls">
             <Field label="Model">
-              <StudioSelect value={imgModel} onChange={setImgModel} options={IMAGE_MODELS} testid="studio-image-model" />
+              <StudioSelect value={imgModel} onChange={onImageModel} options={IMAGE_MODELS} testid="studio-image-model" />
             </Field>
             <div className="flex gap-3">
               <Field label="Aspect / Size">
@@ -403,6 +468,8 @@ function MediaGen({ kind, initialPrompt = "" }) {
                 </Field>
               )}
             </div>
+            <ReferenceImages images={refImages} max={refMax} onAdd={() => setPicker({ mode: "ref" })} onRemove={removeRefImage}
+              hint="Turns this from a text prompt into an edit of your photo — e.g. “put this product in a studio setting.”" />
           </div>
         )}
 
@@ -432,6 +499,10 @@ function MediaGen({ kind, initialPrompt = "" }) {
                 Generate audio track
               </label>
             )}
+            {currentVideoModel.refImages && (
+              <ReferenceImages images={refImages} max={refMax} onAdd={() => setPicker({ mode: "ref" })} onRemove={removeRefImage}
+                hint={refMax > 1 ? "First image is the starting frame; a second is the ending frame." : "Animates this photo into the clip's starting frame."} />
+            )}
           </div>
         )}
 
@@ -444,6 +515,29 @@ function MediaGen({ kind, initialPrompt = "" }) {
               <input type="checkbox" checked={instrumental} onChange={(e) => setInstrumental(e.target.checked)} className="accent-lime" data-testid="studio-music-instrumental" />
               Instrumental (no vocals)
             </label>
+            <div>
+              <label className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">
+                <Shuffle size={11} /> Mashup two of your tracks (optional)
+              </label>
+              <div className="mt-1.5 grid grid-cols-2 gap-2">
+                {[0, 1].map((i) => (
+                  <button key={i} onClick={() => setPicker({ mode: "mashup", slot: i })} data-testid={`studio-mashup-slot-${i}`}
+                    className="flex items-center gap-1.5 rounded-lg border border-dashed border-white/15 bg-[#0A0A0A] px-2.5 py-2 text-left text-xs text-zinc-400 hover:border-lime/40 hover:text-white">
+                    {mashupTracks[i] ? (
+                      <>
+                        <Music size={12} className="flex-shrink-0 text-lime" />
+                        <span className="min-w-0 flex-1 truncate">{mashupTracks[i].filename || "Track " + (i + 1)}</span>
+                        <X size={12} className="flex-shrink-0 text-zinc-600 hover:text-magic"
+                          onClick={(e) => { e.stopPropagation(); setMashupTracks((s) => s.map((t, idx) => idx === i ? null : t)); }} />
+                      </>
+                    ) : (
+                      <><Upload size={12} className="flex-shrink-0" /> Track {i + 1}</>
+                    )}
+                  </button>
+                ))}
+              </div>
+              {isMashup && <p className="mt-1.5 text-xs text-zinc-600">The prompt above guides how these two are blended.</p>}
+            </div>
           </div>
         )}
 
@@ -481,9 +575,15 @@ function MediaGen({ kind, initialPrompt = "" }) {
 
         <Button data-testid={`studio-generate-${kind}`} onClick={run} disabled={loading}
           className="mt-5 w-full gap-2 rounded-lg bg-lime font-semibold text-[#0A0A0A] hover:bg-lime-hover">
-          {loading ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />} Generate {kind === "voice" ? "voice over" : kind}
+          {loading ? <Loader2 size={18} className="animate-spin" /> : isMashup ? <Shuffle size={18} /> : <Sparkles size={18} />}
+          {isMashup ? "Blend into new music" : `Generate ${kind === "voice" ? "voice over" : kind}`}
         </Button>
         {kind !== "image" && <p className="mt-3 text-xs text-zinc-600">Video, music & voice over can take 1–4 minutes. Keep this tab open.</p>}
+
+        <button onClick={() => setPicker({ mode: "use" })} data-testid={`studio-use-existing-${kind}`}
+          className="mt-3 flex w-full items-center justify-center gap-1.5 text-xs text-zinc-500 hover:text-white">
+          <Upload size={12} /> Or use a file you already have — no generation needed
+        </button>
       </div>
 
       <div className={`rounded-xl border bg-[#121212] p-5 ${loading ? "generating-pulse border-lime/40" : "border-white/10"}`}>
@@ -515,6 +615,44 @@ function MediaGen({ kind, initialPrompt = "" }) {
           </div>
         )}
       </div>
+
+      <MediaPicker
+        open={picker !== null}
+        onOpenChange={(open) => !open && setPicker(null)}
+        defaultType={picker?.mode === "ref" ? "image" : picker?.mode === "mashup" ? "audio" : (kind === "voice" || kind === "music") ? "audio" : kind}
+        onSelect={onPickerSelect}
+      />
+    </div>
+  );
+}
+
+// A row of picked reference images: thumbnails you can remove, plus an "Add"
+// tile up to the model's real limit. Shared by the Image and Video tabs.
+function ReferenceImages({ images, max, onAdd, onRemove, hint }) {
+  if (!max) return null;
+  return (
+    <div>
+      <label className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">
+        Reference images (optional) · {images.length}/{max}
+      </label>
+      <div className="mt-1.5 flex flex-wrap gap-2">
+        {images.map((img, i) => (
+          <div key={i} className="group relative h-14 w-14 overflow-hidden rounded-lg border border-white/10" data-testid={`studio-ref-image-${i}`}>
+            <img src={img.thumbnail || img.url} alt="" className="h-full w-full object-cover" />
+            <button onClick={() => onRemove(i)} data-testid={`studio-ref-remove-${i}`}
+              className="absolute inset-0 flex items-center justify-center bg-black/60 text-white opacity-0 transition-opacity group-hover:opacity-100">
+              <X size={16} />
+            </button>
+          </div>
+        ))}
+        {images.length < max && (
+          <button onClick={onAdd} data-testid="studio-ref-add"
+            className="flex h-14 w-14 items-center justify-center rounded-lg border-2 border-dashed border-white/15 text-zinc-600 hover:border-lime/40 hover:text-lime">
+            <Plus size={16} />
+          </button>
+        )}
+      </div>
+      {hint && <p className="mt-1.5 text-xs text-zinc-600">{hint}</p>}
     </div>
   );
 }
