@@ -9,11 +9,17 @@ import re
 import logging
 import requests
 import xml.etree.ElementTree as ET
+import colorsys
+import io
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import urljoin
+from PIL import Image
+from pypdf import PdfReader
+from pptx import Presentation
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -113,6 +119,11 @@ _CREATE_TABLES = [
         id TEXT PRIMARY KEY, url TEXT NOT NULL, pathname TEXT,
         filename TEXT NOT NULL, content_type TEXT, kind TEXT NOT NULL DEFAULT 'file',
         size INTEGER DEFAULT 0, created_at TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS visual_templates (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, source_kind TEXT NOT NULL,
+        source_url TEXT NOT NULL, format TEXT NOT NULL DEFAULT 'carousel',
+        theme TEXT NOT NULL DEFAULT 'midnight', colors TEXT NOT NULL DEFAULT '{}',
+        slides TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL)""",
 ]
 
 # Columns added after the first release. Existing databases predate them, so
@@ -129,6 +140,9 @@ _ADD_COLUMNS = {
         ("meta", "ALTER TABLE generations ADD COLUMN meta TEXT"),
         ("favorite", "ALTER TABLE generations ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0"),
         ("updated_at", "ALTER TABLE generations ADD COLUMN updated_at TEXT"),
+    ],
+    "brand_kits": [
+        ("style", "ALTER TABLE brand_kits ADD COLUMN style TEXT"),
     ],
 }
 
@@ -166,12 +180,33 @@ def _poyo_headers():
     return {"Authorization": f"Bearer {POYO_API_KEY}", "Content-Type": "application/json"}
 
 
+# A build-post/restyle/coach call that times out used to surface as a raw
+# "ReadTimeout: HTTPSConnectionPool(...)" string straight from requests — every
+# other PoYo error path already turns into a clean HTTPException, this is the
+# one gap where the global exception handler was the thing actually reporting
+# it. One call site for every PoYo request closes that gap for good.
+def _poyo_call(method: str, path: str, *, timeout: int, **kwargs):
+    url = f"{POYO_BASE_URL}{path}"
+    fn = requests.post if method == "POST" else requests.get
+    try:
+        return fn(url, headers=_poyo_headers(), timeout=timeout, **kwargs)
+    except requests.exceptions.Timeout:
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                f"PoYo didn't respond within {timeout}s. This happens with long prompts, big media "
+                "jobs, or a slower model — try again, or switch to a faster model."
+            ),
+        )
+    except requests.exceptions.ConnectionError as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach PoYo: {e}")
+
+
 def _poyo_chat(messages: List[Dict[str, str]], model: str, temperature: float = 0.8, max_tokens: int = 1200):
-    resp = requests.post(
-        f"{POYO_BASE_URL}/v1/chat/completions",
-        headers=_poyo_headers(),
+    resp = _poyo_call(
+        "POST", "/v1/chat/completions",
         json={"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens},
-        timeout=90,
+        timeout=110,
     )
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail=f"PoYo chat error {resp.status_code}: {resp.text[:400]}")
@@ -184,7 +219,7 @@ def _poyo_chat(messages: List[Dict[str, str]], model: str, temperature: float = 
 
 
 def _poyo_models():
-    resp = requests.get(f"{POYO_BASE_URL}/v1/models", headers=_poyo_headers(), timeout=30)
+    resp = _poyo_call("GET", "/v1/models", timeout=30)
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail=f"PoYo models error {resp.status_code}: {resp.text[:400]}")
     return resp.json()
@@ -197,11 +232,10 @@ RESPONSES_ONLY_MODELS = {"gpt-5-6-luna", "gpt-5-6-sol", "gpt-5-6-terra"}
 
 
 def _poyo_responses(messages: List[Dict[str, str]], model: str, temperature: float = 0.8, max_tokens: int = 1200):
-    resp = requests.post(
-        f"{POYO_BASE_URL}/v1/responses",
-        headers=_poyo_headers(),
+    resp = _poyo_call(
+        "POST", "/v1/responses",
         json={"model": model, "input": messages, "temperature": temperature, "max_output_tokens": max_tokens},
-        timeout=90,
+        timeout=110,
     )
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail=f"PoYo responses error {resp.status_code}: {resp.text[:400]}")
@@ -215,12 +249,7 @@ def _poyo_responses(messages: List[Dict[str, str]], model: str, temperature: flo
 
 
 def _poyo_submit(model: str, input_payload: Dict[str, Any]):
-    resp = requests.post(
-        f"{POYO_BASE_URL}/api/generate/submit",
-        headers=_poyo_headers(),
-        json={"model": model, "input": input_payload},
-        timeout=60,
-    )
+    resp = _poyo_call("POST", "/api/generate/submit", json={"model": model, "input": input_payload}, timeout=60)
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail=f"PoYo submit error {resp.status_code}: {resp.text[:400]}")
     body = resp.json()
@@ -232,11 +261,7 @@ def _poyo_submit(model: str, input_payload: Dict[str, Any]):
 
 
 def _poyo_status(task_id: str):
-    resp = requests.get(
-        f"{POYO_BASE_URL}/api/generate/status/{task_id}",
-        headers=_poyo_headers(),
-        timeout=60,
-    )
+    resp = _poyo_call("GET", f"/api/generate/status/{task_id}", timeout=60)
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail=f"PoYo status error {resp.status_code}: {resp.text[:400]}")
     return resp.json().get("data", {})
@@ -398,7 +423,7 @@ def _row_to_generation(row: dict):
 # Text kinds have no PoYo task behind them, so they land already finished with
 # their result in `output`. task_id stays '' rather than NULL because the column
 # predates them and is NOT NULL.
-TEXT_KINDS = ("ideate", "write", "repurpose", "templates", "coach", "visual", "post_plan", "restyle")
+TEXT_KINDS = ("ideate", "write", "repurpose", "templates", "coach", "visual", "post_plan", "restyle", "brand_analysis")
 
 
 async def record_generation(kind: str, prompt: str, model: str, output: Any = None,
@@ -903,6 +928,374 @@ async def delete_upload(upload_id: str):
     return {"ok": True}
 
 
+# ---------------- Content extraction (brand analysis + file-to-template) ----------------
+# Every extraction below is either deterministic (real pixels via Pillow, real
+# markup via regex/XML) or reads real extracted text before ever reaching the
+# model. That second part matters: PoYo's own catalog types every chat model's
+# `content` field as a plain string (verified against the real schema of every
+# model this app uses) — there is no documented way to hand one of these
+# models an image and get a vision analysis back, so this deliberately never
+# pretends to "look at" a picture. What it can do honestly: read a raster
+# image's actual pixels for color, read an SVG's or a webpage's actual markup
+# for color/fonts, and read a PDF's or webpage's actual text for voice/tone.
+
+def _fetch_bytes(url: str, max_bytes: int = 20 * 1024 * 1024) -> bytes:
+    r = requests.get(url, timeout=30)
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Could not fetch {url} ({r.status_code})")
+    if len(r.content) > max_bytes:
+        raise HTTPException(status_code=413, detail="That file is too large to analyze")
+    return r.content
+
+
+def _dominant_colors(image_bytes: bytes, n: int = 6) -> List[str]:
+    """A small palette of an image's most common colors, by real pixel count."""
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    img.thumbnail((150, 150))
+    paletted = img.quantize(colors=min(n, 16), method=Image.MEDIANCUT)
+    palette = paletted.getpalette()
+    counts = sorted(paletted.getcolors(), reverse=True)
+    colors = []
+    for _count, idx in counts[:n]:
+        r, g, b = palette[idx * 3:idx * 3 + 3]
+        colors.append(f"#{r:02x}{g:02x}{b:02x}")
+    return colors
+
+
+def _suggest_palette(hexes: List[str]) -> Dict[str, str]:
+    """Assigns bg/fg/accent/sub roles to a raw color list using real HSV
+    brightness/saturation — a heuristic, not a guess: the darkest and
+    brightest colors become background/text (whichever way the source
+    leans), the most saturated becomes the accent."""
+    if not hexes:
+        return {}
+
+    def hsv(hexcode):
+        r, g, b = (int(hexcode[i:i + 2], 16) / 255 for i in (1, 3, 5))
+        return colorsys.rgb_to_hsv(r, g, b)
+
+    scored = [(hx, *hsv(hx)) for hx in hexes]  # (hex, h, s, v)
+    by_v = sorted(scored, key=lambda t: t[3])
+    darkest, brightest = by_v[0][0], by_v[-1][0]
+    avg_v = sum(t[3] for t in scored) / len(scored)
+    bg, fg = (darkest, brightest) if avg_v < 0.5 else (brightest, darkest)
+    by_sat = sorted(scored, key=lambda t: t[2], reverse=True)
+    accent = next((t[0] for t in by_sat if t[0] not in (bg, fg)), by_sat[0][0])
+    sub = next((hx for hx in hexes if hx not in (bg, fg, accent)), fg)
+    return {"bg": bg, "fg": fg, "accent": accent, "sub": sub}
+
+
+_HEX_RE = re.compile(r"#(?:[0-9a-fA-F]{3}){1,2}\b")
+_RGB_RE = re.compile(r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)")
+_FONT_FAMILY_RE = re.compile(r"font-family\s*[:=]\s*[\"']?([^;\"'>]+)", re.IGNORECASE)
+_GENERIC_FONTS = {"inherit", "sans-serif", "serif", "monospace", "cursive", "fantasy", "system-ui"}
+
+
+def _extract_colors_and_fonts(markup: str) -> (List[str], List[str]):
+    """Shared regex pass over any color-bearing markup (SVG or HTML/CSS)."""
+    hexes = []
+    for m in _HEX_RE.finditer(markup):
+        h = m.group(0).lower()
+        if len(h) == 4:
+            h = "#" + "".join(c * 2 for c in h[1:])
+        if h not in hexes:
+            hexes.append(h)
+    for m in _RGB_RE.finditer(markup):
+        r, g, b = (int(x) for x in m.groups())
+        h = f"#{r:02x}{g:02x}{b:02x}"
+        if h not in hexes:
+            hexes.append(h)
+    # Pure black/white are usually outlines or page background, not "the
+    # brand's colors" — drop them unless they're all we found.
+    filtered = [h for h in hexes if h not in ("#ffffff", "#000000")]
+    hexes = filtered or hexes
+
+    fonts = []
+    for m in _FONT_FAMILY_RE.finditer(markup):
+        name = m.group(1).split(",")[0].strip().strip("'\"")
+        if name and name.lower() not in _GENERIC_FONTS and name not in fonts:
+            fonts.append(name)
+    return hexes[:8], fonts[:3]
+
+
+def _pdf_extract(pdf_bytes: bytes, max_pages: int = 20) -> Dict[str, Any]:
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    pages = reader.pages[:max_pages]
+    page_texts = [(p.extract_text() or "").strip() for p in pages]
+    full_text = "\n\n".join(t for t in page_texts if t)
+    first_image = None
+    for p in pages:
+        try:
+            for img in p.images:
+                first_image = img.data
+                break
+        except Exception:
+            pass
+        if first_image:
+            break
+    return {"page_count": len(reader.pages), "text": full_text[:8000], "page_texts": page_texts, "first_image": first_image}
+
+
+def _pptx_extract(pptx_bytes: bytes, max_slides: int = 30) -> List[Dict[str, str]]:
+    prs = Presentation(io.BytesIO(pptx_bytes))
+    slides = []
+    for slide in list(prs.slides)[:max_slides]:
+        title, body_parts = "", []
+        for shape in slide.shapes:
+            if not getattr(shape, "has_text_frame", False):
+                continue
+            text = "\n".join(p.text for p in shape.text_frame.paragraphs if p.text).strip()
+            if not text:
+                continue
+            if shape == slide.shapes.title and not title:
+                title = text
+            else:
+                body_parts.append(text)
+        slides.append({"heading": title, "body": " ".join(body_parts)[:500]})
+    return slides
+
+
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+_META_DESC_RE = re.compile(r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']+)', re.IGNORECASE)
+_OG_IMAGE_RE = re.compile(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)', re.IGNORECASE)
+_ICON_RE = re.compile(r'<link[^>]+rel=["\'][^"\']*icon[^"\']*["\'][^>]+href=["\']([^"\']+)', re.IGNORECASE)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _url_analysis(url: str) -> Dict[str, Any]:
+    r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 (compatible; CreateOSBot/1.0)"})
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Could not fetch that page ({r.status_code})")
+    html = r.text[:400000]
+    title_m, desc_m = _TITLE_RE.search(html), _META_DESC_RE.search(html)
+    og_m, icon_m = _OG_IMAGE_RE.search(html), _ICON_RE.search(html)
+    logo_url = urljoin(url, (og_m or icon_m).group(1)) if (og_m or icon_m) else None
+    hexes, fonts = _extract_colors_and_fonts(html)
+    body_text = re.sub(r"\s+", " ", _TAG_RE.sub(" ", html)).strip()[:6000]
+    return {
+        "title": title_m.group(1).strip() if title_m else "",
+        "description": desc_m.group(1).strip() if desc_m else "",
+        "logo_url": logo_url, "colors": hexes, "fonts": fonts, "text": body_text,
+    }
+
+
+async def _infer_voice_style(text: str, context: str, model: str) -> Dict[str, str]:
+    """The one AI call in this whole section — and it only ever reads text
+    that was really extracted, never an image."""
+    if not text or not text.strip():
+        return {"voice": "", "style": "", "suggested_name": ""}
+    system = (
+        f"You are a brand strategist. Read this real text extracted from {context} and infer the "
+        "brand's voice and style. Return ONLY JSON: "
+        '{"voice": "2-3 sentences describing tone, vocabulary and personality, written as instructions '
+        'for a copywriter", "style": "2-3 sentences describing visual/design style as implied by the '
+        'words used (e.g. minimal, playful, technical, luxury) — note that this is inferred from text, '
+        'not a visual inspection", "suggested_name": "a plausible brand name if one clearly appears in '
+        'the text, else an empty string"}'
+    )
+    content = await chat(
+        [{"role": "system", "content": system}, {"role": "user", "content": text[:6000]}], model, 0.6, 500
+    )
+    data = _extract_json(content) or {}
+    return {
+        "voice": data.get("voice", "") or "", "style": data.get("style", "") or "",
+        "suggested_name": data.get("suggested_name", "") or "",
+    }
+
+
+class BrandAnalyzeRequest(BaseModel):
+    source_type: str  # image | pdf | svg | url
+    source_url: str
+    model: Optional[str] = None
+
+
+@api_router.post("/brand-kit/analyze")
+async def analyze_brand_source(req: BrandAnalyzeRequest):
+    """Never auto-saves — returns a preview the Brand Kit page lets you review
+    (and edit) before Save actually commits anything."""
+    model = req.model or CHAT_MODEL
+    result = {"colors": {}, "fonts": {}, "style": "", "voice": "", "logo_url": None,
+              "detected_name": "", "source_note": ""}
+
+    if req.source_type == "image":
+        data = await asyncio.to_thread(_fetch_bytes, req.source_url)
+        try:
+            hexes = await asyncio.to_thread(_dominant_colors, data)
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"Couldn't read that image: {e}")
+        result["colors"] = _suggest_palette(hexes)
+        result["logo_url"] = req.source_url
+        result["source_note"] = ("Palette extracted directly from the image's pixels. Fonts and voice "
+                                 "can't be read from a picture — fill those in yourself, or analyze a "
+                                 "PDF or website URL instead.")
+
+    elif req.source_type == "svg":
+        data = await asyncio.to_thread(_fetch_bytes, req.source_url, 2 * 1024 * 1024)
+        hexes, fonts = _extract_colors_and_fonts(data.decode("utf-8", errors="ignore"))
+        if hexes:
+            result["colors"] = _suggest_palette(hexes)
+        if fonts:
+            result["fonts"] = {"display": fonts[0], "body": fonts[-1]}
+        result["logo_url"] = req.source_url
+        result["source_note"] = ("Colors and fonts read directly from the SVG's markup." if (hexes or fonts)
+                                 else "No explicit colors or fonts found in this SVG's markup.")
+
+    elif req.source_type == "pdf":
+        data = await asyncio.to_thread(_fetch_bytes, req.source_url)
+        pdf = await asyncio.to_thread(_pdf_extract, data)
+        if pdf["first_image"]:
+            try:
+                hexes = await asyncio.to_thread(_dominant_colors, pdf["first_image"])
+                result["colors"] = _suggest_palette(hexes)
+            except Exception:
+                pass
+        voice = await _infer_voice_style(pdf["text"], f"a {pdf['page_count']}-page PDF", model)
+        result["voice"], result["style"], result["detected_name"] = voice["voice"], voice["style"], voice["suggested_name"]
+        note = f"Voice and style inferred from the PDF's actual text ({pdf['page_count']} pages read)."
+        note += " A color palette was pulled from an image embedded in the PDF." if pdf["first_image"] else " No embedded image found to pull colors from."
+        result["source_note"] = note
+
+    elif req.source_type == "url":
+        page = await asyncio.to_thread(_url_analysis, req.source_url)
+        if page["colors"]:
+            result["colors"] = _suggest_palette(page["colors"])
+        if page["fonts"]:
+            result["fonts"] = {"display": page["fonts"][0], "body": page["fonts"][-1]}
+        result["logo_url"] = page["logo_url"]
+        voice = await _infer_voice_style(f"{page['title']}\n{page['description']}\n{page['text']}", "a website's homepage", model)
+        result["voice"], result["style"] = voice["voice"], voice["style"]
+        result["detected_name"] = voice["suggested_name"] or page["title"]
+        result["source_note"] = "Colors read from the page's own CSS/markup; voice inferred from its real text."
+
+    else:
+        raise HTTPException(status_code=400, detail="source_type must be image, pdf, svg, or url")
+
+    result["generation_id"] = await record_generation(
+        "brand_analysis", req.source_url, model, output=json.dumps(result),
+        title=f"Brand analysis — {req.source_type}", meta={"source_type": req.source_type},
+    )
+    return result
+
+
+# ---------------- Custom templates (from an uploaded file) ----------------
+class TemplateFromFileRequest(BaseModel):
+    source_type: str  # pdf | pptx | image
+    source_url: str
+    name: Optional[str] = None
+    model: Optional[str] = None
+
+
+def _maybe_json(v, default):
+    """Accepts either an already-parsed value (building a response straight
+    from a freshly-inserted record) or the JSON text a D1 row stores it as."""
+    return v if isinstance(v, (list, dict)) else json.loads(v or default)
+
+
+def _row_to_visual_template(row: dict):
+    return {
+        "id": row["id"], "name": row["name"], "source_kind": row["source_kind"],
+        "source_url": row["source_url"], "format": row["format"], "theme": row["theme"],
+        "colors": _maybe_json(row.get("colors"), "{}"),
+        "slides": _maybe_json(row.get("slides"), "[]"), "created_at": row["created_at"],
+    }
+
+
+async def _abstract_slides(slides: List[Dict[str, str]], model: str) -> List[Dict[str, str]]:
+    """Turns a specific deck/PDF's real content into a reusable outline — e.g.
+    "Q3 Revenue Growth" becomes "State the headline metric" — so the template
+    fits any future topic, not just the document it came from."""
+    raw = "\n\n".join(f"Slide {i+1}: {s['heading']}\n{s['body']}" for i, s in enumerate(slides) if s["heading"] or s["body"])
+    if not raw.strip():
+        return slides
+    system = (
+        "You turn a specific slide deck into a reusable content template. For each slide, replace its "
+        "specific content with a short generic instruction describing that slide's PURPOSE in the "
+        "narrative (e.g. 'State the headline metric', 'Introduce the problem', 'Give the contrarian "
+        "take'), so someone could reuse this exact structure for a completely different topic. Keep the "
+        f'same number of slides ({len(slides)}). Return ONLY JSON: {{"slides": [{{"heading": "short '
+        'instruction for this slide\'s heading, max 50 chars", "body": "short instruction for this '
+        'slide\'s body, max 100 chars"}}]}}'
+    )
+    content = await chat([{"role": "system", "content": system}, {"role": "user", "content": raw[:6000]}], model, 0.6, 1200)
+    data = _extract_json(content)
+    abstracted = data.get("slides") if data else None
+    if not abstracted or len(abstracted) != len(slides):
+        return slides  # fall back to the real content rather than lose slides
+    return [{"heading": s.get("heading", ""), "body": s.get("body", "")} for s in abstracted]
+
+
+@api_router.post("/templates/from-file")
+async def create_template_from_file(req: TemplateFromFileRequest):
+    await ensure_schema()
+    model = req.model or CHAT_MODEL
+    colors: Dict[str, str] = {}
+
+    if req.source_type == "pptx":
+        data = await asyncio.to_thread(_fetch_bytes, req.source_url)
+        raw_slides = await asyncio.to_thread(_pptx_extract, data)
+        if not raw_slides:
+            raise HTTPException(status_code=422, detail="Couldn't find any slide text in that PPTX")
+        slides = await _abstract_slides(raw_slides, model)
+        fmt, theme, source_kind = "carousel", "midnight", "pptx"
+
+    elif req.source_type == "pdf":
+        data = await asyncio.to_thread(_fetch_bytes, req.source_url)
+        pdf = await asyncio.to_thread(_pdf_extract, data)
+        raw_slides = [{"heading": f"Page {i+1}", "body": t[:500]} for i, t in enumerate(pdf["page_texts"]) if t]
+        if not raw_slides:
+            raise HTTPException(status_code=422, detail="Couldn't find any text in that PDF")
+        slides = await _abstract_slides(raw_slides, model)
+        theme = "midnight"
+        if pdf["first_image"]:
+            try:
+                hexes = await asyncio.to_thread(_dominant_colors, pdf["first_image"])
+                colors = _suggest_palette(hexes)
+            except Exception:
+                pass
+        fmt, source_kind = "carousel", "pdf"
+
+    elif req.source_type == "image":
+        data = await asyncio.to_thread(_fetch_bytes, req.source_url)
+        try:
+            hexes = await asyncio.to_thread(_dominant_colors, data)
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"Couldn't read that image: {e}")
+        colors = _suggest_palette(hexes)  # a single visual has no slide structure, just a palette
+        slides, fmt, theme, source_kind = [], "single", "midnight", "image"
+
+    else:
+        raise HTTPException(status_code=400, detail="source_type must be pdf, pptx, or image")
+
+    record = {
+        "id": str(uuid.uuid4()), "name": req.name or f"{req.source_type.upper()} template",
+        "source_kind": source_kind, "source_url": req.source_url, "format": fmt, "theme": theme,
+        "colors": colors, "slides": slides, "created_at": now_iso(),
+    }
+    await d1_query(
+        "INSERT INTO visual_templates (id, name, source_kind, source_url, format, theme, colors, slides, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [record["id"], record["name"], record["source_kind"], record["source_url"], record["format"],
+         record["theme"], json.dumps(record["colors"]), json.dumps(record["slides"]), record["created_at"]],
+    )
+    return _row_to_visual_template(record)
+
+
+@api_router.get("/templates/custom")
+async def list_custom_templates():
+    await ensure_schema()
+    rows, _ = await d1_query("SELECT * FROM visual_templates ORDER BY created_at DESC LIMIT 100")
+    return [_row_to_visual_template(r) for r in rows]
+
+
+@api_router.delete("/templates/custom/{template_id}")
+async def delete_custom_template(template_id: str):
+    await ensure_schema()
+    rows, _ = await d1_query("DELETE FROM visual_templates WHERE id = ? RETURNING id", [template_id])
+    if not rows:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return {"ok": True}
+
+
 @api_router.post("/ai/generate")
 async def ai_generate(req: GenerateRequest):
     opts = req.options or {}
@@ -1073,6 +1466,7 @@ DEFAULT_BRAND = {
     "logo_url": None,
     "handle": "",
     "voice": "",
+    "style": "",
     "audience": "",
     "hashtags": [],
     "cta": "",
@@ -1087,6 +1481,7 @@ class BrandKitUpdate(BaseModel):
     logo_url: Optional[str] = None
     handle: Optional[str] = None
     voice: Optional[str] = None
+    style: Optional[str] = None
     audience: Optional[str] = None
     hashtags: Optional[List[str]] = None
     cta: Optional[str] = None
@@ -1102,6 +1497,7 @@ def _row_to_brand(row: dict):
         "logo_url": row["logo_url"],
         "handle": row["handle"] or "",
         "voice": row["voice"] or "",
+        "style": row["style"] or "",
         "audience": row["audience"] or "",
         "hashtags": json.loads(row["hashtags"] or "[]"),
         "cta": row["cta"] or "",
@@ -1131,6 +1527,8 @@ def brand_prompt(brand: dict) -> str:
         bits.append(f"Brand name: {brand['name']}.")
     if brand.get("voice"):
         bits.append(f"Brand voice: {brand['voice']}.")
+    if brand.get("style"):
+        bits.append(f"Visual style: {brand['style']}.")
     if brand.get("audience"):
         bits.append(f"Audience: {brand['audience']}.")
     if brand.get("cta"):
@@ -1158,20 +1556,20 @@ async def put_brand_kit(upd: BrandKitUpdate):
     merged = {**DEFAULT_BRAND, **({k: v for k, v in _row_to_brand(rows[0]).items() if k != "id"} if rows else {}), **changes}
     values = [
         merged["name"], json.dumps(merged["colors"]), json.dumps(merged["fonts"]),
-        merged["logo_url"], merged["handle"], merged["voice"], merged["audience"],
+        merged["logo_url"], merged["handle"], merged["voice"], merged["style"], merged["audience"],
         json.dumps(merged["hashtags"]), merged["cta"], json.dumps(merged["banned_words"]), ts,
     ]
     if rows:
         out, _ = await d1_query(
-            "UPDATE brand_kits SET name=?, colors=?, fonts=?, logo_url=?, handle=?, voice=?, audience=?, "
+            "UPDATE brand_kits SET name=?, colors=?, fonts=?, logo_url=?, handle=?, voice=?, style=?, audience=?, "
             "hashtags=?, cta=?, banned_words=?, updated_at=? WHERE id=? RETURNING *",
             values + [rows[0]["id"]],
         )
     else:
         out, _ = await d1_query(
-            "INSERT INTO brand_kits (id, name, colors, fonts, logo_url, handle, voice, audience, hashtags, "
+            "INSERT INTO brand_kits (id, name, colors, fonts, logo_url, handle, voice, style, audience, hashtags, "
             "cta, banned_words, updated_at, is_default, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?) RETURNING *",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?) RETURNING *",
             [str(uuid.uuid4())] + values + [ts],
         )
     return _row_to_brand(out[0])
@@ -1377,6 +1775,7 @@ class BuildPostRequest(BaseModel):
     slides: Optional[int] = None
     model: Optional[str] = None
     use_brand: bool = True
+    custom_template_id: Optional[str] = None
 
 
 @api_router.get("/platform-specs")
@@ -1461,9 +1860,31 @@ async def ai_build_post(req: BuildPostRequest):
     n = int(req.slides or spec["slides"]["default"])
     n = max(spec["slides"]["min"], min(n, spec["slides"]["max"]))
 
+    # A saved custom template (converted from an uploaded PDF/PPTX/image)
+    # pins the slide count and supplies a real outline to follow, rather than
+    # leaving the model to invent a structure from nothing.
+    template = None
+    if req.custom_template_id:
+        rows, _ = await d1_query("SELECT * FROM visual_templates WHERE id = ?", [req.custom_template_id])
+        if not rows:
+            raise HTTPException(status_code=404, detail="That custom template no longer exists")
+        template = _row_to_visual_template(rows[0])
+        if template["format"] in allowed and fmt == "auto":
+            fmt = template["format"]
+        if template["slides"]:
+            n = max(spec["slides"]["min"], min(len(template["slides"]), spec["slides"]["max"]))
+
     brand = await load_brand() if req.use_brand else {}
     brand_note = brand_prompt(brand) if brand else ""
     tone = req.tone or (brand.get("voice") if brand else "") or "confident, specific, no fluff"
+
+    template_note = ""
+    if template and template["slides"]:
+        outline = "\n".join(f"- Slide {i+1}: {s.get('heading', '')} — {s.get('body', '')}" for i, s in enumerate(template["slides"]))
+        template_note = (
+            f" Follow this exact {len(template['slides'])}-slide OUTLINE (from a saved template) — use its "
+            f"purpose for each slide but write fresh content about today's topic, do not copy its wording:\n{outline}\n"
+        )
 
     if fmt == "auto":
         format_rule = (
@@ -1480,7 +1901,7 @@ async def ai_build_post(req: BuildPostRequest):
         f"{format_rule} "
         f"If the format is carousel, thread or reel, produce exactly {n} slides/scenes (a carousel's cover "
         f"is separate and does not count). "
-        f"{brand_note} "
+        f"{brand_note}{template_note}"
         "Return ONLY JSON with this exact shape:\n"
         '{"format": "one of ' + "|".join(allowed) + '", '
         '"title": "internal name for this post, max 60 chars", '
@@ -1517,7 +1938,9 @@ async def ai_build_post(req: BuildPostRequest):
 
     if plan.get("format") not in allowed:
         plan["format"] = fmt if fmt != "auto" else spec["default_format"]
-    theme = ((plan.get("visual") or {}).get("theme")) or "midnight"
+    # A template's theme was a deliberate choice when it was converted —
+    # honor it over whatever the model happened to pick.
+    theme = template["theme"] if template else ((plan.get("visual") or {}).get("theme")) or "midnight"
     if theme not in THEME_KEYS:
         theme = "midnight"
 

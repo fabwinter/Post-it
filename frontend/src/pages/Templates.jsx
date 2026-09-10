@@ -1,12 +1,16 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, apiErrorMessage } from "@/lib/api";
 import { useTextModels } from "@/lib/useTextModels";
+import { useCustomTemplates } from "@/lib/useCustomTemplates";
 import { PLATFORM_LIST } from "@/lib/platforms";
 import { ModelPicker } from "@/components/ModelPicker";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { Flame, MessageCircleQuestion, ListOrdered, Swords, GraduationCap, Loader2, Copy, Send, Sparkles, Wand } from "lucide-react";
+import {
+  Flame, MessageCircleQuestion, ListOrdered, Swords, GraduationCap, Loader2, Copy, Send, Sparkles, Wand,
+  Upload, FileText, Image as ImageIcon, Presentation, Trash2, LayoutTemplate,
+} from "lucide-react";
 
 const TEMPLATES = [
   { key: "hooks", label: "Hooks", icon: Flame, desc: "Scroll-stopping one-liners" },
@@ -14,6 +18,12 @@ const TEMPLATES = [
   { key: "listicle", label: "Listicle", icon: ListOrdered, desc: "Numbered, punchy points" },
   { key: "contrarian", label: "Contrarian", icon: Swords, desc: "Challenge the consensus" },
   { key: "how_to", label: "How-To", icon: GraduationCap, desc: "Outcome, then steps" },
+];
+
+const CUSTOM_TYPES = [
+  { key: "pptx", label: "PowerPoint", icon: Presentation, accept: ".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation" },
+  { key: "pdf", label: "PDF", icon: FileText, accept: ".pdf,application/pdf" },
+  { key: "image", label: "Image", icon: ImageIcon, accept: "image/*" },
 ];
 
 export default function Templates() {
@@ -27,6 +37,11 @@ export default function Templates() {
   const { models, default: defaultModel } = useTextModels("gemini-3-flash-preview");
   const [model, setModel] = useState("");
 
+  const [customType, setCustomType] = useState("pptx");
+  const [converting, setConverting] = useState(false);
+  const customFileRef = useRef(null);
+  const { templates: customTemplates, loading: loadingCustom, reload: reloadCustom } = useCustomTemplates();
+
   const run = async () => {
     if (!topic.trim()) { toast.error("Enter a topic first."); return; }
     setLoading(true); setPosts([]);
@@ -37,6 +52,31 @@ export default function Templates() {
       setPosts(data.posts);
     } catch (e) { toast.error(apiErrorMessage(e, "Couldn't generate templates.")); } finally { setLoading(false); }
   };
+
+  // Uploads the file, then extracts its real layout (slide text, page text,
+  // or a dominant-color palette) into a reusable, saved template.
+  const convertFile = async (file) => {
+    if (!file) return;
+    setConverting(true);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const { data: up } = await api.post("/upload", body);
+      await api.post("/templates/from-file", { source_type: customType, source_url: up.url });
+      await reloadCustom();
+      toast.success("Template saved — use it from the Composer.");
+    } catch (e) { toast.error(apiErrorMessage(e, "Couldn't convert that file.")); }
+    finally { setConverting(false); if (customFileRef.current) customFileRef.current.value = ""; }
+  };
+
+  const deleteCustomTemplate = async (id) => {
+    try {
+      await api.delete(`/templates/custom/${id}`);
+      await reloadCustom();
+    } catch (e) { toast.error(apiErrorMessage(e, "Couldn't delete that template.")); }
+  };
+
+  const openInComposer = (tpl) => navigate("/composer", { state: { applyCustomTemplateId: tpl.id } });
 
   return (
     <div data-testid="templates-page">
@@ -133,6 +173,75 @@ export default function Templates() {
             </div>
           ))}
         </div>
+      </div>
+
+      <div className="mt-8 rounded-xl border border-white/10 bg-[#121212] p-5" data-testid="templates-custom">
+        <h3 className="flex items-center gap-2 font-display text-base font-semibold">
+          <LayoutTemplate size={15} className="text-lime" /> Convert a file into a template
+        </h3>
+        <p className="mt-1.5 text-xs leading-relaxed text-zinc-500">
+          Upload a PowerPoint, PDF, or image and its real layout — slide text, page text, or dominant colors —
+          becomes a reusable outline. Building a post from it writes fresh content into that structure; it doesn't
+          copy the file's wording.
+        </p>
+
+        <div className="mt-4 flex flex-wrap gap-1.5">
+          {CUSTOM_TYPES.map((t) => {
+            const Icon = t.icon;
+            return (
+              <button key={t.key} onClick={() => setCustomType(t.key)} data-testid={`templates-custom-type-${t.key}`}
+                className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${customType === t.key ? "border-lime bg-lime/10 text-lime" : "border-white/10 text-zinc-400 hover:text-white"}`}>
+                <Icon size={13} /> {t.label}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="mt-3">
+          <input ref={customFileRef} type="file" accept={CUSTOM_TYPES.find((t) => t.key === customType)?.accept}
+            className="hidden" data-testid="templates-custom-file-input" onChange={(e) => convertFile(e.target.files?.[0])} />
+          <Button variant="secondary" onClick={() => customFileRef.current?.click()} disabled={converting} data-testid="templates-custom-convert"
+            className="gap-2 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
+            {converting ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+            {converting ? "Converting…" : `Upload ${customType === "pptx" ? "PowerPoint" : customType} to convert`}
+          </Button>
+        </div>
+
+        {!loadingCustom && customTemplates.length > 0 && (
+          <div className="mt-4 grid gap-2 sm:grid-cols-2">
+            {customTemplates.map((tpl) => (
+              <div key={tpl.id} className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-[#0A0A0A] p-3" data-testid={`templates-custom-item-${tpl.id}`}>
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium text-white">{tpl.name}</div>
+                  <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500">
+                    <span className="uppercase">{tpl.source_kind}</span>
+                    <span>· {tpl.slides.length} slide{tpl.slides.length === 1 ? "" : "s"} · {tpl.format}</span>
+                    {Object.keys(tpl.colors || {}).length > 0 && (
+                      <span className="flex items-center gap-1">
+                        {Object.values(tpl.colors).slice(0, 4).map((hex, i) => (
+                          <span key={i} className="h-3 w-3 rounded-full border border-white/20" style={{ background: hex }} />
+                        ))}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex flex-none items-center gap-1.5">
+                  <Button onClick={() => openInComposer(tpl)} data-testid={`templates-custom-use-${tpl.id}`}
+                    className="h-7 gap-1 rounded-lg bg-lime px-2.5 text-[11px] font-semibold text-[#0A0A0A] hover:bg-lime-hover">
+                    <Wand size={12} /> Use
+                  </Button>
+                  <Button variant="secondary" onClick={() => deleteCustomTemplate(tpl.id)} data-testid={`templates-custom-delete-${tpl.id}`}
+                    className="h-7 w-7 rounded-lg border border-white/10 bg-white/5 p-0 text-zinc-400 hover:text-white">
+                    <Trash2 size={13} />
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {!loadingCustom && customTemplates.length === 0 && (
+          <p className="mt-4 text-xs text-zinc-600">No custom templates yet — convert a file above.</p>
+        )}
       </div>
     </div>
   );
