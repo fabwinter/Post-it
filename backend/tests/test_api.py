@@ -477,7 +477,38 @@ check("image template format is single", tpl["format"] == "single", tpl)
 check("image template carries the real extracted palette", set(tpl["colors"].values()) <= {"#0a0a0a", "#e2ff3d"}, tpl["colors"])
 
 r = c.get("/api/templates/custom")
-check("custom templates list returns saved templates", len(r.json()) == 3, len(r.json()))
+listed = r.json()
+saved_only = [t for t in listed if not t.get("builtin")]
+starters = [t for t in listed if t.get("builtin")]
+check("custom templates list returns saved templates", len(saved_only) == 3, len(saved_only))
+check("saved templates come before the starters", [t.get("builtin", False) for t in listed] == [False] * 3 + [True] * len(starters), len(listed))
+
+# --- starter templates ship with the app ---
+check("starters are listed alongside saved templates", len(starters) == len(server.STARTER_TEMPLATES) and len(starters) >= 5, len(starters))
+check("every starter carries an outline and a description", all(t["slides"] and t["description"] for t in starters))
+check("starters cover more than one format", len({t["format"] for t in starters}) >= 3, {t["format"] for t in starters})
+check("starter layouts reference colours by role, not baked hexes",
+      all("colorRole" in e for t in server.STARTER_TEMPLATES for layout in t["layouts"].values() for e in layout))
+
+r = c.delete(f"/api/templates/custom/{starters[0]['id']}")
+check("a starter can't be deleted", r.status_code == 400 and "can't be deleted" in r.json()["detail"], r.text)
+
+CHAT_REPLY["value"] = json.dumps({
+    "format": "carousel", "title": "Ship weekly", "caption": "c", "hashtags": [],
+    "visual": {"style": "carousel", "title": "Ship weekly",
+               "slides": [{"heading": "H1", "body": "B1"}, {"heading": "H2", "body": "B2"}]}})
+r = c.post("/api/ai/build-post", json={"topic": "shipping weekly", "platform": "instagram",
+                                       "format": "carousel", "custom_template_id": "starter:bold-hook"})
+b = r.json()
+check("build-post accepts a starter template id", r.status_code == 200, r.text[:200])
+check("a starter lays out every generated slide", all(a["spec"].get("elements") for a in b["assets"]), b["assets"][0]["spec"].keys())
+cover_els = b["assets"][0]["spec"]["elements"]
+check("layout elements get unique ids", len({e["id"] for e in cover_els}) == len(cover_els))
+check("the cover's title element received the generated copy",
+      any(e.get("role") == "title" and e.get("text") for e in cover_els), cover_els)
+check("static layout copy is kept as authored", any(e.get("text") == "SWIPE →" for e in cover_els), cover_els)
+check("empty roles are dropped rather than left as blank boxes",
+      all((e.get("text") or "").strip() for e in cover_els if e["type"] == "text"), cover_els)
 
 r = c.delete(f"/api/templates/custom/{pptx_template_id}")
 check("custom template delete succeeds", r.status_code == 200, r.text)
