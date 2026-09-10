@@ -4,7 +4,7 @@ import { toPng } from "html-to-image";
 import { api, apiErrorMessage } from "@/lib/api";
 import { useTextModels } from "@/lib/useTextModels";
 import { ModelPicker } from "@/components/ModelPicker";
-import { useBrand } from "@/lib/useBrand";
+import { useBrand, activeColors } from "@/lib/useBrand";
 import { VisualCard, THEMES } from "@/components/VisualCard";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -119,7 +119,7 @@ export default function Visuals() {
 
           <label className="mt-4 block font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">Theme</label>
           <div className="mt-2 grid grid-cols-2 gap-2">
-            {Object.values(THEMES).concat([{ key: "brand", label: brand.name || "Brand", bg: brand.colors?.bg || "#0A0A0A" }]).map((th) => (
+            {Object.values(THEMES).concat([{ key: "brand", label: brand.name || "Brand", bg: activeColors(brand).bg }]).map((th) => (
               <button key={th.key} onClick={() => setThemeKey(th.key)} data-testid={`visual-theme-${th.key}`}
                 className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs transition-colors ${themeKey === th.key ? "border-lime text-white" : "border-white/10 text-zinc-400 hover:text-white"}`}>
                 <span className="h-4 w-4 rounded-full border border-white/20" style={{ background: th.bg }} />

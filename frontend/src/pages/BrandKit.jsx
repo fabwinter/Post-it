@@ -1,18 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import { api, apiErrorMessage } from "@/lib/api";
-import { useBrand } from "@/lib/useBrand";
+import { useBrandKits } from "@/lib/useBrand";
+import { BRAND_FONTS } from "@/lib/fonts";
 import { VisualCard } from "@/components/VisualCard";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
   Palette, Save, Loader2, Plus, X, Upload, ImageOff, Sparkles, Image as ImageIcon,
-  FileText, Link as LinkIcon, Check, Shapes,
+  FileText, Link as LinkIcon, Check, Shapes, Star, Trash2, Moon, Sun, Type,
 } from "lucide-react";
 
 const COLOR_FIELDS = [
-  { key: "bg", label: "Background" },
-  { key: "fg", label: "Text" },
-  { key: "accent", label: "Accent" },
+  { key: "bg", label: "Primary" },
+  { key: "fg", label: "Secondary" },
+  { key: "accent", label: "Tertiary" },
   { key: "sub", label: "Muted" },
 ];
 
@@ -23,8 +24,18 @@ const IMPORT_TYPES = [
   { key: "url", label: "Website URL", icon: LinkIcon },
 ];
 
+const emptyKit = () => ({
+  id: null, name: "New brand kit",
+  colors: { dark: { bg: "#0A0A0A", fg: "#FFFFFF", accent: "#E2FF3D", sub: "#a1a1aa" },
+            light: { bg: "#FFFFFF", fg: "#0A0A0A", accent: "#0047FF", sub: "#6b7280" } },
+  color_mode: "dark", fonts: { display: "Inter", body: "Inter" },
+  logo_url: null, handle: "", voice: "", style: "", audience: "",
+  hashtags: [], cta: "", banned_words: [], is_default: false,
+});
+
 export default function BrandKit() {
-  const { brand, loading, reload } = useBrand();
+  const { kits, loading, reload } = useBrandKits();
+  const [selectedId, setSelectedId] = useState(undefined); // undefined = not landed yet, null = new unsaved kit
   const [form, setForm] = useState(null);
   const [saving, setSaving] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
@@ -37,14 +48,47 @@ export default function BrandKit() {
   const [applied, setApplied] = useState(false);
   const importFileRef = useRef(null);
 
-  useEffect(() => { if (!loading) setForm(brand); }, [loading, brand]);
+  // Land on the default kit once the list loads, and again whenever the
+  // selected kit disappears (deleted, say) — but never fight a manual pick.
+  useEffect(() => {
+    if (loading) return;
+    if (selectedId !== undefined && (selectedId === null || kits.some((k) => k.id === selectedId))) return;
+    const target = kits.find((k) => k.is_default) || kits[0];
+    if (target) { setSelectedId(target.id); setForm(target); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, kits]);
 
   if (!form) {
     return <div className="flex justify-center py-20"><Loader2 className="animate-spin text-zinc-600" /></div>;
   }
 
   const set = (k, v) => setForm((s) => ({ ...s, [k]: v }));
-  const setColor = (k, v) => setForm((s) => ({ ...s, colors: { ...s.colors, [k]: v } }));
+  const mode = form.color_mode === "light" ? "light" : "dark";
+  const setColor = (k, v) => setForm((s) => ({ ...s, colors: { ...s.colors, [mode]: { ...s.colors[mode], [k]: v } } }));
+
+  const selectKit = (kit) => { setSelectedId(kit.id); setForm(kit); setAnalysis(null); setApplied(false); };
+  const newKit = () => { setSelectedId(null); setForm(emptyKit()); setAnalysis(null); setApplied(false); };
+
+  const deleteKit = async (kit) => {
+    if (!kit.id) return;
+    if (kits.length <= 1) { toast.error("Can't delete your only brand kit."); return; }
+    if (!window.confirm(`Delete "${kit.name}"? This can't be undone.`)) return;
+    try {
+      await api.delete(`/brand-kits/${kit.id}`);
+      toast.success("Brand kit deleted");
+      if (selectedId === kit.id) setSelectedId(undefined);
+      await reload();
+    } catch (e) { toast.error(apiErrorMessage(e, "Couldn't delete that kit.")); }
+  };
+
+  const makeDefault = async (kit) => {
+    if (!kit.id || kit.is_default) return;
+    try {
+      await api.put(`/brand-kits/${kit.id}`, { is_default: true });
+      toast.success(`${kit.name} is now the default kit`);
+      await reload();
+    } catch (e) { toast.error(apiErrorMessage(e, "Couldn't set the default.")); }
+  };
 
   const uploadLogo = async (file) => {
     if (!file) return;
@@ -62,13 +106,15 @@ export default function BrandKit() {
   const save = async () => {
     setSaving(true);
     try {
-      await api.put("/brand-kit", {
-        name: form.name, colors: form.colors, fonts: form.fonts, logo_url: form.logo_url || null,
-        handle: form.handle, voice: form.voice, style: form.style, audience: form.audience,
-        hashtags: form.hashtags, cta: form.cta, banned_words: form.banned_words,
-      });
+      const payload = {
+        name: form.name, colors: form.colors, color_mode: form.color_mode, fonts: form.fonts,
+        logo_url: form.logo_url || null, handle: form.handle, voice: form.voice, style: form.style,
+        audience: form.audience, hashtags: form.hashtags, cta: form.cta, banned_words: form.banned_words,
+      };
+      const { data } = form.id ? await api.put(`/brand-kits/${form.id}`, payload) : await api.post("/brand-kits", payload);
+      setSelectedId(data.id); setForm(data);
       await reload();
-      toast.success("Brand kit saved — every generation uses it from now on.");
+      toast.success("Brand kit saved — every generation can use it from now on.");
     } catch (e) { toast.error(apiErrorMessage(e, "Couldn't save the brand kit.")); }
     finally { setSaving(false); }
   };
@@ -100,15 +146,20 @@ export default function BrandKit() {
   // so nothing overwrites the saved brand kit without a review.
   const applyAnalysis = () => {
     if (!analysis) return;
-    setForm((s) => ({
-      ...s,
-      colors: Object.keys(analysis.colors || {}).length ? { ...s.colors, ...analysis.colors } : s.colors,
-      fonts: Object.keys(analysis.fonts || {}).length ? { ...s.fonts, ...analysis.fonts } : s.fonts,
-      logo_url: analysis.logo_url || s.logo_url,
-      voice: analysis.voice || s.voice,
-      style: analysis.style || s.style,
-      name: (!s.name || s.name === "Default brand") && analysis.detected_name ? analysis.detected_name : s.name,
-    }));
+    setForm((s) => {
+      const m = s.color_mode === "light" ? "light" : "dark";
+      return {
+        ...s,
+        colors: Object.keys(analysis.colors || {}).length
+          ? { ...s.colors, [m]: { ...s.colors[m], ...analysis.colors } } : s.colors,
+        fonts: Object.keys(analysis.fonts || {}).length ? { ...s.fonts, ...analysis.fonts } : s.fonts,
+        logo_url: analysis.logo_url || s.logo_url,
+        voice: analysis.voice || s.voice,
+        style: analysis.style || s.style,
+        name: (!s.name || s.name === "Default brand" || s.name === "New brand kit") && analysis.detected_name
+          ? analysis.detected_name : s.name,
+      };
+    });
     setApplied(true);
     toast.success("Applied — review below, then Save.");
   };
@@ -123,7 +174,29 @@ export default function BrandKit() {
         and the finish (signature hashtags and CTA get appended to built posts).
       </p>
 
-      <div className="mt-7 grid gap-6 lg:grid-cols-[1fr_minmax(0,340px)]">
+      <div className="mt-6 flex flex-wrap items-center gap-1.5" data-testid="brand-kit-switcher">
+        {kits.map((k) => (
+          <div key={k.id || "new"}
+            className={`flex items-center gap-1.5 rounded-full border py-1 pl-1 pr-1.5 text-xs font-medium transition-colors ${form.id === k.id ? "border-lime bg-lime/10 text-lime" : "border-white/10 text-zinc-400 hover:text-white"}`}>
+            <button onClick={() => selectKit(k)} data-testid={`brand-kit-select-${k.id}`} className="flex items-center gap-1.5 py-0.5 pl-1.5">
+              <span className="h-3 w-3 flex-shrink-0 rounded-full border border-white/20" style={{ background: (k.colors?.[k.color_mode || "dark"] || k.colors?.dark)?.bg }} />
+              {k.name}{k.is_default && <Star size={11} className="fill-current text-lime" />}
+            </button>
+            {form.id === k.id && !k.is_default && (
+              <button onClick={() => makeDefault(k)} title="Set as default" data-testid={`brand-kit-make-default-${k.id}`} className="text-zinc-600 hover:text-lime"><Star size={12} /></button>
+            )}
+            {form.id === k.id && kits.length > 1 && (
+              <button onClick={() => deleteKit(k)} title="Delete kit" data-testid={`brand-kit-delete-${k.id}`} className="text-zinc-600 hover:text-magic"><Trash2 size={12} /></button>
+            )}
+          </div>
+        ))}
+        <button onClick={newKit} data-testid="brand-kit-new"
+          className={`flex items-center gap-1 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${selectedId === null ? "border-lime bg-lime/10 text-lime" : "border-dashed border-white/15 text-zinc-500 hover:border-lime/40 hover:text-lime"}`}>
+          <Plus size={12} /> New kit
+        </button>
+      </div>
+
+      <div className="mt-5 grid gap-6 lg:grid-cols-[1fr_minmax(0,340px)]">
         <div className="space-y-5">
           <section className="rounded-xl border border-white/10 bg-[#121212] p-5">
             <h3 className="font-display text-base font-semibold">Identity</h3>
@@ -164,20 +237,42 @@ export default function BrandKit() {
           </section>
 
           <section className="rounded-xl border border-white/10 bg-[#121212] p-5">
-            <h3 className="font-display text-base font-semibold">Palette</h3>
+            <div className="flex items-center justify-between">
+              <h3 className="font-display text-base font-semibold">Palette</h3>
+              <div className="flex items-center gap-1 rounded-full border border-white/10 bg-[#0A0A0A] p-0.5" data-testid="brand-color-mode">
+                <button onClick={() => set("color_mode", "dark")} data-testid="brand-color-mode-dark"
+                  className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${mode === "dark" ? "bg-lime/10 text-lime" : "text-zinc-500 hover:text-white"}`}>
+                  <Moon size={11} /> Dark
+                </button>
+                <button onClick={() => set("color_mode", "light")} data-testid="brand-color-mode-light"
+                  className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${mode === "light" ? "bg-lime/10 text-lime" : "text-zinc-500 hover:text-white"}`}>
+                  <Sun size={11} /> Light
+                </button>
+              </div>
+            </div>
+            <p className="mt-1.5 text-xs text-zinc-500">Two palettes per kit — pick which one a graphic renders with when you apply this brand's theme.</p>
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
               {COLOR_FIELDS.map((c) => (
                 <div key={c.key}>
                   <label className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">{c.label}</label>
                   <div className="mt-1.5 flex items-center gap-2 rounded-lg border border-white/10 bg-[#0A0A0A] px-2 py-1.5">
-                    <input type="color" value={form.colors?.[c.key] || "#000000"} data-testid={`brand-color-${c.key}`}
+                    <input type="color" value={form.colors?.[mode]?.[c.key] || "#000000"} data-testid={`brand-color-${c.key}`}
                       onChange={(e) => setColor(c.key, e.target.value)}
                       className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent p-0" />
-                    <input value={form.colors?.[c.key] || ""} onChange={(e) => setColor(c.key, e.target.value)}
+                    <input value={form.colors?.[mode]?.[c.key] || ""} onChange={(e) => setColor(c.key, e.target.value)}
+                      data-testid={`brand-color-${c.key}-hex`}
                       className="w-full bg-transparent font-mono text-xs text-zinc-300 outline-none" />
                   </div>
                 </div>
               ))}
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-white/10 bg-[#121212] p-5">
+            <h3 className="flex items-center gap-2 font-display text-base font-semibold"><Type size={15} className="text-lime" /> Fonts</h3>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <FontField label="Display / headings" value={form.fonts?.display} onChange={(v) => set("fonts", { ...form.fonts, display: v })} testid="brand-font-display" />
+              <FontField label="Body text" value={form.fonts?.body} onChange={(v) => set("fonts", { ...form.fonts, body: v })} testid="brand-font-body" />
             </div>
           </section>
 
@@ -265,7 +360,7 @@ export default function BrandKit() {
 
           <Button onClick={save} disabled={saving} data-testid="brand-save"
             className="w-full gap-2 rounded-lg bg-lime font-semibold text-[#0A0A0A] hover:bg-lime-hover sm:w-auto">
-            {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Save brand kit
+            {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} {form.id ? "Save brand kit" : "Create brand kit"}
           </Button>
         </div>
 
@@ -299,6 +394,23 @@ const Field = ({ label, value, onChange, placeholder, testid, className = "" }) 
       data-testid={testid} className={inputCls} />
   </div>
 );
+
+const FontField = ({ label, value, onChange, testid, className = "" }) => {
+  // A detected font from brand analysis might not be in the curated list —
+  // keep it selectable rather than silently dropping it.
+  const options = BRAND_FONTS.some((f) => f.key === value) || !value
+    ? BRAND_FONTS
+    : [{ key: value, label: `${value} (detected)` }, ...BRAND_FONTS];
+  return (
+    <div className={className}>
+      <label className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">{label}</label>
+      <select value={value || "Inter"} onChange={(e) => onChange(e.target.value)} data-testid={testid}
+        className={`${inputCls} [color-scheme:dark]`} style={{ fontFamily: "inherit" }}>
+        {options.map((f) => <option key={f.key} value={f.key}>{f.label || f.key}</option>)}
+      </select>
+    </div>
+  );
+};
 
 const Area = ({ label, value, onChange, placeholder, testid, rows = 3, className = "" }) => (
   <div className={className}>

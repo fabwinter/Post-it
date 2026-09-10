@@ -1,5 +1,7 @@
 import { forwardRef } from "react";
 import { Twitter, BadgeCheck, Loader2 } from "lucide-react";
+import { activeColors } from "@/lib/useBrand";
+import { fontStack, useBrandFonts } from "@/lib/fonts";
 
 // One card = one spec. Keeping the renderer a pure function of a small spec
 // object is what lets a post store a ten-slide carousel as a few hundred bytes
@@ -15,14 +17,16 @@ export const THEMES = {
 export const THEME_LIST = Object.values(THEMES);
 
 // The brand kit becomes a fifth theme, so "on brand" is one click rather than a
-// palette the user has to re-key into every graphic.
+// palette the user has to re-key into every graphic. Its colors come from
+// whichever of the kit's two palettes (dark/light) is currently active, and it
+// carries the kit's picked fonts along so text actually renders in them.
 export function themeFor(key, brand) {
   if (key === "brand" && brand?.colors) {
-    const c = brand.colors;
+    const c = activeColors(brand);
     return {
       key: "brand", label: brand.name || "Brand",
-      bg: c.bg || "#0A0A0A", fg: c.fg || "#FFFFFF",
-      sub: c.sub || "#a1a1aa", accent: c.accent || "#E2FF3D", pattern: "dots",
+      bg: c.bg, fg: c.fg, sub: c.sub, accent: c.accent, pattern: "dots",
+      fonts: brand.fonts,
     };
   }
   return THEMES[key] || THEMES.midnight;
@@ -56,6 +60,11 @@ export const VisualCard = forwardRef(function VisualCard(
   // Type sizes are expressed against a 440px-wide reference card so the same
   // spec renders identically in a 120px strip thumbnail and a full preview.
   const f = (n) => `${n * scale}px`;
+  // Only the brand theme carries picked fonts — every other theme keeps the
+  // app's default type rather than silently reverting mid-deck.
+  useBrandFonts(theme.fonts);
+  const displayFont = theme.fonts?.display ? fontStack(theme.fonts.display) : undefined;
+  const bodyFont = theme.fonts?.body ? fontStack(theme.fonts.body) : undefined;
 
   if (loading) {
     return (
@@ -80,9 +89,9 @@ export const VisualCard = forwardRef(function VisualCard(
       <div ref={ref} className={`relative flex h-full w-full flex-col justify-between ${className}`} style={{ ...base, ...pad }}>
         <div className="absolute inset-0" style={patt} />
         <div className="relative font-display" style={{ fontSize: f(64), lineHeight: 1, color: theme.accent }}>&ldquo;</div>
-        <p className="relative font-display" style={{ fontSize: f(28), fontWeight: 700, lineHeight: 1.25 }}>{spec.quote}</p>
+        <p className="relative font-display" style={{ fontSize: f(28), fontWeight: 700, lineHeight: 1.25, fontFamily: displayFont }}>{spec.quote}</p>
         <div className="relative flex items-center justify-between">
-          <span style={{ color: theme.sub, fontSize: f(14), fontWeight: 600 }}>— {spec.author}</span>
+          <span style={{ color: theme.sub, fontSize: f(14), fontWeight: 600, fontFamily: bodyFont }}>— {spec.author}</span>
           <span style={{ color: theme.accent, fontSize: f(11), fontFamily: "JetBrains Mono, monospace", letterSpacing: f(2) }}>{wordmark(brand)}</span>
         </div>
       </div>
@@ -102,7 +111,7 @@ export const VisualCard = forwardRef(function VisualCard(
           </div>
           <Twitter size={22 * scale} className="ml-auto" style={{ color: theme.sub }} />
         </div>
-        <p className="font-display" style={{ marginTop: f(20), fontSize: f(25), lineHeight: 1.35, fontWeight: 500 }}>{spec.text}</p>
+        <p className="font-display" style={{ marginTop: f(20), fontSize: f(25), lineHeight: 1.35, fontWeight: 500, fontFamily: bodyFont }}>{spec.text}</p>
         <div style={{ marginTop: f(24), color: theme.sub, fontSize: f(13) }}>9:41 AM · {wordmark(brand)}</div>
       </div>
     );
@@ -113,12 +122,12 @@ export const VisualCard = forwardRef(function VisualCard(
       <div ref={ref} className={`relative flex h-full w-full flex-col ${className}`} style={{ ...base, ...pad }}>
         <div className="absolute inset-0" style={patt} />
         <div className="relative font-mono" style={{ color: theme.accent, fontSize: f(11), letterSpacing: f(3) }}>INFOGRAPHIC</div>
-        <h2 className="relative font-display" style={{ marginTop: f(12), fontSize: f(34), fontWeight: 800, lineHeight: 1.05 }}>{spec.title}</h2>
+        <h2 className="relative font-display" style={{ marginTop: f(12), fontSize: f(34), fontWeight: 800, lineHeight: 1.05, fontFamily: displayFont }}>{spec.title}</h2>
         <div className="relative flex flex-1 flex-col justify-center" style={{ marginTop: f(24), gap: f(12) }}>
           {(spec.points || []).map((p, i) => (
             <div key={i} className="flex items-start" style={{ gap: f(12) }}>
               <span className="flex-shrink-0 font-display" style={{ background: theme.accent, color: "#0A0A0A", fontWeight: 800, width: f(30), height: f(30), borderRadius: f(8), display: "flex", alignItems: "center", justifyContent: "center", fontSize: f(15) }}>{i + 1}</span>
-              <span style={{ fontSize: f(17), lineHeight: 1.3, fontWeight: 500 }}>{p}</span>
+              <span style={{ fontSize: f(17), lineHeight: 1.3, fontWeight: 500, fontFamily: bodyFont }}>{p}</span>
             </div>
           ))}
         </div>
@@ -151,11 +160,11 @@ export const VisualCard = forwardRef(function VisualCard(
       </div>
       <div className="relative flex flex-1 flex-col justify-center">
         {isCover ? (
-          <h2 className="font-display" style={{ fontSize: f(40), fontWeight: 800, lineHeight: 1.05 }}>{spec.title}</h2>
+          <h2 className="font-display" style={{ fontSize: f(40), fontWeight: 800, lineHeight: 1.05, fontFamily: displayFont }}>{spec.title}</h2>
         ) : (
           <>
-            <h3 className="font-display" style={{ fontSize: f(30), fontWeight: 800, lineHeight: 1.1 }}>{spec.heading}</h3>
-            {spec.body && <p style={{ marginTop: f(16), fontSize: f(18), lineHeight: 1.4, color: theme.sub }}>{spec.body}</p>}
+            <h3 className="font-display" style={{ fontSize: f(30), fontWeight: 800, lineHeight: 1.1, fontFamily: displayFont }}>{spec.heading}</h3>
+            {spec.body && <p style={{ marginTop: f(16), fontSize: f(18), lineHeight: 1.4, color: theme.sub, fontFamily: bodyFont }}>{spec.body}</p>}
           </>
         )}
       </div>
