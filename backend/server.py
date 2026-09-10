@@ -856,6 +856,7 @@ def _blob_put(pathname: str, content: bytes, content_type: str) -> dict:
         data=content, timeout=90,
     )
     if resp.status_code not in (200, 201):
+        logger.error("Blob PUT failed pathname=%s status=%s body=%s", pathname, resp.status_code, resp.text[:800])
         raise HTTPException(status_code=502, detail=f"Upload storage error {resp.status_code}: {resp.text[:400]}")
     return resp.json()
 
