@@ -177,12 +177,12 @@ export default function Templates() {
 
       <div className="mt-8 rounded-xl border border-white/10 bg-[#121212] p-5" data-testid="templates-custom">
         <h3 className="flex items-center gap-2 font-display text-base font-semibold">
-          <LayoutTemplate size={15} className="text-lime" /> Convert a file into a template
+          <LayoutTemplate size={15} className="text-lime" /> Template library
         </h3>
         <p className="mt-1.5 text-xs leading-relaxed text-zinc-500">
-          Upload a PowerPoint, PDF, or image and its real layout — slide text, page text, or dominant colors —
-          becomes a reusable outline. Building a post from it writes fresh content into that structure; it doesn't
-          copy the file's wording.
+          Starter layouts ship with the app — each one lays out the words for you and stays fully draggable in the
+          Composer. Or add your own: upload a PowerPoint, PDF, or image and its real structure becomes a reusable
+          template. Building from either writes fresh content into that structure; it never copies the source's wording.
         </p>
 
         <div className="mt-4 flex flex-wrap gap-1.5">
@@ -212,10 +212,14 @@ export default function Templates() {
             {customTemplates.map((tpl) => (
               <div key={tpl.id} className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-[#0A0A0A] p-3" data-testid={`templates-custom-item-${tpl.id}`}>
                 <div className="min-w-0">
-                  <div className="truncate text-sm font-medium text-white">{tpl.name}</div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="truncate text-sm font-medium text-white">{tpl.name}</span>
+                    {tpl.builtin && <span className="flex-none rounded-full border border-lime/40 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-lime">Starter</span>}
+                  </div>
+                  {tpl.description && <div className="mt-0.5 truncate text-[11px] text-zinc-500">{tpl.description}</div>}
                   <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500">
-                    <span className="uppercase">{tpl.source_kind}</span>
-                    <span>· {tpl.slides.length} slide{tpl.slides.length === 1 ? "" : "s"} · {tpl.format}</span>
+                    {!tpl.builtin && <span className="uppercase">{tpl.source_kind}</span>}
+                    <span>{!tpl.builtin && "· "}{tpl.slides.length} slide{tpl.slides.length === 1 ? "" : "s"} · {tpl.format}</span>
                     {Object.keys(tpl.colors || {}).length > 0 && (
                       <span className="flex items-center gap-1">
                         {Object.values(tpl.colors).slice(0, 4).map((hex, i) => (
@@ -230,17 +234,16 @@ export default function Templates() {
                     className="h-7 gap-1 rounded-lg bg-lime px-2.5 text-[11px] font-semibold text-[#0A0A0A] hover:bg-lime-hover">
                     <Wand size={12} /> Use
                   </Button>
-                  <Button variant="secondary" onClick={() => deleteCustomTemplate(tpl.id)} data-testid={`templates-custom-delete-${tpl.id}`}
-                    className="h-7 w-7 rounded-lg border border-white/10 bg-white/5 p-0 text-zinc-400 hover:text-white">
-                    <Trash2 size={13} />
-                  </Button>
+                  {!tpl.builtin && (
+                    <Button variant="secondary" onClick={() => deleteCustomTemplate(tpl.id)} data-testid={`templates-custom-delete-${tpl.id}`}
+                      className="h-7 w-7 rounded-lg border border-white/10 bg-white/5 p-0 text-zinc-400 hover:text-white">
+                      <Trash2 size={13} />
+                    </Button>
+                  )}
                 </div>
               </div>
             ))}
           </div>
-        )}
-        {!loadingCustom && customTemplates.length === 0 && (
-          <p className="mt-4 text-xs text-zinc-600">No custom templates yet — convert a file above.</p>
         )}
       </div>
     </div>

@@ -101,10 +101,15 @@ export const VisualCard = forwardRef(function VisualCard(
         )}
         {spec.elements.map((el) => {
           const box = elementBoxStyle(el);
+          // Starter templates reference the palette and the brand's fonts by
+          // role rather than by value, so they re-theme themselves; anything
+          // the user has since set explicitly wins over the role.
+          const roleColor = el.color || theme[el.colorRole] || theme.fg;
+          const family = el.fontFamily || (el.fontKind && theme.fonts?.[el.fontKind]) || undefined;
           if (el.type === "text") {
             return (
-              <div key={el.id} style={{ ...box, fontFamily: fontStack(el.fontFamily), fontSize: f(el.fontSize || 16),
-                fontWeight: el.fontWeight || 600, color: el.color || theme.fg, textAlign: el.align || "left",
+              <div key={el.id} style={{ ...box, fontFamily: fontStack(family), fontSize: f(el.fontSize || 16),
+                fontWeight: el.fontWeight || 600, color: roleColor, textAlign: el.align || "left",
                 lineHeight: el.lineHeight || 1.2, whiteSpace: "pre-wrap", overflow: "hidden", wordBreak: "break-word" }}>
                 {el.text}
               </div>
@@ -118,7 +123,7 @@ export const VisualCard = forwardRef(function VisualCard(
               <div key={el.id} style={{ ...box, border: "1px dashed rgba(150,150,150,0.4)" }} />
             );
           }
-          return <div key={el.id} style={{ ...box, background: el.color || theme.accent, borderRadius: el.shape === "ellipse" ? "50%" : `${f(4)}` }} />;
+          return <div key={el.id} style={{ ...box, background: el.color || theme[el.colorRole] || theme.accent, borderRadius: el.shape === "ellipse" ? "50%" : `${f(4)}` }} />;
         })}
       </div>
     );

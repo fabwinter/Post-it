@@ -1211,6 +1211,231 @@ def _row_to_visual_template(row: dict):
     }
 
 
+# ---------------- Starter templates ----------------
+# Original layouts shipped with the app, so the template library isn't empty
+# before you've converted anything. They live in code rather than as seeded
+# rows: nothing to migrate, nothing to re-seed after a delete, and they
+# improve with a deploy. Each carries both an OUTLINE (what each slide is
+# for, which the model writes against) and a LAYOUT (where the words sit),
+# expressed in the same percentage-based element model the Composer's slide
+# editor uses — so a built post is fully draggable from the first render.
+#
+# Colors and fonts are referenced by ROLE (colorRole: fg/sub/accent/bg,
+# fontKind: display/body) rather than baked as hexes, so a starter template
+# re-themes itself when the brand kit or theme changes.
+def _t(role, x, y, w, h, size, weight=800, color="fg", align="left", lh=1.1, font="display", text=None):
+    e = {"type": "text", "role": role, "x": x, "y": y, "w": w, "h": h, "fontSize": size,
+         "fontWeight": weight, "colorRole": color, "align": align, "lineHeight": lh, "fontKind": font}
+    if text is not None:
+        e["text"] = text
+    return e
+
+
+def _bar(x, y, w, h, color="accent", opacity=1.0, shape="rect"):
+    return {"type": "shape", "shape": shape, "x": x, "y": y, "w": w, "h": h,
+            "colorRole": color, "opacity": opacity}
+
+
+STARTER_TEMPLATES = [
+    {
+        "id": "starter:bold-hook", "name": "Bold Hook", "format": "carousel", "theme": "midnight",
+        "description": "One big promise on the cover, one idea per slide, a close that asks for something.",
+        "slides": [
+            {"heading": "Open with the sharpest promise", "body": "The single outcome this post delivers"},
+            {"heading": "Name the problem", "body": "Why the usual approach falls short"},
+            {"heading": "Give the turn", "body": "The shift in thinking that fixes it"},
+            {"heading": "Make it concrete", "body": "A specific example or number"},
+            {"heading": "Close with the ask", "body": "What to do next"},
+        ],
+        "layouts": {
+            "cover": [_bar(8, 13, 14, 1.4), _t("title", 8, 21, 84, 40, 38, 800, lh=1.05),
+                      _t("static", 8, 86, 44, 6, 12, 700, "accent", font="body", text="SWIPE →")],
+            "slide": [_bar(8, 12, 9, 6), _t("number", 8, 13.2, 9, 5, 16, 800, "bg", align="center"),
+                      _t("heading", 8, 24, 84, 22, 26, 800, lh=1.1),
+                      _t("body", 8, 50, 84, 32, 16, 400, "sub", lh=1.45, font="body")],
+            "outro": [_t("heading", 8, 34, 84, 24, 30, 800, lh=1.1),
+                      _t("body", 8, 60, 84, 20, 16, 400, "sub", lh=1.4, font="body"),
+                      _bar(8, 85, 20, 1.4)],
+        },
+    },
+    {
+        "id": "starter:listicle", "name": "Numbered Listicle", "format": "carousel", "theme": "midnight",
+        "description": "A '5 ways to…' countdown — a giant numeral anchors every slide.",
+        "slides": [
+            {"heading": "Promise the list", "body": "How many, and what they get from it"},
+            {"heading": "First item", "body": "The most obvious one, said better"},
+            {"heading": "Second item", "body": "The one they've heard but do wrong"},
+            {"heading": "Third item", "body": "The one nobody talks about"},
+            {"heading": "Fourth item", "body": "The one that compounds"},
+            {"heading": "Fifth item", "body": "The one that ties it together"},
+        ],
+        "layouts": {
+            "cover": [_t("static", 8, 14, 60, 6, 12, 700, "accent", font="body", text="SAVE THIS"),
+                      _t("title", 8, 26, 84, 40, 36, 800, lh=1.05)],
+            "slide": [_t("number", 8, 15, 26, 26, 64, 900, "accent", lh=1),
+                      _t("heading", 8, 44, 84, 18, 24, 800, lh=1.1),
+                      _t("body", 8, 63, 84, 26, 15, 400, "sub", lh=1.45, font="body")],
+        },
+    },
+    {
+        "id": "starter:myth-fact", "name": "Myth vs Fact", "format": "carousel", "theme": "chalkboard",
+        "description": "Correct a misconception per slide — the format people save and forward.",
+        "slides": [
+            {"heading": "Name the belief you're about to break", "body": "Why so many people hold it"},
+            {"heading": "The first myth", "body": "What's actually true, and the evidence"},
+            {"heading": "The second myth", "body": "What's actually true, and the evidence"},
+            {"heading": "The third myth", "body": "What's actually true, and the evidence"},
+            {"heading": "What to believe instead", "body": "The one rule that replaces all three"},
+        ],
+        "layouts": {
+            "cover": [_t("static", 8, 16, 60, 6, 12, 700, "accent", font="body", text="MYTH vs FACT"),
+                      _t("title", 8, 30, 84, 38, 34, 800, lh=1.05)],
+            "slide": [_t("static", 8, 12, 24, 5, 12, 800, "accent", font="body", text="MYTH"),
+                      _t("heading", 8, 19, 84, 22, 22, 700, "sub", lh=1.15),
+                      _bar(8, 45, 84, 0.4, "sub", 0.4),
+                      _t("static", 8, 51, 24, 5, 12, 800, "accent", font="body", text="FACT"),
+                      _t("body", 8, 58, 84, 30, 18, 600, lh=1.35, font="body")],
+        },
+    },
+    {
+        "id": "starter:before-after", "name": "Before / After", "format": "carousel", "theme": "whiteboard",
+        "description": "Two stacked panels per slide — the old way above, the better way below.",
+        "slides": [
+            {"heading": "Set up the transformation", "body": "Where people start and where they could be"},
+            {"heading": "The old way", "body": "What replaces it"},
+            {"heading": "The old habit", "body": "The new habit"},
+            {"heading": "The old result", "body": "The new result"},
+            {"heading": "How to start today", "body": "The first small step"},
+        ],
+        "layouts": {
+            "cover": [_t("static", 8, 16, 60, 6, 12, 700, "accent", font="body", text="BEFORE / AFTER"),
+                      _t("title", 8, 30, 84, 38, 34, 800, lh=1.05)],
+            "slide": [_bar(8, 12, 84, 36, "sub", 0.12),
+                      _t("static", 12, 15, 32, 5, 11, 800, "sub", font="body", text="BEFORE"),
+                      _t("heading", 12, 22, 76, 24, 20, 700, lh=1.2),
+                      _bar(8, 52, 84, 36, "accent", 0.15),
+                      _t("static", 12, 55, 32, 5, 11, 800, "accent", font="body", text="AFTER"),
+                      _t("body", 12, 62, 76, 24, 20, 700, lh=1.2, font="body")],
+        },
+    },
+    {
+        "id": "starter:how-to", "name": "How-To Steps", "format": "carousel", "theme": "whiteboard",
+        "description": "Outcome first, then numbered steps someone can actually follow.",
+        "slides": [
+            {"heading": "Promise the outcome", "body": "What they'll be able to do by the end"},
+            {"heading": "Step one", "body": "The setup nobody should skip"},
+            {"heading": "Step two", "body": "The part that does the real work"},
+            {"heading": "Step three", "body": "How to check it worked"},
+            {"heading": "The mistake to avoid", "body": "What goes wrong and how to catch it"},
+        ],
+        "layouts": {
+            "cover": [_t("static", 8, 14, 60, 6, 12, 700, "accent", font="body", text="STEP BY STEP"),
+                      _t("title", 8, 24, 84, 40, 34, 800, lh=1.05)],
+            "slide": [_bar(8, 12, 24, 6, "accent", 0.9),
+                      _t("step", 8, 13.3, 24, 5, 12, 800, "bg", align="center", font="body"),
+                      _t("heading", 8, 24, 84, 20, 24, 800, lh=1.1),
+                      _t("body", 8, 47, 84, 36, 16, 400, "sub", lh=1.45, font="body")],
+        },
+    },
+    {
+        "id": "starter:stat-drop", "name": "Stat Drop", "format": "single", "theme": "midnight",
+        "description": "One number, huge, with the context that makes it land.",
+        "slides": [{"heading": "Lead with the number", "body": "The context that makes it matter"}],
+        "layouts": {
+            "cover": [_t("static", 8, 16, 60, 6, 12, 700, "accent", font="body", text="BY THE NUMBERS"),
+                      _t("title", 8, 26, 84, 40, 46, 900, lh=1),
+                      _t("body", 8, 70, 84, 16, 16, 400, "sub", lh=1.4, font="body"),
+                      _bar(8, 88, 24, 1.4)],
+        },
+    },
+    {
+        "id": "starter:quote-card", "name": "Quote Card", "format": "single", "theme": "gradient",
+        "description": "A single line worth screenshotting, with room to breathe.",
+        "slides": [{"heading": "The line worth quoting", "body": "Who said it"}],
+        "layouts": {
+            "cover": [_t("static", 8, 10, 22, 20, 72, 800, "accent", lh=1, text="“"),
+                      _t("title", 8, 32, 84, 40, 30, 700, lh=1.3),
+                      _t("body", 8, 78, 84, 8, 14, 600, "sub", font="body")],
+        },
+    },
+    {
+        "id": "starter:reel-hook", "name": "Reel Hook Frames", "format": "reel", "theme": "midnight",
+        "description": "Vertical frames: the hook up top, the spoken line in a lower third.",
+        "slides": [
+            {"heading": "Hook them in three seconds", "body": "The line you say over the opening shot"},
+            {"heading": "Set the stakes", "body": "Why this matters right now"},
+            {"heading": "Deliver the insight", "body": "The thing they came for"},
+            {"heading": "Tell them what to do", "body": "The single next step"},
+        ],
+        "layouts": {
+            "slide": [_t("heading", 8, 12, 84, 28, 32, 800, lh=1.1),
+                      _bar(0, 74, 100, 26, "bg", 0.55),
+                      _t("body", 8, 79, 84, 18, 16, 500, lh=1.35, font="body")],
+        },
+    },
+]
+
+STARTER_BY_ID = {t["id"]: t for t in STARTER_TEMPLATES}
+
+
+def _starter_as_template(t: dict) -> dict:
+    """A starter rendered in the same shape the library and the Composer's
+    picker already speak, so neither needs to know it isn't a saved row."""
+    return {
+        "id": t["id"], "name": t["name"], "source_kind": "starter", "source_url": "",
+        "format": t["format"], "theme": t["theme"], "colors": {}, "slides": t["slides"],
+        "description": t["description"], "builtin": True, "created_at": "",
+    }
+
+
+def _fill_layout(layout: List[Dict[str, Any]], spec: dict, index: int) -> List[Dict[str, Any]]:
+    """Pours a generated slide's copy into a starter layout. Roles that have
+    no copy to receive are dropped rather than left as empty boxes."""
+    out = []
+    for src in layout:
+        el = {**src, "id": f"el_{uuid.uuid4().hex[:7]}"}
+        role = el.get("role")
+        if el["type"] == "text" and "text" not in el:
+            if role == "title":
+                el["text"] = spec.get("title") or spec.get("heading") or ""
+            elif role == "heading":
+                el["text"] = spec.get("heading") or spec.get("title") or ""
+            elif role == "body":
+                el["text"] = spec.get("body") or ""
+            elif role == "number":
+                el["text"] = str(spec.get("index") or index)
+            elif role == "step":
+                el["text"] = f"STEP {spec.get('index') or index}"
+            else:
+                el["text"] = ""
+        if el["type"] == "text" and not (el.get("text") or "").strip():
+            continue
+        out.append(el)
+    return out
+
+
+def _apply_template_layouts(assets: List[Dict[str, Any]], template: dict) -> List[Dict[str, Any]]:
+    """Gives every generated slide the template's layout — the model writes
+    the words, the template decides where they sit, and the result is still
+    fully editable in the Composer."""
+    layouts = (template or {}).get("layouts") or {}
+    if not layouts:
+        return assets
+    last = len(assets) - 1
+    for i, asset in enumerate(assets):
+        spec = asset["spec"]
+        if i == 0 and spec.get("template") == "cover" and layouts.get("cover"):
+            key = "cover"
+        elif i == last and last > 0 and layouts.get("outro"):
+            key = "outro"
+        else:
+            key = "slide"
+        layout = layouts.get(key) or layouts.get("slide") or layouts.get("cover")
+        if layout:
+            spec["elements"] = _fill_layout(layout, spec, i)
+    return assets
+
+
 async def _abstract_slides(slides: List[Dict[str, str]], model: str) -> List[Dict[str, str]]:
     """Turns a specific deck/PDF's real content into a reusable outline — e.g.
     "Q3 Revenue Growth" becomes "State the headline metric" — so the template
@@ -1293,14 +1518,19 @@ async def create_template_from_file(req: TemplateFromFileRequest):
 
 @api_router.get("/templates/custom")
 async def list_custom_templates():
+    """The user's converted templates first (newest first), then the starters
+    that ship with the app — one list, so the picker has something to offer
+    on day one."""
     await ensure_schema()
     rows, _ = await d1_query("SELECT * FROM visual_templates ORDER BY created_at DESC LIMIT 100")
-    return [_row_to_visual_template(r) for r in rows]
+    return [_row_to_visual_template(r) for r in rows] + [_starter_as_template(t) for t in STARTER_TEMPLATES]
 
 
 @api_router.delete("/templates/custom/{template_id}")
 async def delete_custom_template(template_id: str):
     await ensure_schema()
+    if template_id in STARTER_BY_ID:
+        raise HTTPException(status_code=400, detail="Starter templates ship with the app and can't be deleted")
     rows, _ = await d1_query("DELETE FROM visual_templates WHERE id = ? RETURNING id", [template_id])
     if not rows:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -1946,15 +2176,19 @@ async def ai_build_post(req: BuildPostRequest):
     n = int(req.slides or spec["slides"]["default"])
     n = max(spec["slides"]["min"], min(n, spec["slides"]["max"]))
 
-    # A saved custom template (converted from an uploaded PDF/PPTX/image)
-    # pins the slide count and supplies a real outline to follow, rather than
-    # leaving the model to invent a structure from nothing.
+    # A template — one of the starters, or one converted from an uploaded
+    # PDF/PPTX/image — pins the slide count and supplies a real outline to
+    # follow, rather than leaving the model to invent a structure from nothing.
     template = None
     if req.custom_template_id:
-        rows, _ = await d1_query("SELECT * FROM visual_templates WHERE id = ?", [req.custom_template_id])
-        if not rows:
-            raise HTTPException(status_code=404, detail="That custom template no longer exists")
-        template = _row_to_visual_template(rows[0])
+        if req.custom_template_id in STARTER_BY_ID:
+            starter = STARTER_BY_ID[req.custom_template_id]
+            template = {**_starter_as_template(starter), "layouts": starter["layouts"]}
+        else:
+            rows, _ = await d1_query("SELECT * FROM visual_templates WHERE id = ?", [req.custom_template_id])
+            if not rows:
+                raise HTTPException(status_code=404, detail="That custom template no longer exists")
+            template = _row_to_visual_template(rows[0])
         if template["format"] in allowed and fmt == "auto":
             fmt = template["format"]
         if template["slides"]:
@@ -2038,7 +2272,7 @@ async def ai_build_post(req: BuildPostRequest):
             hashtags.append(tag)
     plan["hashtags"] = hashtags[: spec["hashtags"]]
 
-    assets = _plan_to_assets(plan, theme)
+    assets = _apply_template_layouts(_plan_to_assets(plan, theme), template)
     result = {
         "format": plan["format"],
         "platform": req.platform,
