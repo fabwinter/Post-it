@@ -10,7 +10,7 @@ import { openHistory } from "@/lib/historyBus";
 import { PostPreview } from "@/components/PostPreview";
 import { ModelPicker } from "@/components/ModelPicker";
 import { VisualCard, ASPECT_CLASS, THEME_LIST } from "@/components/VisualCard";
-import { StockPicker } from "@/components/StockPicker";
+import { MediaPicker } from "@/components/MediaPicker";
 import { useTemplateStyles } from "@/lib/templateStyles";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -574,7 +574,7 @@ export default function Composer() {
         </div>
       </div>
 
-      <StockPicker
+      <MediaPicker
         open={stockTarget !== null}
         onOpenChange={(open) => !open && setStockTarget(null)}
         defaultType={stockTarget === "slide-video" ? "video" : "image"}
