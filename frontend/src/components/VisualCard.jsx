@@ -2,6 +2,7 @@ import { forwardRef } from "react";
 import { Twitter, BadgeCheck, Loader2 } from "lucide-react";
 import { activeColors } from "@/lib/useBrand";
 import { fontStack, useBrandFonts } from "@/lib/fonts";
+import { elementBoxStyle } from "@/lib/slideElements";
 
 // One card = one spec. Keeping the renderer a pure function of a small spec
 // object is what lets a post store a ten-slide carousel as a few hundred bytes
@@ -77,6 +78,48 @@ export const VisualCard = forwardRef(function VisualCard(
     return (
       <div ref={ref} className={`flex h-full w-full items-center justify-center text-center ${className}`} style={base}>
         <span style={{ color: theme.sub, fontSize: f(13), padding: f(24) }}>Nothing to render yet</span>
+      </div>
+    );
+  }
+
+  // A slide with a freeform layout renders its elements array directly,
+  // bypassing the fixed template branches below entirely — "Edit layout" in
+  // the Composer is a one-way door into this mode per slide (see
+  // lib/slideElements.js for how a template's fields become the starting
+  // elements). Positions are percentages of the card box, so the same
+  // numbers hold at any card size (a 68px strip thumbnail or a full preview).
+  if (spec.elements) {
+    const bg = spec.bg_color ? { background: spec.bg_color, color: theme.fg } : base;
+    return (
+      <div ref={ref} className={`relative h-full w-full overflow-hidden ${className}`} style={bg}>
+        {spec.video_url ? (
+          <video src={spec.video_url} muted loop autoPlay playsInline
+            className="absolute inset-0 h-full w-full object-cover" style={{ opacity: 0.45 }} />
+        ) : spec.image_url && (
+          <img src={spec.image_url} alt="" crossOrigin="anonymous"
+            className="absolute inset-0 h-full w-full object-cover" style={{ opacity: 0.45 }} />
+        )}
+        {spec.elements.map((el) => {
+          const box = elementBoxStyle(el);
+          if (el.type === "text") {
+            return (
+              <div key={el.id} style={{ ...box, fontFamily: fontStack(el.fontFamily), fontSize: f(el.fontSize || 16),
+                fontWeight: el.fontWeight || 600, color: el.color || theme.fg, textAlign: el.align || "left",
+                lineHeight: el.lineHeight || 1.2, whiteSpace: "pre-wrap", overflow: "hidden", wordBreak: "break-word" }}>
+                {el.text}
+              </div>
+            );
+          }
+          if (el.type === "image") {
+            return el.url ? (
+              <img key={el.id} src={el.url} alt="" crossOrigin="anonymous"
+                style={{ ...box, objectFit: el.fit || "cover" }} />
+            ) : (
+              <div key={el.id} style={{ ...box, border: "1px dashed rgba(150,150,150,0.4)" }} />
+            );
+          }
+          return <div key={el.id} style={{ ...box, background: el.color || theme.accent, borderRadius: el.shape === "ellipse" ? "50%" : `${f(4)}` }} />;
+        })}
       </div>
     );
   }
