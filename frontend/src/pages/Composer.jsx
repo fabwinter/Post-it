@@ -17,13 +17,15 @@ import { useTemplateStyles } from "@/lib/templateStyles";
 import { useCustomTemplates } from "@/lib/useCustomTemplates";
 import { elementsFromSpec, newElement } from "@/lib/slideElements";
 import { BRAND_FONTS } from "@/lib/fonts";
+import { ElementsLibrary } from "@/components/ElementsLibrary";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
   Sparkles, Loader2, Save, CalendarClock, Send, Wand2, Trash2, X, GraduationCap,
   Plus, ChevronLeft, ChevronRight, Download, ImagePlus, History, Hash, Film, Layers,
   Search, Wand, Palette, Upload, FileText, Image as ImageIcon, Presentation,
-  Type, Square, LayoutTemplate, Undo2, Copy, ChevronsUp, ChevronsDown, AlignLeft, AlignCenter, AlignRight,
+  Type, Square, LayoutTemplate, Undo2, Redo2, Copy, ChevronsUp, ChevronsDown, AlignLeft, AlignCenter, AlignRight,
+  Shapes, CopyPlus, BookmarkPlus,
 } from "lucide-react";
 
 // Pexels only accepts these three; map a platform's aspect onto the closest one
@@ -76,7 +78,9 @@ export default function Composer() {
   const [active, setActive] = useState(0);
   const [selectedElementId, setSelectedElementId] = useState(null);
   const [renderingSlide, setRenderingSlide] = useState(null);
-  const [stockTarget, setStockTarget] = useState(null); // "slide-image" | "slide-video" | "media"
+  const [stockTarget, setStockTarget] = useState(null); // "slide-image" | "slide-video" | "media" | "element-new" | "element-replace"
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [savingTemplate, setSavingTemplate] = useState(false);
   const [styleTemplate, setStyleTemplate] = useState(state.applyTemplate || "hooks");
   const [restyling, setRestyling] = useState(false);
   const templates = useTemplateStyles();
@@ -148,6 +152,64 @@ export default function Composer() {
 
   useEffect(() => { if (active > assets.length - 1) setActive(Math.max(0, assets.length - 1)); }, [assets, active]);
   useEffect(() => { setSelectedElementId(null); }, [active]);
+
+  // ---- undo / redo over the visual deck ----
+  // Every `assets` change (a slide edit, a dragged element, a new slide) is a
+  // history point. Rapid-fire changes — typing in a text field, dragging a
+  // handle — land within the same ~500ms window and coalesce into one undo
+  // step instead of one per keystroke/pixel, which is what "undo" actually
+  // means to someone using it.
+  const historyRef = useRef({ past: [], future: [], last: 0 });
+  const prevAssetsRef = useRef(assets);
+  const skipHistoryRef = useRef(false);
+  // Bumped whenever past/future changes, purely so the undo/redo buttons'
+  // disabled state re-renders — the stack itself lives in a ref so pushing
+  // to it on every keystroke doesn't itself trigger a render.
+  const [historyTick, setHistoryTick] = useState(0);
+  useEffect(() => {
+    if (skipHistoryRef.current) { skipHistoryRef.current = false; prevAssetsRef.current = assets; return; }
+    const h = historyRef.current;
+    const now = Date.now();
+    if (!(now - h.last < 500 && h.past.length)) {
+      h.past.push(prevAssetsRef.current);
+      if (h.past.length > 60) h.past.shift();
+      h.future = [];
+    }
+    h.last = now;
+    prevAssetsRef.current = assets;
+    setHistoryTick((n) => n + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assets]);
+  const undo = () => {
+    const h = historyRef.current;
+    if (!h.past.length) return;
+    const prev = h.past.pop();
+    h.future.push(prevAssetsRef.current);
+    skipHistoryRef.current = true;
+    setAssets(prev);
+  };
+  const redo = () => {
+    const h = historyRef.current;
+    if (!h.future.length) return;
+    const next = h.future.pop();
+    h.past.push(prevAssetsRef.current);
+    skipHistoryRef.current = true;
+    setAssets(next);
+  };
+  const canUndo = historyTick >= 0 && historyRef.current.past.length > 0;
+  const canRedo = historyTick >= 0 && historyRef.current.future.length > 0;
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "z") return;
+      const tag = document.activeElement?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return; // don't fight native field undo
+      e.preventDefault();
+      if (e.shiftKey) redo(); else undo();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Keeps a selected custom template's format in sync with the composer's,
   // in one atomic pass (two separate effects racing a plain ref against
@@ -310,6 +372,51 @@ export default function Composer() {
     next.splice(j, 0, els[i]);
     patchSlide(active, { elements: next });
   };
+  // Copies one element (a watermark, a badge, a logo) onto every other
+  // slide — slides not yet in layout-edit mode are converted first, so
+  // "apply to all" always means all, not just the ones already customized.
+  const applyElementToAllSlides = (elId) => {
+    const src = (activeAsset.spec.elements || []).find((x) => x.id === elId);
+    if (!src) return;
+    setAssets((s) => s.map((a, idx) => {
+      if (idx === active) return a;
+      const theme = themeFor(a.spec.theme, brand);
+      const baseElements = a.spec.elements || elementsFromSpec(a.spec, theme, brand);
+      const copy = { ...src, id: `el_${Math.random().toString(36).slice(2, 9)}` };
+      return { ...a, spec: { ...a.spec, elements: [...baseElements, copy] } };
+    }));
+    toast.success(`Added to all ${assets.length} slides`);
+  };
+  // A shape/icon/sticker preset from the library, or one of the user's own
+  // saved uploads — either way it arrives as a ready-made element definition
+  // (everything but id/x/y/rotation/opacity) and just needs to land on the
+  // canvas.
+  const addLibraryElement = (def) => {
+    const el = { id: `el_${Math.random().toString(36).slice(2, 9)}`, x: 25, y: 35, rotation: 0, opacity: 1, ...def };
+    patchSlide(active, { elements: [...(activeAsset.spec.elements || []), el] });
+    setSelectedElementId(el.id);
+    setLibraryOpen(false);
+  };
+
+  // Saves the deck currently open here as a reusable template — the outline
+  // plus, for any slide that's been customized, its actual freeform layout —
+  // so "build whole post" can start from it next time instead of from a
+  // blank AI guess.
+  const saveAsTemplate = async () => {
+    if (assets.length === 0) { toast.error("Nothing to save yet — add a slide first."); return; }
+    const name = window.prompt("Name this template", title !== "Untitled post" ? title : "");
+    if (!name || !name.trim()) return;
+    setSavingTemplate(true);
+    try {
+      const slides = assets.map((a) => ({
+        template: a.spec.template, heading: a.spec.heading, title: a.spec.title,
+        body: a.spec.body, elements: a.spec.elements,
+      }));
+      await api.post("/templates/from-composer", { name: name.trim(), format, theme: activeAsset?.spec?.theme || "midnight", slides });
+      await reloadCustomTemplates();
+      toast.success(`Saved "${name.trim()}" as a template`);
+    } catch (e) { toast.error(apiErrorMessage(e, "Couldn't save template.")); } finally { setSavingTemplate(false); }
+  };
 
   // A slide's image_prompt is generated art, not a stock lookup — render it and
   // hang the resulting URL on the slide so the card composites it as a backdrop.
@@ -337,6 +444,14 @@ export default function Composer() {
     if (stockTarget === "slide-video") patchSlide(active, { video_url: item.url, video_credit: item.credit, image_url: "" });
     else if (stockTarget === "slide-image") patchSlide(active, { image_url: item.url, image_credit: item.credit, video_url: "" });
     else if (stockTarget === "media") { setMediaUrl(item.url); setMediaType(item.type); }
+    else if (stockTarget === "element-new") {
+      const theme = themeFor(activeAsset.spec.theme, brand);
+      const el = { ...newElement("image", theme, brand), url: item.url, w: 40, h: 40 };
+      patchSlide(active, { elements: [...(activeAsset.spec.elements || []), el] });
+      setSelectedElementId(el.id);
+    } else if (stockTarget === "element-replace" && selectedElementId) {
+      patchElement(selectedElementId, { url: item.url });
+    }
     toast.success(item.credit ? `Added — photo by ${item.credit}` : "Added");
   };
 
@@ -632,13 +747,25 @@ export default function Composer() {
               <span className="font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">
                 {format === "reel" ? "Storyboard" : format === "carousel" ? "Slides" : "Visual"}
               </span>
-              <div className="flex items-center gap-1.5">
-                {THEME_LIST.concat([{ key: "brand", label: brand.name || "Brand", bg: activeColors(brand).bg }]).map((th) => (
-                  <button key={th.key} onClick={() => setAllThemes(th.key)} title={th.label}
-                    data-testid={`composer-theme-${th.key}`}
-                    className={`h-6 w-6 rounded-full border transition-transform hover:scale-110 ${activeAsset?.spec?.theme === th.key ? "border-lime" : "border-white/20"}`}
-                    style={{ background: th.bg }} />
-                ))}
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1">
+                  <IconBtn onClick={undo} disabled={!canUndo} testid="composer-undo" title="Undo (Ctrl+Z)"><Undo2 size={13} /></IconBtn>
+                  <IconBtn onClick={redo} disabled={!canRedo} testid="composer-redo" title="Redo (Ctrl+Shift+Z)"><Redo2 size={13} /></IconBtn>
+                </div>
+                {assets.length > 0 && (
+                  <Button variant="ghost" onClick={saveAsTemplate} disabled={savingTemplate} data-testid="composer-save-template"
+                    className="h-7 gap-1.5 px-2 text-xs text-zinc-400 hover:text-white">
+                    {savingTemplate ? <Loader2 size={12} className="animate-spin" /> : <BookmarkPlus size={12} />} Save as template
+                  </Button>
+                )}
+                <div className="flex items-center gap-1.5">
+                  {THEME_LIST.concat([{ key: "brand", label: brand.name || "Brand", bg: activeColors(brand).bg }]).map((th) => (
+                    <button key={th.key} onClick={() => setAllThemes(th.key)} title={th.label}
+                      data-testid={`composer-theme-${th.key}`}
+                      className={`h-6 w-6 rounded-full border transition-transform hover:scale-110 ${activeAsset?.spec?.theme === th.key ? "border-lime" : "border-white/20"}`}
+                      style={{ background: th.bg }} />
+                  ))}
+                </div>
               </div>
             </div>
 
@@ -672,7 +799,10 @@ export default function Composer() {
                   </button>
                 </div>
 
-                {/* Selected slide editor */}
+                {/* Selected slide editor — canvas and controls share one card
+                    (side by side from md up, stacked canvas-first on phones)
+                    instead of living in separate page columns, so dragging an
+                    element and adjusting its properties happen inches apart. */}
                 {activeAsset && (
                   <div className="mt-4 rounded-lg border border-white/10 bg-[#0A0A0A] p-4">
                     <div className="flex items-center justify-between">
@@ -686,91 +816,127 @@ export default function Composer() {
                       </div>
                     </div>
 
-                    {activeAsset.spec.elements ? (
-                      <ElementPropertyPanel
-                        elements={activeAsset.spec.elements} selectedId={selectedElementId}
-                        onSelect={setSelectedElementId} onPatch={patchElement} onAdd={addElementToSlide}
-                        onRemove={removeElement} onDuplicate={duplicateElement} onReorder={reorderElement}
-                        brand={brand}
-                      />
-                    ) : activeAsset.spec.template === "cover" ? (
-                      <SlideField label="Cover title" value={activeAsset.spec.title} testid="composer-slide-title"
-                        onChange={(v) => patchSlide(active, { title: v })} />
-                    ) : (
-                      <>
-                        <SlideField label={activeAsset.type === "scene" ? "On-screen text" : "Heading"} value={activeAsset.spec.heading}
-                          testid="composer-slide-heading" onChange={(v) => patchSlide(active, { heading: v })} />
-                        <SlideField label={activeAsset.type === "scene" ? "Voiceover" : "Body"} value={activeAsset.spec.body} rows={3}
-                          testid="composer-slide-body" onChange={(v) => patchSlide(active, { body: v })} />
-                      </>
-                    )}
+                    <div className="mt-4 md:grid md:grid-cols-[200px_minmax(0,1fr)] md:items-start md:gap-5">
+                      {/* Canvas — a hard-capped 200px grid track, so it can
+                          never push the controls track wider than the space
+                          actually left in this column (a flex `flex-1` alone
+                          let content overflow the real column budget on
+                          common laptop widths and silently steal clicks
+                          meant for the right-hand platform-preview column). */}
+                      <div className="mx-auto w-full max-w-[240px] md:mx-0 md:w-full">
+                        {activeAsset.spec.elements ? (
+                          <SlideEditor spec={activeAsset.spec} brand={brand} aspectCls={aspectCls} cardRef={cardRef}
+                            selectedId={selectedElementId} onSelect={setSelectedElementId}
+                            onChangeElement={patchElement} />
+                        ) : (
+                          <div className={`${aspectCls} w-full overflow-hidden rounded-xl`}>
+                            <div ref={cardRef} className="h-full w-full">
+                              <VisualCard spec={activeAsset.spec} brand={brand} scale={0.86} />
+                            </div>
+                          </div>
+                        )}
+                        {isDeck && (
+                          <div className="mt-3 flex items-center justify-center gap-3">
+                            <IconBtn onClick={() => setActive((i) => Math.max(0, i - 1))} disabled={active === 0} testid="composer-prev"><ChevronLeft size={15} /></IconBtn>
+                            <span className="font-mono text-[11px] text-zinc-500">{active + 1}/{assets.length}</span>
+                            <IconBtn onClick={() => setActive((i) => Math.min(assets.length - 1, i + 1))} disabled={active === assets.length - 1} testid="composer-next"><ChevronRight size={15} /></IconBtn>
+                          </div>
+                        )}
+                        {activeAsset.spec.elements && (
+                          <p className="mt-2 text-center text-[10px] text-zinc-600 md:text-left">Drag to move, the corner handle to resize, the top handle to rotate — or pinch on mobile.</p>
+                        )}
+                      </div>
 
-                    <SlideField label={activeAsset.type === "scene" ? "Video prompt" : "Image prompt"}
-                      value={activeAsset.type === "scene" ? activeAsset.spec.video_prompt : activeAsset.spec.image_prompt} rows={2}
-                      testid="composer-slide-prompt"
-                      onChange={(v) => patchSlide(active, activeAsset.type === "scene" ? { video_prompt: v } : { image_prompt: v })} />
+                      {/* Controls */}
+                      <div className="mt-4 min-w-0 md:mt-0">
+                        {activeAsset.spec.elements ? (
+                          <ElementPropertyPanel
+                            elements={activeAsset.spec.elements} selectedId={selectedElementId}
+                            onSelect={setSelectedElementId} onPatch={patchElement} onAdd={addElementToSlide}
+                            onRemove={removeElement} onDuplicate={duplicateElement} onReorder={reorderElement}
+                            onAddStock={() => setStockTarget("element-new")}
+                            onBrowseStock={() => setStockTarget("element-replace")}
+                            onApplyAll={applyElementToAllSlides} onOpenLibrary={() => setLibraryOpen(true)}
+                            canApplyAll={assets.length > 1}
+                            brand={brand}
+                          />
+                        ) : activeAsset.spec.template === "cover" ? (
+                          <SlideField label="Cover title" value={activeAsset.spec.title} testid="composer-slide-title"
+                            onChange={(v) => patchSlide(active, { title: v })} />
+                        ) : (
+                          <>
+                            <SlideField label={activeAsset.type === "scene" ? "On-screen text" : "Heading"} value={activeAsset.spec.heading}
+                              testid="composer-slide-heading" onChange={(v) => patchSlide(active, { heading: v })} />
+                            <SlideField label={activeAsset.type === "scene" ? "Voiceover" : "Body"} value={activeAsset.spec.body} rows={3}
+                              testid="composer-slide-body" onChange={(v) => patchSlide(active, { body: v })} />
+                          </>
+                        )}
 
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {activeAsset.type === "scene" ? (
-                        <>
-                          <Button variant="secondary" data-testid="composer-scene-to-studio"
-                            onClick={() => navigate("/studio", { state: { kind: "video", prompt: activeAsset.spec.video_prompt || activeAsset.spec.heading } })}
-                            className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
-                            <Film size={13} /> Generate clip in Studio
-                          </Button>
-                          <Button variant="secondary" onClick={() => setStockTarget("slide-video")} data-testid="composer-slide-stock-video"
-                            className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
-                            <Search size={13} /> Stock video
-                          </Button>
-                          {activeAsset.spec.video_url && (
-                            <Button variant="ghost" onClick={() => patchSlide(active, { video_url: "" })} data-testid="composer-slide-video-clear"
-                              className="h-8 px-2.5 text-xs text-zinc-500 hover:text-magic">Remove video</Button>
+                        <SlideField label={activeAsset.type === "scene" ? "Video prompt" : "Image prompt"}
+                          value={activeAsset.type === "scene" ? activeAsset.spec.video_prompt : activeAsset.spec.image_prompt} rows={2}
+                          testid="composer-slide-prompt"
+                          onChange={(v) => patchSlide(active, activeAsset.type === "scene" ? { video_prompt: v } : { image_prompt: v })} />
+
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {activeAsset.type === "scene" ? (
+                            <>
+                              <Button variant="secondary" data-testid="composer-scene-to-studio"
+                                onClick={() => navigate("/studio", { state: { kind: "video", prompt: activeAsset.spec.video_prompt || activeAsset.spec.heading } })}
+                                className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
+                                <Film size={13} /> Generate clip in Studio
+                              </Button>
+                              <Button variant="secondary" onClick={() => setStockTarget("slide-video")} data-testid="composer-slide-stock-video"
+                                className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
+                                <Search size={13} /> Stock video
+                              </Button>
+                              {activeAsset.spec.video_url && (
+                                <Button variant="ghost" onClick={() => patchSlide(active, { video_url: "" })} data-testid="composer-slide-video-clear"
+                                  className="h-8 px-2.5 text-xs text-zinc-500 hover:text-magic">Remove video</Button>
+                              )}
+                            </>
+                          ) : (
+                            <>
+                              <Button variant="secondary" onClick={() => renderSlideImage(active)} disabled={renderingSlide !== null}
+                                data-testid="composer-slide-image"
+                                className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
+                                {renderingSlide === active ? <Loader2 size={13} className="animate-spin" /> : <ImagePlus size={13} />} Generate image
+                              </Button>
+                              <Button variant="secondary" onClick={() => setStockTarget("slide-image")} data-testid="composer-slide-stock-image"
+                                className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
+                                <Search size={13} /> Stock photo
+                              </Button>
+                              {activeAsset.spec.image_url && (
+                                <Button variant="ghost" onClick={() => patchSlide(active, { image_url: "" })} data-testid="composer-slide-image-clear"
+                                  className="h-8 px-2.5 text-xs text-zinc-500 hover:text-magic">Remove image</Button>
+                              )}
+                            </>
                           )}
-                        </>
-                      ) : (
-                        <>
-                          <Button variant="secondary" onClick={() => renderSlideImage(active)} disabled={renderingSlide !== null}
-                            data-testid="composer-slide-image"
+                          <Button variant="secondary" onClick={downloadSlide} data-testid="composer-slide-download"
                             className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
-                            {renderingSlide === active ? <Loader2 size={13} className="animate-spin" /> : <ImagePlus size={13} />} Generate image
+                            <Download size={13} /> PNG
                           </Button>
-                          <Button variant="secondary" onClick={() => setStockTarget("slide-image")} data-testid="composer-slide-stock-image"
-                            className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
-                            <Search size={13} /> Stock photo
-                          </Button>
-                          {activeAsset.spec.image_url && (
-                            <Button variant="ghost" onClick={() => patchSlide(active, { image_url: "" })} data-testid="composer-slide-image-clear"
-                              className="h-8 px-2.5 text-xs text-zinc-500 hover:text-magic">Remove image</Button>
+                          {assets.length > 1 && (
+                            <Button variant="secondary" onClick={downloadAllSlides} disabled={downloadingAll}
+                              data-testid="composer-slide-download-all"
+                              className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
+                              {downloadingAll ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+                              {downloadingAll ? "Zipping…" : `All ${assets.length}`}
+                            </Button>
                           )}
-                        </>
-                      )}
-                      <Button variant="secondary" onClick={downloadSlide} data-testid="composer-slide-download"
-                        className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
-                        <Download size={13} /> PNG
-                      </Button>
-                      {assets.length > 1 && (
-                        <Button variant="secondary" onClick={downloadAllSlides} disabled={downloadingAll}
-                          data-testid="composer-slide-download-all"
-                          className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
-                          {downloadingAll ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-                          {downloadingAll ? "Zipping…" : `All ${assets.length}`}
-                        </Button>
-                      )}
-                      {activeAsset.spec.elements ? (
-                        <Button variant="ghost" onClick={() => resetSlideLayout(active)} data-testid="composer-slide-reset-layout"
-                          className="h-8 gap-1.5 px-2.5 text-xs text-zinc-500 hover:text-white">
-                          <Undo2 size={13} /> Reset to template
-                        </Button>
-                      ) : (
-                        <Button variant="secondary" onClick={() => enterLayoutEdit(active)} data-testid="composer-slide-edit-layout"
-                          className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
-                          <LayoutTemplate size={13} /> Edit layout
-                        </Button>
-                      )}
+                          {activeAsset.spec.elements ? (
+                            <Button variant="ghost" onClick={() => resetSlideLayout(active)} data-testid="composer-slide-reset-layout"
+                              className="h-8 gap-1.5 px-2.5 text-xs text-zinc-500 hover:text-white">
+                              <Undo2 size={13} /> Reset to template
+                            </Button>
+                          ) : (
+                            <Button variant="secondary" onClick={() => enterLayoutEdit(active)} data-testid="composer-slide-edit-layout"
+                              className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
+                              <LayoutTemplate size={13} /> Edit layout
+                            </Button>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                    {activeAsset.spec.elements && (
-                      <p className="mt-2 text-[11px] text-zinc-600">Drag to move, the corner handle to resize, the top handle to rotate — or pinch with two fingers on mobile.</p>
-                    )}
                   </div>
                 )}
               </>
@@ -830,33 +996,8 @@ export default function Composer() {
         {/* Preview column */}
         <div className="min-w-0 space-y-4">
           <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">
-            <Sparkles size={13} className="text-lime" /> Live preview
+            <Sparkles size={13} className="text-lime" /> Platform preview
           </div>
-
-          {assets.length > 0 && (
-            <div className="rounded-xl border border-white/10 bg-[#121212] p-4">
-              <div className="mx-auto w-full max-w-[380px]">
-                {activeAsset?.spec?.elements ? (
-                  <SlideEditor spec={activeAsset.spec} brand={brand} aspectCls={aspectCls} cardRef={cardRef}
-                    selectedId={selectedElementId} onSelect={setSelectedElementId}
-                    onChangeElement={patchElement} />
-                ) : (
-                  <div className={`${aspectCls} w-full overflow-hidden rounded-xl`}>
-                    <div ref={cardRef} className="h-full w-full">
-                      <VisualCard spec={activeAsset?.spec} brand={brand} scale={0.86} />
-                    </div>
-                  </div>
-                )}
-              </div>
-              {isDeck && (
-                <div className="mt-3 flex items-center justify-center gap-3">
-                  <IconBtn onClick={() => setActive((i) => Math.max(0, i - 1))} disabled={active === 0} testid="composer-prev"><ChevronLeft size={15} /></IconBtn>
-                  <span className="font-mono text-[11px] text-zinc-500">{active + 1}/{assets.length}</span>
-                  <IconBtn onClick={() => setActive((i) => Math.min(assets.length - 1, i + 1))} disabled={active === assets.length - 1} testid="composer-next"><ChevronRight size={15} /></IconBtn>
-                </div>
-              )}
-            </div>
-          )}
 
           {previews.map((k) => {
             // A platform with its own caption previews with THAT text (plus
@@ -876,13 +1017,14 @@ export default function Composer() {
         orientation={orientationFor(aspect)}
         onSelect={onStockPick}
       />
+      <ElementsLibrary open={libraryOpen} onOpenChange={setLibraryOpen} onPick={addLibraryElement} />
     </div>
   );
 }
 
 // ---- small pieces ----
-const IconBtn = ({ children, onClick, disabled, testid, danger }) => (
-  <button onClick={onClick} disabled={disabled} data-testid={testid}
+const IconBtn = ({ children, onClick, disabled, testid, danger, title }) => (
+  <button onClick={onClick} disabled={disabled} data-testid={testid} title={title}
     className={`flex h-7 w-7 items-center justify-center rounded-md border border-white/10 transition-colors disabled:opacity-30 ${danger ? "text-zinc-500 hover:text-magic" : "text-zinc-400 hover:text-white"}`}>
     {children}
   </button>
@@ -903,7 +1045,7 @@ const SlideField = ({ label, value, onChange, rows, testid }) => (
 
 // The property panel for a slide's freeform elements — shown instead of the
 // fixed heading/body fields once a slide has entered layout-edit mode.
-function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, onRemove, onDuplicate, onReorder, brand }) {
+function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, onRemove, onDuplicate, onReorder, onAddStock, onBrowseStock, onApplyAll, onOpenLibrary, canApplyAll, brand }) {
   const el = elements.find((x) => x.id === selectedId);
   const fontOptions = brand?.fonts?.display && !BRAND_FONTS.some((f) => f.key === brand.fonts.display)
     ? [{ key: brand.fonts.display, label: `${brand.fonts.display} (brand)` }, ...BRAND_FONTS] : BRAND_FONTS;
@@ -917,6 +1059,14 @@ function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, 
             <I size={11} /> {l}
           </Button>
         ))}
+        <Button variant="secondary" onClick={onAddStock} data-testid="composer-add-element-stock"
+          className="h-7 gap-1 rounded-lg border border-white/10 bg-white/5 px-2 text-[11px] text-white hover:bg-white/10">
+          <Search size={11} /> Stock photo
+        </Button>
+        <Button variant="secondary" onClick={onOpenLibrary} data-testid="composer-open-library"
+          className="h-7 gap-1 rounded-lg border border-white/10 bg-white/5 px-2 text-[11px] text-white hover:bg-white/10">
+          <Shapes size={11} /> Library
+        </Button>
       </div>
 
       {elements.length > 0 && (
@@ -946,13 +1096,13 @@ function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, 
                   {[400, 500, 600, 700, 800, 900].map((w) => <option key={w} value={w}>{w}</option>)}
                 </select>
               </div>
-              <div className="mt-2 flex items-center gap-2">
+              <div className="mt-2 flex flex-wrap items-center gap-2">
                 <label className="font-mono text-[10px] text-zinc-500">Size</label>
                 <input type="number" min={8} max={120} value={el.fontSize || 16} onChange={(e) => onPatch(el.id, { fontSize: Number(e.target.value) })}
                   data-testid="composer-element-size" className="w-16 rounded-lg border border-white/10 bg-[#0A0A0A] px-2 py-1 text-xs text-white outline-none" />
                 <input type="color" value={el.color || "#FFFFFF"} onChange={(e) => onPatch(el.id, { color: e.target.value })}
                   data-testid="composer-element-color" className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent p-0" />
-                <div className="ml-auto flex gap-1">
+                <div className="flex gap-1">
                   {[{ v: "left", I: AlignLeft }, { v: "center", I: AlignCenter }, { v: "right", I: AlignRight }].map(({ v, I }) => (
                     <button key={v} onClick={() => onPatch(el.id, { align: v })} data-testid={`composer-element-align-${v}`}
                       className={`flex h-7 w-7 items-center justify-center rounded-md border ${(el.align || "left") === v ? "border-lime text-lime" : "border-white/10 text-zinc-500"}`}>
@@ -965,40 +1115,49 @@ function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, 
           )}
           {el.type === "image" && (
             <>
-              <input value={el.url || ""} onChange={(e) => onPatch(el.id, { url: e.target.value })} placeholder="Image URL"
-                data-testid="composer-element-url" className="w-full rounded-lg border border-white/10 bg-[#0A0A0A] px-2.5 py-2 text-xs text-zinc-300 outline-none focus:border-lime" />
-              <div className="mt-2 flex items-center gap-2">
+              <div className="flex gap-1.5">
+                <input value={el.url || ""} onChange={(e) => onPatch(el.id, { url: e.target.value })} placeholder="Image URL"
+                  data-testid="composer-element-url" className="min-w-0 flex-1 rounded-lg border border-white/10 bg-[#0A0A0A] px-2.5 py-2 text-xs text-zinc-300 outline-none focus:border-lime" />
+                <Button variant="secondary" onClick={onBrowseStock} data-testid="composer-element-browse-stock"
+                  className="h-8 flex-shrink-0 gap-1 rounded-lg border border-white/10 bg-white/5 px-2 text-[11px] text-white hover:bg-white/10">
+                  <Search size={11} />
+                </Button>
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
                 <label className="font-mono text-[10px] text-zinc-500">Fit</label>
                 {["cover", "contain"].map((f) => (
                   <button key={f} onClick={() => onPatch(el.id, { fit: f })} data-testid={`composer-element-fit-${f}`}
                     className={`rounded-full border px-2 py-0.5 text-[11px] ${(el.fit || "cover") === f ? "border-lime text-lime" : "border-white/10 text-zinc-500"}`}>{f}</button>
                 ))}
-                <label className="ml-2 font-mono text-[10px] text-zinc-500">Opacity</label>
+                <label className="font-mono text-[10px] text-zinc-500">Opacity</label>
                 <input type="range" min={0} max={1} step={0.05} value={el.opacity ?? 1} onChange={(e) => onPatch(el.id, { opacity: Number(e.target.value) })}
                   data-testid="composer-element-opacity" className="w-16" />
               </div>
             </>
           )}
           {el.type === "shape" && (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <input type="color" value={el.color || "#E2FF3D"} onChange={(e) => onPatch(el.id, { color: e.target.value })}
                 data-testid="composer-element-color" className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent p-0" />
               {["rect", "ellipse"].map((s) => (
                 <button key={s} onClick={() => onPatch(el.id, { shape: s })} data-testid={`composer-element-shape-${s}`}
                   className={`rounded-full border px-2 py-0.5 text-[11px] ${(el.shape || "rect") === s ? "border-lime text-lime" : "border-white/10 text-zinc-500"}`}>{s}</button>
               ))}
-              <label className="ml-2 font-mono text-[10px] text-zinc-500">Opacity</label>
+              <label className="font-mono text-[10px] text-zinc-500">Opacity</label>
               <input type="range" min={0} max={1} step={0.05} value={el.opacity ?? 1} onChange={(e) => onPatch(el.id, { opacity: Number(e.target.value) })}
                 data-testid="composer-element-opacity" className="w-16" />
             </div>
           )}
 
-          <div className="mt-2 flex items-center gap-1 border-t border-white/5 pt-2">
+          <div className="mt-2 flex flex-wrap items-center gap-1 border-t border-white/5 pt-2">
             <label className="font-mono text-[10px] text-zinc-500">Rotate</label>
             <input type="number" value={Math.round(el.rotation || 0)} onChange={(e) => onPatch(el.id, { rotation: Number(e.target.value) })}
               data-testid="composer-element-rotation" className="w-14 rounded-lg border border-white/10 bg-[#0A0A0A] px-2 py-1 text-xs text-white outline-none" />
             <span className="text-xs text-zinc-600">°</span>
-            <div className="ml-auto flex gap-1">
+            <div className="flex gap-1">
+              {canApplyAll && (
+                <IconBtn onClick={() => onApplyAll(el.id)} testid="composer-element-apply-all" title="Apply to all slides"><CopyPlus size={13} /></IconBtn>
+              )}
               <IconBtn onClick={() => onReorder(el.id, "back")} testid="composer-element-send-back"><ChevronsDown size={13} /></IconBtn>
               <IconBtn onClick={() => onReorder(el.id, "front")} testid="composer-element-bring-front"><ChevronsUp size={13} /></IconBtn>
               <IconBtn onClick={() => onDuplicate(el.id)} testid="composer-element-duplicate"><Copy size={13} /></IconBtn>

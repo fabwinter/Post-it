@@ -147,7 +147,16 @@ _CREATE_TABLES = [
         id TEXT PRIMARY KEY, name TEXT NOT NULL, source_kind TEXT NOT NULL,
         source_url TEXT NOT NULL, format TEXT NOT NULL DEFAULT 'carousel',
         theme TEXT NOT NULL DEFAULT 'midnight', colors TEXT NOT NULL DEFAULT '{}',
-        slides TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL)""",
+        slides TEXT NOT NULL DEFAULT '[]', layouts TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL)""",
+    # A personal palette of reusable elements — uploaded logos/badges/stamps
+    # saved once from the Composer's elements library and available on every
+    # post after that, alongside the code-defined shape/icon/sticker presets
+    # (which need no row since they never change).
+    """CREATE TABLE IF NOT EXISTS library_elements (
+        id TEXT PRIMARY KEY, kind TEXT NOT NULL DEFAULT 'upload',
+        name TEXT NOT NULL DEFAULT 'Element', element TEXT NOT NULL DEFAULT '{}',
+        thumbnail_url TEXT, created_at TEXT NOT NULL)""",
     # The brand's long-form memory. A kit says how the brand sounds; these say
     # what it actually knows, believes and has done. brand_kit_id NULL means
     # the document applies to every kit.
@@ -196,6 +205,9 @@ _ADD_COLUMNS = {
     ],
     "knowledge_chunks": [
         ("terms", "ALTER TABLE knowledge_chunks ADD COLUMN terms TEXT NOT NULL DEFAULT '{}'"),
+    ],
+    "visual_templates": [
+        ("layouts", "ALTER TABLE visual_templates ADD COLUMN layouts TEXT NOT NULL DEFAULT '{}'"),
     ],
 }
 
@@ -1015,6 +1027,65 @@ async def delete_upload(upload_id: str):
     return {"ok": True}
 
 
+# ---------------- Elements library ----------------
+# Shapes/icons/stickers are code-defined presets the frontend already knows
+# (they never change, so there's nothing to store); only a user's own
+# uploaded logos/badges/stamps need a row here, so they show up again on
+# every future post instead of being a one-off insert.
+class LibraryElementCreate(BaseModel):
+    name: Optional[str] = None
+    kind: str = "upload"
+    element: Dict[str, Any]
+
+
+def _row_to_library_element(row: dict):
+    return {
+        "id": row["id"], "kind": row["kind"], "name": row["name"],
+        "element": _maybe_json(row.get("element"), "{}"),
+        "thumbnail_url": row.get("thumbnail_url"),
+        "created_at": row["created_at"],
+    }
+
+
+@api_router.get("/library/elements")
+async def list_library_elements(kind: Optional[str] = None):
+    await ensure_schema()
+    if kind:
+        rows, _ = await d1_query("SELECT * FROM library_elements WHERE kind = ? ORDER BY created_at DESC LIMIT 200", [kind])
+    else:
+        rows, _ = await d1_query("SELECT * FROM library_elements ORDER BY created_at DESC LIMIT 200")
+    return [_row_to_library_element(r) for r in rows]
+
+
+@api_router.post("/library/elements")
+async def create_library_element(req: LibraryElementCreate):
+    await ensure_schema()
+    if not req.element or not req.element.get("type"):
+        raise HTTPException(status_code=400, detail="element must include at least a type")
+    element = dict(req.element)
+    record = {
+        "id": str(uuid.uuid4()), "kind": req.kind or "upload",
+        "name": req.name or "Element", "element": element,
+        "thumbnail_url": element.get("url") if element.get("type") == "image" else None,
+        "created_at": now_iso(),
+    }
+    await d1_query(
+        "INSERT INTO library_elements (id, kind, name, element, thumbnail_url, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        [record["id"], record["kind"], record["name"], json.dumps(record["element"]),
+         record["thumbnail_url"], record["created_at"]],
+    )
+    return _row_to_library_element(record)
+
+
+@api_router.delete("/library/elements/{element_id}")
+async def delete_library_element(element_id: str):
+    await ensure_schema()
+    rows, _ = await d1_query("DELETE FROM library_elements WHERE id = ? RETURNING id", [element_id])
+    if not rows:
+        raise HTTPException(status_code=404, detail="Library element not found")
+    return {"ok": True}
+
+
 # ---------------- Content extraction (brand analysis + file-to-template) ----------------
 # Every extraction below is either deterministic (real pixels via Pillow, real
 # markup via regex/XML) or reads real extracted text before ever reaching the
@@ -1498,6 +1569,14 @@ class TemplateFromFileRequest(BaseModel):
     model: Optional[str] = None
 
 
+class TemplateFromComposerRequest(BaseModel):
+    name: Optional[str] = None
+    format: str
+    theme: Optional[str] = "midnight"
+    model: Optional[str] = None
+    slides: List[Dict[str, Any]]  # raw Composer asset specs (heading/body/title + elements when customized)
+
+
 def _maybe_json(v, default):
     """Accepts either an already-parsed value (building a response straight
     from a freshly-inserted record) or the JSON text a D1 row stores it as."""
@@ -1509,7 +1588,8 @@ def _row_to_visual_template(row: dict):
         "id": row["id"], "name": row["name"], "source_kind": row["source_kind"],
         "source_url": row["source_url"], "format": row["format"], "theme": row["theme"],
         "colors": _maybe_json(row.get("colors"), "{}"),
-        "slides": _maybe_json(row.get("slides"), "[]"), "created_at": row["created_at"],
+        "slides": _maybe_json(row.get("slides"), "[]"),
+        "layouts": _maybe_json(row.get("layouts"), "{}"), "created_at": row["created_at"],
     }
 
 
@@ -1768,6 +1848,45 @@ def _apply_template_layouts(assets: List[Dict[str, Any]], template: dict) -> Lis
     return assets
 
 
+def _layout_from_elements(elements: List[Dict[str, Any]], is_cover: bool) -> List[Dict[str, Any]]:
+    """Turns one slide's freeform elements into a reusable layout: the
+    topmost one or two text elements become dynamic (role title/heading, then
+    body — refilled with fresh copy every time this template is used);
+    everything else (images, shapes, extra badges) is carried through exactly
+    as designed, unchanged on every future post built from this template."""
+    texts_by_y = sorted((e for e in elements if e.get("type") == "text"), key=lambda e: e.get("y", 0))
+    dynamic_ids = {id(e) for e in texts_by_y[:2]}
+    out = []
+    assigned_title = False
+    for el in elements:
+        e = dict(el)
+        e.pop("id", None)
+        if id(el) in dynamic_ids:
+            e["role"] = ("title" if is_cover else "heading") if not assigned_title else "body"
+            assigned_title = True
+            e.pop("text", None)
+        out.append(e)
+    return out
+
+
+def _layouts_from_composer_slides(slides: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Picks one representative slide per role (cover/slide/outro) — the same
+    three roles _apply_template_layouts fills at generation time — from a
+    Composer deck. Slides that never entered freeform layout editing have
+    nothing custom to save and are skipped."""
+    layouts: Dict[str, Any] = {}
+    last = len(slides) - 1
+    for i, s in enumerate(slides):
+        els = s.get("elements")
+        if not els:
+            continue
+        is_cover = i == 0 and s.get("template") == "cover"
+        key = "cover" if is_cover else ("outro" if i == last and last > 0 else "slide")
+        if key not in layouts:
+            layouts[key] = _layout_from_elements(els, is_cover)
+    return layouts
+
+
 async def _abstract_slides(slides: List[Dict[str, str]], model: str) -> List[Dict[str, str]]:
     """Turns a specific deck/PDF's real content into a reusable outline — e.g.
     "Q3 Revenue Growth" becomes "State the headline metric" — so the template
@@ -1848,6 +1967,41 @@ async def create_template_from_file(req: TemplateFromFileRequest):
     return _row_to_visual_template(record)
 
 
+@api_router.post("/templates/from-composer")
+async def create_template_from_composer(req: TemplateFromComposerRequest):
+    """Saves the deck currently open in the Composer as a reusable template:
+    an abstracted outline (so future generations write fresh copy, not this
+    post's literal wording) plus — for any slide that was customized in the
+    freeform editor — the actual layout, in the same shape STARTER_TEMPLATES
+    and file-converted templates already speak."""
+    await ensure_schema()
+    model = req.model or CHAT_MODEL
+    raw_slides = [
+        {"heading": s.get("heading") or s.get("title") or "", "body": s.get("body") or ""}
+        for s in req.slides
+    ]
+    slides = (
+        await _abstract_slides(raw_slides, model)
+        if any(s["heading"] or s["body"] for s in raw_slides) else raw_slides
+    )
+    layouts = _layouts_from_composer_slides(req.slides)
+
+    record = {
+        "id": str(uuid.uuid4()), "name": req.name or "Untitled template",
+        "source_kind": "composer", "source_url": "", "format": req.format,
+        "theme": req.theme or "midnight", "colors": {}, "slides": slides,
+        "layouts": layouts, "created_at": now_iso(),
+    }
+    await d1_query(
+        "INSERT INTO visual_templates (id, name, source_kind, source_url, format, theme, colors, slides, layouts, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [record["id"], record["name"], record["source_kind"], record["source_url"], record["format"],
+         record["theme"], json.dumps(record["colors"]), json.dumps(record["slides"]), json.dumps(record["layouts"]),
+         record["created_at"]],
+    )
+    return _row_to_visual_template(record)
+
+
 @api_router.get("/templates/custom")
 async def list_custom_templates():
     """The user's converted templates first (newest first), then the starters
@@ -1857,7 +2011,7 @@ async def list_custom_templates():
     rows, _ = await d1_query("SELECT * FROM visual_templates ORDER BY created_at DESC LIMIT 100")
     saved = [_row_to_visual_template(r) for r in rows]
     for tpl in saved:
-        tpl["preview"] = _template_preview(tpl)
+        tpl["preview"] = _template_preview(tpl, tpl.get("layouts"))
     return saved + [_starter_as_template(t) for t in STARTER_TEMPLATES]
 
 
