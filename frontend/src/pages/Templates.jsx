@@ -70,10 +70,12 @@ export default function Templates() {
     finally { setConverting(false); if (customFileRef.current) customFileRef.current.value = ""; }
   };
 
-  const deleteCustomTemplate = async (id) => {
+  const deleteCustomTemplate = async (tpl) => {
+    if (!window.confirm(`Delete "${tpl.name}"? This can't be undone.`)) return;
     try {
-      await api.delete(`/templates/custom/${id}`);
+      await api.delete(`/templates/custom/${tpl.id}`);
       await reloadCustom();
+      toast.success("Deleted");
     } catch (e) { toast.error(apiErrorMessage(e, "Couldn't delete that template.")); }
   };
 
@@ -243,7 +245,7 @@ export default function Templates() {
                     <Wand size={12} /> Use
                   </Button>
                   {!tpl.builtin && (
-                    <Button variant="secondary" onClick={() => deleteCustomTemplate(tpl.id)} data-testid={`templates-custom-delete-${tpl.id}`}
+                    <Button variant="secondary" onClick={() => deleteCustomTemplate(tpl)} data-testid={`templates-custom-delete-${tpl.id}`}
                       className="h-7 w-7 rounded-lg border border-white/10 bg-white/5 p-0 text-zinc-400 hover:text-white">
                       <Trash2 size={13} />
                     </Button>

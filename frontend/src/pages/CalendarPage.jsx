@@ -34,6 +34,7 @@ export default function CalendarPage() {
 
   const bulkDelete = async () => {
     if (selected.length === 0) return;
+    if (!window.confirm(`Delete ${selected.length} post${selected.length === 1 ? "" : "s"}? This can't be undone.`)) return;
     setBulkDeleting(true);
     try {
       const { data } = await api.post("/posts/bulk-delete", { ids: selected });

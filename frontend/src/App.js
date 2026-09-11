@@ -1,9 +1,10 @@
 import "@/App.css";
 import { useEffect, useState } from "react";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, useLocation } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Toaster } from "@/components/ui/sonner";
 import { LockScreen } from "@/components/LockScreen";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { api } from "@/lib/api";
 import Dashboard from "@/pages/Dashboard";
 import Studio from "@/pages/Studio";
@@ -42,28 +43,53 @@ function AuthGate({ children }) {
   return children;
 }
 
+// A render crash on one page shouldn't need a hard reload to recover from —
+// keying the boundary by path remounts it (clearing the error) the moment
+// the user navigates anywhere else, so the sidebar/nav from AppLayout stays
+// usable the whole time instead of vanishing under a white screen.
+function RouteErrorBoundary({ children }) {
+  const location = useLocation();
+  return <ErrorBoundary key={location.pathname}>{children}</ErrorBoundary>;
+}
+
+// Test-only: ?__boom=1 forces a real render-phase crash so the boundary
+// above it can be verified end-to-end instead of trusted on inspection —
+// see probe22.js. Harmless outside that: it only ever crashes the tab that
+// opts in via this exact query string, and it renders nothing otherwise.
+function Boom() {
+  if (new URLSearchParams(window.location.search).get("__boom") === "1") {
+    throw new Error("Intentional test crash (?__boom=1)");
+  }
+  return null;
+}
+
 function App() {
   return (
     <div className="App">
-      <AuthGate>
-        <BrowserRouter>
-          <AppLayout>
-            <Routes>
-              <Route path="/" element={<Dashboard />} />
-              <Route path="/studio" element={<Studio />} />
-              <Route path="/visuals" element={<Visuals />} />
-              <Route path="/repurpose" element={<Repurpose />} />
-              <Route path="/templates" element={<Templates />} />
-              <Route path="/composer" element={<Composer />} />
-              <Route path="/calendar" element={<CalendarPage />} />
-              <Route path="/library" element={<Library />} />
-              <Route path="/brand" element={<BrandKit />} />
-              <Route path="/connections" element={<Connections />} />
-            </Routes>
-          </AppLayout>
-          <Toaster position="top-right" theme="dark" />
-        </BrowserRouter>
-      </AuthGate>
+      <ErrorBoundary level="app">
+        <AuthGate>
+          <BrowserRouter>
+            <AppLayout>
+              <RouteErrorBoundary>
+                <Boom />
+                <Routes>
+                  <Route path="/" element={<Dashboard />} />
+                  <Route path="/studio" element={<Studio />} />
+                  <Route path="/visuals" element={<Visuals />} />
+                  <Route path="/repurpose" element={<Repurpose />} />
+                  <Route path="/templates" element={<Templates />} />
+                  <Route path="/composer" element={<Composer />} />
+                  <Route path="/calendar" element={<CalendarPage />} />
+                  <Route path="/library" element={<Library />} />
+                  <Route path="/brand" element={<BrandKit />} />
+                  <Route path="/connections" element={<Connections />} />
+                </Routes>
+              </RouteErrorBoundary>
+            </AppLayout>
+            <Toaster position="top-right" theme="dark" />
+          </BrowserRouter>
+        </AuthGate>
+      </ErrorBoundary>
     </div>
   );
 }
