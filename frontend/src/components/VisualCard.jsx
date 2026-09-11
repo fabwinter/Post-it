@@ -3,6 +3,7 @@ import { Twitter, BadgeCheck, Loader2 } from "lucide-react";
 import { activeColors } from "@/lib/useBrand";
 import { fontStack, useBrandFonts } from "@/lib/fonts";
 import { elementBoxStyle } from "@/lib/slideElements";
+import { ICON_MAP } from "@/lib/elementLibrary";
 
 // One card = one spec. Keeping the renderer a pure function of a small spec
 // object is what lets a post store a ten-slide carousel as a few hundred bytes
@@ -147,6 +148,10 @@ export const VisualCard = forwardRef(function VisualCard(
             ) : (
               <div key={el.id} style={{ ...box, border: "1px dashed rgba(150,150,150,0.4)" }} />
             );
+          }
+          if (el.type === "icon") {
+            const IconCmp = ICON_MAP[el.name] || ICON_MAP.star;
+            return <IconCmp key={el.id} style={box} color={el.color || theme.accent} absoluteStrokeWidth strokeWidth={el.strokeWidth || 2} />;
           }
           return <div key={el.id} style={{ ...box, background: el.color || theme[el.colorRole] || theme.accent, borderRadius: el.shape === "ellipse" ? "50%" : `${f(4)}` }} />;
         })}

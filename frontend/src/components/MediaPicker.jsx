@@ -8,6 +8,7 @@ import { Search, Loader2, Image as ImageIcon, Film, Play, Upload, Music2, Trash2
 const TYPE_ICON = { image: ImageIcon, video: Film, audio: Music2 };
 const TYPE_LABEL = { image: "Photos", video: "Video", audio: "Audio" };
 const ACCEPT = { image: "image/*", video: "video/*", audio: "audio/*" };
+const PER_PAGE = 30;
 
 // One picker for every "attach media" moment in the app: search free stock
 // (Pexels, photos & video only) or browse/upload your own files (Vercel
@@ -21,6 +22,9 @@ export function MediaPicker({ open, onOpenChange, defaultType = "image", orienta
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [page, setPage] = useState(1);
+  const [totalResults, setTotalResults] = useState(0);
   const [searched, setSearched] = useState(false);
   const [notConfigured, setNotConfigured] = useState(false);
   const [uploads, setUploads] = useState([]);
@@ -35,7 +39,7 @@ export function MediaPicker({ open, onOpenChange, defaultType = "image", orienta
     const t = defaultType;
     setType(t);
     setSource(t === "audio" ? "uploads" : "search");
-    setResults([]); setSearched(false); setNotConfigured(false);
+    setResults([]); setSearched(false); setNotConfigured(false); setPage(1); setTotalResults(0);
   }, [open, defaultType]);
 
   useEffect(() => { if (open && source === "search") setTimeout(() => inputRef.current?.focus(), 50); }, [open, source]);
@@ -56,15 +60,33 @@ export function MediaPicker({ open, onOpenChange, defaultType = "image", orienta
     if (!term) return;
     setLoading(true); setSearched(true);
     try {
-      const { data } = await api.get("/stock/search", { params: { q: term, type: t ?? type, per_page: 30, orientation } });
+      const { data } = await api.get("/stock/search", { params: { q: term, type: t ?? type, per_page: PER_PAGE, page: 1, orientation } });
       setResults(data.results || []);
+      setPage(1);
+      setTotalResults(data.total_results || 0);
       setNotConfigured(false);
     } catch (e) {
       const msg = apiErrorMessage(e, "Search failed.");
       if (/not configured/i.test(msg)) setNotConfigured(true);
       else toast.error(msg);
-      setResults([]);
+      setResults([]); setTotalResults(0);
     } finally { setLoading(false); }
+  };
+
+  // Pexels caps a single page at 40 — "load more" pages through the rest of
+  // its results instead of the search being stuck at one screenful.
+  const loadMore = async () => {
+    const term = query.trim();
+    if (!term || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const nextPage = page + 1;
+      const { data } = await api.get("/stock/search", { params: { q: term, type, per_page: PER_PAGE, page: nextPage, orientation } });
+      setResults((r) => [...r, ...(data.results || [])]);
+      setPage(nextPage);
+      setTotalResults(data.total_results || 0);
+    } catch (e) { toast.error(apiErrorMessage(e, "Couldn't load more.")); }
+    finally { setLoadingMore(false); }
   };
 
   const switchType = (t) => {
@@ -176,22 +198,32 @@ export function MediaPicker({ open, onOpenChange, defaultType = "image", orienta
             <div className="flex min-h-[200px] items-center justify-center text-center text-sm text-zinc-600">No results for that search.</div>
           )}
           {source === "search" && (
-            <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
-              {results.map((r) => (
-                <button key={r.id} onClick={() => pick(r)} data-testid={`media-result-${r.id}`}
-                  className="group relative aspect-square overflow-hidden rounded-lg border border-white/10 bg-[#121212] transition-colors hover:border-lime">
-                  <img src={r.thumbnail} alt="" className="h-full w-full object-cover" loading="lazy" />
-                  {r.type === "video" && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-black/20">
-                      <Play size={20} className="text-white drop-shadow" fill="white" />
+            <>
+              <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+                {results.map((r) => (
+                  <button key={r.id} onClick={() => pick(r)} data-testid={`media-result-${r.id}`}
+                    className="group relative aspect-square overflow-hidden rounded-lg border border-white/10 bg-[#121212] transition-colors hover:border-lime">
+                    <img src={r.thumbnail} alt="" className="h-full w-full object-cover" loading="lazy" />
+                    {r.type === "video" && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/20">
+                        <Play size={20} className="text-white drop-shadow" fill="white" />
+                      </div>
+                    )}
+                    <div className="absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/80 to-transparent px-2 py-1.5 text-left font-mono text-[9px] text-zinc-300 opacity-0 transition-opacity group-hover:opacity-100">
+                      {r.credit}
                     </div>
-                  )}
-                  <div className="absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/80 to-transparent px-2 py-1.5 text-left font-mono text-[9px] text-zinc-300 opacity-0 transition-opacity group-hover:opacity-100">
-                    {r.credit}
-                  </div>
-                </button>
-              ))}
-            </div>
+                  </button>
+                ))}
+              </div>
+              {results.length > 0 && results.length < totalResults && (
+                <div className="mt-3 flex justify-center">
+                  <Button variant="secondary" onClick={loadMore} disabled={loadingMore} data-testid="media-load-more"
+                    className="gap-1.5 rounded-lg border border-white/10 bg-white/5 px-4 text-xs text-white hover:bg-white/10">
+                    {loadingMore ? <Loader2 size={13} className="animate-spin" /> : null} Load more
+                  </Button>
+                </div>
+              )}
+            </>
           )}
 
           {source === "uploads" && (
