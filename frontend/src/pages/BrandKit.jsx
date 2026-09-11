@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, apiErrorMessage } from "@/lib/api";
 import { useBrandKits } from "@/lib/useBrand";
-import { BRAND_FONTS } from "@/lib/fonts";
+import { BRAND_FONTS, groupFontsByCategory } from "@/lib/fonts";
 import { VisualCard } from "@/components/VisualCard";
 import { KnowledgeBase } from "@/components/KnowledgeBase";
 import { Button } from "@/components/ui/button";
@@ -441,12 +441,17 @@ const FontField = ({ label, value, onChange, testid, className = "" }) => {
   const options = BRAND_FONTS.some((f) => f.key === value) || !value
     ? BRAND_FONTS
     : [{ key: value, label: `${value} (detected)` }, ...BRAND_FONTS];
+  const groups = groupFontsByCategory(options);
   return (
     <div className={className}>
       <label className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">{label}</label>
       <select value={value || "Inter"} onChange={(e) => onChange(e.target.value)} data-testid={testid}
         className={`${inputCls} [color-scheme:dark]`} style={{ fontFamily: "inherit" }}>
-        {options.map((f) => <option key={f.key} value={f.key}>{f.label || f.key}</option>)}
+        {groups.map(({ category, fonts }) => (
+          <optgroup key={category} label={category}>
+            {fonts.map((f) => <option key={f.key} value={f.key}>{f.label || f.key}</option>)}
+          </optgroup>
+        ))}
       </select>
     </div>
   );

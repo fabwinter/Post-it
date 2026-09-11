@@ -1,7 +1,7 @@
-import { forwardRef } from "react";
+import { forwardRef, useEffect } from "react";
 import { Twitter, BadgeCheck, Loader2 } from "lucide-react";
 import { activeColors } from "@/lib/useBrand";
-import { fontStack, useBrandFonts } from "@/lib/fonts";
+import { fontStack, useBrandFonts, ensureFontLoaded } from "@/lib/fonts";
 import { elementBoxStyle } from "@/lib/slideElements";
 import { ICON_MAP } from "@/lib/elementLibrary";
 
@@ -90,6 +90,14 @@ export const VisualCard = forwardRef(function VisualCard(
   // Only the brand theme carries picked fonts — every other theme keeps the
   // app's default type rather than silently reverting mid-deck.
   useBrandFonts(theme.fonts);
+  // A freeform text element can pick its OWN font, independent of the brand
+  // theme (see the Composer's element property panel) — that choice needs
+  // its own webfont <link> too, or the font-family just falls back to
+  // whatever's already loaded instead of the one actually picked.
+  const elementFonts = (spec?.elements || []).map((el) => el.fontFamily).filter(Boolean).join(",");
+  useEffect(() => {
+    elementFonts.split(",").filter(Boolean).forEach(ensureFontLoaded);
+  }, [elementFonts]);
   const displayFont = theme.fonts?.display ? fontStack(theme.fonts.display) : undefined;
   const bodyFont = theme.fonts?.body ? fontStack(theme.fonts.body) : undefined;
 
