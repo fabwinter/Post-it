@@ -761,6 +761,24 @@ check("starters cover more than one format", len({t["format"] for t in starters}
 check("starter layouts reference colours by role, not baked hexes",
       all("colorRole" in e for t in server.STARTER_TEMPLATES for layout in t["layouts"].values() for e in layout))
 
+# --- template previews: a real thumbnail spec, not just a description ---
+for t in starters:
+    check(f"starter '{t['name']}' carries a freeform preview", t["preview"] and "elements" in t["preview"], t.get("preview"))
+    texts = [e.get("text", "") for e in t["preview"]["elements"] if e["type"] == "text"]
+    check(f"starter '{t['name']}' preview uses its own outline as placeholder copy",
+          any(txt and txt in (t["slides"][0]["heading"], t["slides"][0]["body"]) for txt in texts), texts)
+
+pptx_tpl = next(t for t in saved_only if t["source_kind"] == "pptx")
+check("a converted pptx template carries a preview", pptx_tpl["preview"] is not None, pptx_tpl["preview"])
+check("its preview is a plain slide (heading + body), not a freeform layout",
+      pptx_tpl["preview"].get("template") == "slide" and "elements" not in pptx_tpl["preview"], pptx_tpl["preview"])
+check("its preview shows the template's own (abstracted) outline text, not blank",
+      pptx_tpl["preview"]["heading"] == pptx_tpl["slides"][0]["heading"], pptx_tpl["preview"])
+
+image_tpl = next(t for t in saved_only if t["source_kind"] == "image")
+check("an image-only template (no slide structure) has no preview to show",
+      image_tpl["preview"] is None, image_tpl["preview"])
+
 r = c.delete(f"/api/templates/custom/{starters[0]['id']}")
 check("a starter can't be deleted", r.status_code == 400 and "can't be deleted" in r.json()["detail"], r.text)
 
