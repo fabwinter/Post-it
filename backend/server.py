@@ -1680,6 +1680,35 @@ STARTER_TEMPLATES = [
 STARTER_BY_ID = {t["id"]: t for t in STARTER_TEMPLATES}
 
 
+def _template_preview(tpl: dict, layouts: Optional[dict] = None) -> Optional[dict]:
+    """A representative first-slide spec, ready for VisualCard — so the
+    library shows what a template actually looks like instead of a name and
+    a description. Starters use their own outline as placeholder copy (the
+    same words already visible in the library's description text); a
+    converted deck's slides are already an abstracted outline, not the
+    source's literal wording, so showing them as-is doesn't leak anything.
+    A template with nothing visual to show (an image-only conversion has a
+    palette but no layout) returns None — the caller falls back to its
+    existing color-swatch summary."""
+    slides = tpl.get("slides") or []
+    first = slides[0] if slides else {}
+    # Not every format has a cover (a reel storyboard is scenes only) — same
+    # fallback order _apply_template_layouts uses at generation time.
+    layout = (layouts or {}).get("cover") or (layouts or {}).get("slide")
+    if layout:
+        elements = _fill_layout(layout, {
+            "title": first.get("heading") or tpl.get("name") or "",
+            "heading": first.get("heading") or tpl.get("name") or "",
+            "body": first.get("body") or "",
+            "index": 1,
+        }, 1)
+        return {"theme": tpl.get("theme"), "elements": elements}
+    if slides:
+        return {"template": "slide", "theme": tpl.get("theme"), "total": 1,
+                "heading": first.get("heading") or "", "body": first.get("body") or ""}
+    return None
+
+
 def _starter_as_template(t: dict) -> dict:
     """A starter rendered in the same shape the library and the Composer's
     picker already speak, so neither needs to know it isn't a saved row."""
@@ -1687,6 +1716,7 @@ def _starter_as_template(t: dict) -> dict:
         "id": t["id"], "name": t["name"], "source_kind": "starter", "source_url": "",
         "format": t["format"], "theme": t["theme"], "colors": {}, "slides": t["slides"],
         "description": t["description"], "builtin": True, "created_at": "",
+        "preview": _template_preview(t, t.get("layouts")),
     }
 
 
@@ -1825,7 +1855,10 @@ async def list_custom_templates():
     on day one."""
     await ensure_schema()
     rows, _ = await d1_query("SELECT * FROM visual_templates ORDER BY created_at DESC LIMIT 100")
-    return [_row_to_visual_template(r) for r in rows] + [_starter_as_template(t) for t in STARTER_TEMPLATES]
+    saved = [_row_to_visual_template(r) for r in rows]
+    for tpl in saved:
+        tpl["preview"] = _template_preview(tpl)
+    return saved + [_starter_as_template(t) for t in STARTER_TEMPLATES]
 
 
 @api_router.delete("/templates/custom/{template_id}")

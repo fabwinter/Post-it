@@ -5,6 +5,7 @@ import { useTextModels } from "@/lib/useTextModels";
 import { useCustomTemplates } from "@/lib/useCustomTemplates";
 import { PLATFORM_LIST } from "@/lib/platforms";
 import { ModelPicker } from "@/components/ModelPicker";
+import { VisualCard, ASPECT_CLASS } from "@/components/VisualCard";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
@@ -210,8 +211,22 @@ export default function Templates() {
         {!loadingCustom && customTemplates.length > 0 && (
           <div className="mt-4 grid gap-2 sm:grid-cols-2">
             {customTemplates.map((tpl) => (
-              <div key={tpl.id} className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-[#0A0A0A] p-3" data-testid={`templates-custom-item-${tpl.id}`}>
-                <div className="min-w-0">
+              <div key={tpl.id} className="flex items-center gap-3 rounded-lg border border-white/10 bg-[#0A0A0A] p-3" data-testid={`templates-custom-item-${tpl.id}`}>
+                <div className={`relative w-[84px] flex-none overflow-hidden rounded-md border border-white/10 bg-[#050505] ${tpl.format === "reel" ? ASPECT_CLASS["9:16"] : ASPECT_CLASS["4:5"]}`}
+                  data-testid={`templates-custom-thumb-${tpl.id}`}>
+                  {tpl.preview ? (
+                    <VisualCard spec={tpl.preview} scale={0.19} className="pointer-events-none" />
+                  ) : Object.keys(tpl.colors || {}).length > 0 ? (
+                    <div className="flex h-full flex-col">
+                      {Object.values(tpl.colors).slice(0, 4).map((hex, i) => (
+                        <span key={i} className="flex-1" style={{ background: hex }} />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="flex h-full items-center justify-center text-zinc-700"><LayoutTemplate size={18} /></div>
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5">
                     <span className="truncate text-sm font-medium text-white">{tpl.name}</span>
                     {tpl.builtin && <span className="flex-none rounded-full border border-lime/40 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-lime">Starter</span>}
@@ -220,16 +235,9 @@ export default function Templates() {
                   <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500">
                     {!tpl.builtin && <span className="uppercase">{tpl.source_kind}</span>}
                     <span>{!tpl.builtin && "· "}{tpl.slides.length} slide{tpl.slides.length === 1 ? "" : "s"} · {tpl.format}</span>
-                    {Object.keys(tpl.colors || {}).length > 0 && (
-                      <span className="flex items-center gap-1">
-                        {Object.values(tpl.colors).slice(0, 4).map((hex, i) => (
-                          <span key={i} className="h-3 w-3 rounded-full border border-white/20" style={{ background: hex }} />
-                        ))}
-                      </span>
-                    )}
                   </div>
                 </div>
-                <div className="flex flex-none items-center gap-1.5">
+                <div className="flex flex-none flex-col items-stretch gap-1.5">
                   <Button onClick={() => openInComposer(tpl)} data-testid={`templates-custom-use-${tpl.id}`}
                     className="h-7 gap-1 rounded-lg bg-lime px-2.5 text-[11px] font-semibold text-[#0A0A0A] hover:bg-lime-hover">
                     <Wand size={12} /> Use
