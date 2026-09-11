@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Request, UploadFile, File, Form
+from fastapi import FastAPI, APIRouter, HTTPException, Request, UploadFile, File, Form, Depends
 from fastapi.responses import Response, JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -13,12 +13,14 @@ import colorsys
 import io
 import math
 import zipfile
+import ipaddress
+import socket
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime, timezone
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from PIL import Image
 from pypdf import PdfReader
 from pptx import Presentation
@@ -42,8 +44,27 @@ PEXELS_API_KEY = os.environ.get('PEXELS_API_KEY')
 # already hosted on Vercel.
 BLOB_READ_WRITE_TOKEN = os.environ.get('BLOB_READ_WRITE_TOKEN')
 
+# Optional but strongly recommended: without it every /api route is open to
+# anyone who has the URL — this app has no per-user accounts, so a single
+# shared secret is the whole access-control model. Set it in Vercel and send
+# it back as `Authorization: Bearer <token>` (the frontend's lock screen does
+# this once the visitor enters it). Left unset, nothing is enforced, matching
+# how every other optional integration in this file degrades.
+APP_ACCESS_TOKEN = os.environ.get('APP_ACCESS_TOKEN')
+
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
+# The cron endpoint authenticates itself with its own CRON_SECRET (Vercel
+# Cron sends that, not the app's access token) so it lives on a separate,
+# unprotected router rather than inheriting api_router's dependency below.
+cron_router = APIRouter(prefix="/api")
+
+
+async def require_app_token(request: Request):
+    if not APP_ACCESS_TOKEN:
+        return
+    if request.headers.get("authorization") != f"Bearer {APP_ACCESS_TOKEN}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -154,6 +175,8 @@ _ADD_COLUMNS = {
         ("format", "ALTER TABLE posts ADD COLUMN format TEXT NOT NULL DEFAULT 'single'"),
         ("hashtags", "ALTER TABLE posts ADD COLUMN hashtags TEXT NOT NULL DEFAULT '[]'"),
         ("brand_kit_id", "ALTER TABLE posts ADD COLUMN brand_kit_id TEXT"),
+        ("alt_text", "ALTER TABLE posts ADD COLUMN alt_text TEXT NOT NULL DEFAULT ''"),
+        ("content_by_platform", "ALTER TABLE posts ADD COLUMN content_by_platform TEXT NOT NULL DEFAULT '{}'"),
     ],
     "generations": [
         ("output", "ALTER TABLE generations ADD COLUMN output TEXT"),
@@ -371,6 +394,12 @@ class Post(BaseModel):
     assets: List[Dict[str, Any]] = Field(default_factory=list)
     format: str = "single"  # single | carousel | reel | story | thread
     hashtags: List[str] = Field(default_factory=list)
+    alt_text: str = ""
+    # Per-platform caption overrides — keyed by platform, e.g. {"twitter": "…"}.
+    # A platform with no entry here uses `content`. Lets one post carry a
+    # 280-char X caption and a 2200-char Instagram one instead of forcing
+    # the same text (and the same char-limit warning) onto every platform.
+    content_by_platform: Dict[str, str] = Field(default_factory=dict)
     brand_kit_id: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
@@ -387,6 +416,8 @@ class PostCreate(BaseModel):
     assets: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
     format: Optional[str] = "single"
     hashtags: Optional[List[str]] = Field(default_factory=list)
+    alt_text: Optional[str] = ""
+    content_by_platform: Optional[Dict[str, str]] = Field(default_factory=dict)
     brand_kit_id: Optional[str] = None
 
 
@@ -401,11 +432,13 @@ class PostUpdate(BaseModel):
     assets: Optional[List[Dict[str, Any]]] = None
     format: Optional[str] = None
     hashtags: Optional[List[str]] = None
+    alt_text: Optional[str] = None
+    content_by_platform: Optional[Dict[str, str]] = None
     brand_kit_id: Optional[str] = None
 
 
 # Post columns whose Python value is a list/dict and whose D1 value is JSON text.
-JSON_POST_FIELDS = ("platforms", "media_urls", "assets", "hashtags")
+JSON_POST_FIELDS = ("platforms", "media_urls", "assets", "hashtags", "content_by_platform")
 
 
 def _post_row(post: dict):
@@ -414,7 +447,8 @@ def _post_row(post: dict):
         json.dumps(post.get("platforms") or []), post.get("status") or "draft", post.get("scheduled_time"),
         json.dumps(post.get("media_urls") or []), post.get("media_type"),
         json.dumps(post.get("assets") or []), post.get("format") or "single",
-        json.dumps(post.get("hashtags") or []), post.get("brand_kit_id"),
+        json.dumps(post.get("hashtags") or []), post.get("alt_text") or "",
+        json.dumps(post.get("content_by_platform") or {}), post.get("brand_kit_id"),
         post["created_at"], post["updated_at"],
     ]
 
@@ -432,6 +466,8 @@ def _row_to_post(row: dict):
         "assets": json.loads(row.get("assets") or "[]"),
         "format": row.get("format") or "single",
         "hashtags": json.loads(row.get("hashtags") or "[]"),
+        "alt_text": row.get("alt_text") or "",
+        "content_by_platform": json.loads(row.get("content_by_platform") or "{}"),
         "brand_kit_id": row.get("brand_kit_id"),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
@@ -788,10 +824,18 @@ async def ai_coach(req: CoachRequest):
 
 @api_router.get("/proxy-image")
 async def proxy_image(url: str):
-    r = await asyncio.to_thread(lambda: requests.get(url, timeout=90))
-    if r.status_code != 200:
-        raise HTTPException(status_code=502, detail="Could not fetch image")
-    return Response(content=r.content, media_type=r.headers.get("content-type", "image/png"))
+    """Re-serves an image or video from our own origin so the browser's
+    canvas export (Composer's PNG download) can read pixels back out of it
+    even when the original host doesn't send CORS headers — a cross-origin
+    <img> without them taints the canvas. Restricted to image/video content
+    and capped in size; _fetch_with_cap already blocks non-http(s) schemes
+    and internal/private addresses."""
+    content, content_type = await asyncio.to_thread(_fetch_with_cap, url, 20 * 1024 * 1024, 20)
+    if not content_type.startswith(("image/", "video/")):
+        raise HTTPException(status_code=400, detail="Only image or video URLs can be proxied")
+    return Response(content=content, media_type=content_type, headers={
+        "Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=86400",
+    })
 
 
 # ---------------- Stock media (Pexels) ----------------
@@ -982,13 +1026,68 @@ async def delete_upload(upload_id: str):
 # image's actual pixels for color, read an SVG's or a webpage's actual markup
 # for color/fonts, and read a PDF's or webpage's actual text for voice/tone.
 
-def _fetch_bytes(url: str, max_bytes: int = 20 * 1024 * 1024) -> bytes:
-    r = requests.get(url, timeout=30)
+# Every one of these fetches a URL a client supplied, not one this app
+# generated — the classic SSRF shape (make the server request an internal
+# address on the caller's behalf). Scheme and resolved-IP checks run before
+# any request goes out; the byte cap is enforced while streaming, not after
+# buffering the whole body, so a huge or slow response can't be used to
+# exhaust memory or hold a lambda open.
+# Narrow, explicit test-only escape hatch: a local dev/e2e harness fakes
+# Blob storage by serving uploads back off its own loopback address, which
+# is otherwise indistinguishable from an SSRF probe. Never set this in
+# production — it isn't in .env.example, and nothing here reads it from
+# anywhere a real deployment would set it. Loopback only; private ranges,
+# link-local (including cloud metadata) and everything else stay blocked
+# even with this set, so the guard still means something in that harness.
+_ALLOW_LOOPBACK_FETCH = os.environ.get("ALLOW_LOOPBACK_FETCH") == "1"
+
+
+def _assert_public_http_url(url: str):
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="Only http:// and https:// URLs are allowed")
+    host = parsed.hostname
+    if not host:
+        raise HTTPException(status_code=400, detail="That doesn't look like a valid URL")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        # Doesn't resolve for us => isn't reachable for us => not a viable
+        # SSRF target; the real request below will fail on its own DNS
+        # lookup the same way, with the same error either way.
+        return
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if ip.is_loopback and _ALLOW_LOOPBACK_FETCH:
+            continue
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+            raise HTTPException(status_code=400, detail="That host isn't reachable from here")
+
+
+def _fetch_with_cap(url: str, max_bytes: int, timeout: int = 30) -> tuple:
+    _assert_public_http_url(url)
+    r = requests.get(url, timeout=timeout, stream=True)
     if r.status_code != 200:
+        r.close()
         raise HTTPException(status_code=502, detail=f"Could not fetch {url} ({r.status_code})")
-    if len(r.content) > max_bytes:
-        raise HTTPException(status_code=413, detail="That file is too large to analyze")
-    return r.content
+    content_type = r.headers.get("content-type", "application/octet-stream")
+    chunks, total = [], 0
+    try:
+        for chunk in r.iter_content(chunk_size=65536):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > max_bytes:
+                raise HTTPException(status_code=413, detail="That file is too large to analyze")
+            chunks.append(chunk)
+    finally:
+        r.close()
+    return b"".join(chunks), content_type
+
+
+def _fetch_bytes(url: str, max_bytes: int = 20 * 1024 * 1024) -> bytes:
+    data, _content_type = _fetch_with_cap(url, max_bytes)
+    return data
 
 
 def _dominant_colors(image_bytes: bytes, n: int = 6) -> List[str]:
@@ -1276,6 +1375,7 @@ _TAG_RE = re.compile(r"<[^>]+>")
 
 
 def _url_analysis(url: str) -> Dict[str, Any]:
+    _assert_public_http_url(url)
     r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 (compatible; CreateOSBot/1.0)"})
     if r.status_code != 200:
         raise HTTPException(status_code=502, detail=f"Could not fetch that page ({r.status_code})")
@@ -1884,6 +1984,7 @@ class RssImportRequest(BaseModel):
 @api_router.post("/rss/import")
 async def rss_import(req: RssImportRequest):
     limit = max(1, min(int(req.limit or 10), 30))
+    await asyncio.to_thread(_assert_public_http_url, req.url)
     resp = await asyncio.to_thread(
         lambda: requests.get(req.url, timeout=30, headers={"User-Agent": "CreateOS/1.0"})
     )
@@ -2090,6 +2191,31 @@ async def delete_brand_kit(kit_id: str):
         if remaining:
             await d1_query("UPDATE brand_kits SET is_default = 1 WHERE id = ?", [remaining[0]["id"]])
     return {"ok": True}
+
+
+@api_router.get("/brand-kits/{kit_id}/export")
+async def export_brand_kit(kit_id: str):
+    """Everything one kit knows and sounds like, as one file — the D1
+    database backing this app has no export of its own, so this is the only
+    way any of it leaves. Includes documents shared across every kit
+    (brand_kit_id NULL) alongside this kit's own, since a restore needs both
+    to reproduce what a generation actually saw."""
+    await ensure_schema()
+    rows, _ = await d1_query("SELECT * FROM brand_kits WHERE id = ?", [kit_id])
+    if not rows:
+        raise HTTPException(status_code=404, detail="Brand kit not found")
+    docs, _ = await d1_query(
+        "SELECT * FROM knowledge_docs WHERE brand_kit_id = ? OR brand_kit_id IS NULL "
+        "ORDER BY pinned DESC, created_at ASC",
+        [kit_id],
+    )
+    return {
+        "exported_at": now_iso(),
+        "kind": "postit_brand_kit_export",
+        "version": 1,
+        "brand_kit": _row_to_brand(rows[0]),
+        "knowledge_docs": [_row_to_doc(d, include_content=True) for d in docs],
+    }
 
 
 # ---------------- Brand knowledge base ----------------
@@ -2577,29 +2703,42 @@ async def update_knowledge_doc(doc_id: str, req: KnowledgeDocIn):
         raise HTTPException(status_code=404, detail="Knowledge document not found")
     existing = _row_to_doc(rows[0])
     content = req.content if req.content is not None else existing["content"]
+    content_changed = req.content is not None and req.content != existing["content"]
     merged = {
         "title": (req.title or existing["title"])[:200],
         "kind": req.kind if req.kind in KNOWLEDGE_KINDS else existing["kind"],
         "content": content,
-        "tags": req.tags if req.tags is not None else existing["tags"],
         "pinned": existing["pinned"] if req.pinned is None else req.pinned,
         "enabled": existing["enabled"] if req.enabled is None else req.enabled,
         "brand_kit_id": req.brand_kit_id if req.brand_kit_id is not None else existing["brand_kit_id"],
     }
+    # A rewritten document's summary and tags described the OLD text — left
+    # alone, a pinned doc (whose summary is injected into every generation
+    # verbatim) would keep asserting something the edit just changed. Only
+    # worth the model call when the content actually changed; a rename or a
+    # pin toggle shouldn't pay for it.
+    if content_changed:
+        meta = await _summarise_doc(merged["title"], merged["content"], merged["kind"], req.model)
+        summary = meta["summary"]
+        tags = req.tags if req.tags is not None else meta["tags"]
+    else:
+        summary = existing["summary"]
+        tags = req.tags if req.tags is not None else existing["tags"]
+    merged["summary"], merged["tags"] = summary, tags
     ts = now_iso()
     meta_terms = json.dumps(_term_counts(
-        _doc_meta_text(merged["title"], merged["kind"], existing["summary"], merged["tags"])
+        _doc_meta_text(merged["title"], merged["kind"], merged["summary"], merged["tags"])
     ))
     out, _ = await d1_query(
-        "UPDATE knowledge_docs SET title=?, kind=?, content=?, tags=?, pinned=?, enabled=?, "
+        "UPDATE knowledge_docs SET title=?, kind=?, content=?, summary=?, tags=?, pinned=?, enabled=?, "
         "brand_kit_id=?, meta_terms=?, updated_at=? WHERE id=? RETURNING *",
-        [merged["title"], merged["kind"], merged["content"], json.dumps(merged["tags"]),
+        [merged["title"], merged["kind"], merged["content"], merged["summary"], json.dumps(merged["tags"]),
          1 if merged["pinned"] else 0, 1 if merged["enabled"] else 0, merged["brand_kit_id"],
          meta_terms, ts, doc_id],
     )
     # Only re-chunk when the text actually changed — re-chunking is the
     # expensive part and a pin/rename shouldn't pay for it.
-    if req.content is not None and req.content != existing["content"]:
+    if content_changed:
         await _store_chunks(doc_id, merged["brand_kit_id"], merged["content"])
     return _row_to_doc(out[0])
 
@@ -3036,8 +3175,8 @@ async def create_post(inp: PostCreate):
     post = Post(**{k: v for k, v in inp.model_dump().items() if v is not None})
     await d1_query(
         "INSERT INTO posts (id, title, content, platforms, status, scheduled_time, media_urls, media_type, "
-        "assets, format, hashtags, brand_kit_id, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "assets, format, hashtags, alt_text, content_by_platform, brand_kit_id, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         _post_row(post.model_dump()),
     )
     return post
@@ -3138,7 +3277,7 @@ async def list_connections():
 # Wired to Vercel Cron (see vercel.json). Reports which scheduled posts are
 # due and why they weren't published, rather than faking a "published" state
 # — there is no real publisher yet (Phase 1: needs OAuth per platform).
-@api_router.get("/cron/publish-due")
+@cron_router.get("/cron/publish-due")
 async def cron_publish_due(request: Request):
     secret = os.environ.get("CRON_SECRET")
     if secret and request.headers.get("authorization") != f"Bearer {secret}":
@@ -3160,12 +3299,17 @@ async def cron_publish_due(request: Request):
     return {"checked_at": now_iso(), "due_count": len(rows), "results": results}
 
 
-app.include_router(api_router)
+app.include_router(api_router, dependencies=[Depends(require_app_token)])
+app.include_router(cron_router)
 
+# allow_credentials=True together with a wildcard origin is a combination
+# browsers reject outright (and shouldn't be relied on if they didn't) —
+# nothing here uses cookie-based auth, so credentialed CORS is simply off.
+_cors_origins = os.environ.get('CORS_ORIGINS', '*').split(',')
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_credentials=False,
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

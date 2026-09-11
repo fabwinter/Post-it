@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
   Palette, Save, Loader2, Plus, X, Upload, ImageOff, Sparkles, Image as ImageIcon,
-  FileText, Link as LinkIcon, Check, Shapes, Star, Trash2, Moon, Sun, Type,
+  FileText, Link as LinkIcon, Check, Shapes, Star, Trash2, Moon, Sun, Type, Download,
 } from "lucide-react";
 
 const COLOR_FIELDS = [
@@ -39,6 +39,7 @@ export default function BrandKit() {
   const [selectedId, setSelectedId] = useState(undefined); // undefined = not landed yet, null = new unsaved kit
   const [form, setForm] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const logoInputRef = useRef(null);
 
@@ -118,6 +119,25 @@ export default function BrandKit() {
       toast.success("Brand kit saved — every generation can use it from now on.");
     } catch (e) { toast.error(apiErrorMessage(e, "Couldn't save the brand kit.")); }
     finally { setSaving(false); }
+  };
+
+  // The whole kit, colours/fonts/voice plus every knowledge document it can
+  // see, as one JSON file — the only way any of it leaves this database.
+  const exportKit = async () => {
+    if (!form.id) return;
+    setExporting(true);
+    try {
+      const { data } = await api.get(`/brand-kits/${form.id}/export`);
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${(form.name || "brand-kit").replace(/\W+/g, "-").toLowerCase()}-backup.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success("Downloaded — brand kit and knowledge base, in one file.");
+    } catch (e) { toast.error(apiErrorMessage(e, "Couldn't export the brand kit.")); }
+    finally { setExporting(false); }
   };
 
   // Runs the analysis for whichever source is picked — an uploaded file for
@@ -359,10 +379,18 @@ export default function BrandKit() {
             )}
           </section>
 
-          <Button onClick={save} disabled={saving} data-testid="brand-save"
-            className="w-full gap-2 rounded-lg bg-lime font-semibold text-[#0A0A0A] hover:bg-lime-hover sm:w-auto">
-            {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} {form.id ? "Save brand kit" : "Create brand kit"}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={save} disabled={saving} data-testid="brand-save"
+              className="gap-2 rounded-lg bg-lime font-semibold text-[#0A0A0A] hover:bg-lime-hover">
+              {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} {form.id ? "Save brand kit" : "Create brand kit"}
+            </Button>
+            {form.id && (
+              <Button variant="secondary" onClick={exportKit} disabled={exporting} data-testid="brand-export"
+                className="gap-2 rounded-lg border border-white/10 bg-white/5 text-white hover:bg-white/10">
+                {exporting ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />} Export backup
+              </Button>
+            )}
+          </div>
 
           {/* The knowledge base attaches to a saved kit, so it appears once
               there is an id to attach it to. */}
