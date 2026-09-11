@@ -12,6 +12,7 @@ import xml.etree.ElementTree as ET
 import colorsys
 import io
 import math
+import zipfile
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
@@ -21,6 +22,7 @@ from urllib.parse import urljoin
 from PIL import Image
 from pypdf import PdfReader
 from pptx import Presentation
+from docx import Document as DocxDocument
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -1086,6 +1088,176 @@ def _pptx_extract(pptx_bytes: bytes, max_slides: int = 30) -> List[Dict[str, str
                 body_parts.append(text)
         slides.append({"heading": title, "body": " ".join(body_parts)[:500]})
     return slides
+
+
+def _docx_extract(docx_bytes: bytes, max_blocks: int = 4000) -> str:
+    """Word documents, tables included — brand guidelines live in tables."""
+    doc = DocxDocument(io.BytesIO(docx_bytes))
+    parts: List[str] = []
+    for para in doc.paragraphs[:max_blocks]:
+        text = para.text.strip()
+        if not text:
+            continue
+        style = getattr(getattr(para, "style", None), "name", "") or ""
+        parts.append(f"## {text}" if style.startswith("Heading") or style == "Title" else text)
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [c.text.strip().replace("\n", " ") for c in row.cells]
+            line = " | ".join(c for c in cells if c)
+            if line:
+                parts.append(line)
+    return "\n\n".join(parts)
+
+
+_TEXT_ENCODINGS = ("utf-8-sig", "utf-8", "utf-16", "cp1252", "latin-1")
+
+
+def _decode_text(data: bytes) -> str:
+    for enc in _TEXT_ENCODINGS:
+        try:
+            return data.decode(enc)
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+_RTF_GROUP_RE = re.compile(r"\{\\\*.*?\}", re.DOTALL)
+_RTF_CONTROL_RE = re.compile(r"\\'([0-9a-fA-F]{2})|\\([a-zA-Z]+)-?\d* ?|\\([^a-zA-Z])")
+_SCRIPT_STYLE_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
+_BLOCK_BREAK_RE = re.compile(r"</(p|div|li|h[1-6]|tr|section|article)>|<br\s*/?>", re.IGNORECASE)
+
+
+def _rtf_to_text(data: bytes) -> str:
+    raw = _RTF_GROUP_RE.sub(" ", _decode_text(data))
+
+    def sub(m):
+        if m.group(1):
+            try:
+                return bytes([int(m.group(1), 16)]).decode("cp1252", errors="replace")
+            except ValueError:
+                return ""
+        word = m.group(2)
+        return "\n" if word in ("par", "line", "pard") else ""
+
+    return re.sub(r"\n{3,}", "\n\n", _RTF_CONTROL_RE.sub(sub, raw).replace("{", "").replace("}", "")).strip()
+
+
+def _html_to_text(data_or_str) -> str:
+    html = data_or_str if isinstance(data_or_str, str) else _decode_text(data_or_str)
+    html = _SCRIPT_STYLE_RE.sub(" ", html)
+    html = _BLOCK_BREAK_RE.sub("\n", html)
+    text = _TAG_RE.sub(" ", html)
+    for entity, char in (("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'), ("&#39;", "'")):
+        text = text.replace(entity, char)
+    lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in text.split("\n")]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(ln for ln in lines if ln)).strip()
+
+
+# Extensions we can read text out of directly. Anything not listed still gets
+# a decode attempt if it sniffs as text — this is the "yes, and" list, not a
+# gate.
+_PLAIN_TEXT_EXTS = {
+    "txt", "text", "md", "markdown", "mdx", "rst", "adoc", "asciidoc", "org", "log",
+    "csv", "tsv", "json", "jsonl", "ndjson", "yaml", "yml", "toml", "ini", "cfg", "conf",
+    "xml", "srt", "vtt", "tex", "sql",
+}
+_HTML_EXTS = {"html", "htm", "xhtml"}
+# Formats a person plausibly has and we genuinely cannot read — say so by name
+# rather than failing with "unsupported".
+_KNOWN_UNREADABLE = {
+    "ole": "Legacy Office files (.doc, .xls, .ppt) can't be read — re-save it as .docx, .pptx, .pdf or .txt.",
+    "doc": "Legacy .doc files can't be read — re-save it as .docx, .pdf or .txt.",
+    "pages": "Apple Pages files can't be read — export it as .docx or .pdf first.",
+    "key": "Keynote files can't be read — export it as .pptx or .pdf first.",
+    "numbers": "Numbers files can't be read — export it as .csv or .xlsx first.",
+    "epub": "EPUB files can't be read yet — export the chapter as .pdf or paste the text.",
+}
+
+
+def _ext_of(name: str) -> str:
+    return (name or "").rsplit("?", 1)[0].rsplit("#", 1)[0].rsplit(".", 1)[-1].lower() if "." in (name or "") else ""
+
+
+def _sniff_document_kind(data: bytes, filename: str = "", content_type: str = "") -> str:
+    """What this file actually is, by content first and name second. Browsers
+    lie about content_type for .md and .csv often enough not to trust it."""
+    head = data[:8]
+    if head.startswith(b"%PDF"):
+        return "pdf"
+    if head.startswith(b"{\\rtf"):
+        return "rtf"
+    if head.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):   # OLE2: legacy .doc/.xls/.ppt
+        return "ole"
+    if head.startswith(b"PK\x03\x04"):
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                names = set(z.namelist())
+        except zipfile.BadZipFile:
+            names = set()
+        if "word/document.xml" in names:
+            return "docx"
+        if any(n.startswith("ppt/") for n in names):
+            return "pptx"
+        if any(n.startswith("xl/") for n in names):
+            return "xlsx"
+        return "zip"
+
+    ext = _ext_of(filename)
+    if ext in _KNOWN_UNREADABLE:
+        return ext
+    if ext in _HTML_EXTS:
+        return "html"
+    if ext in _PLAIN_TEXT_EXTS:
+        return "text"
+
+    ct = (content_type or "").lower()
+    if "html" in ct:
+        return "html"
+    if ct.startswith("text/") or "json" in ct or "markdown" in ct or "xml" in ct:
+        return "text"
+
+    # Last resort: if it decodes cleanly and isn't mostly control bytes, it's text.
+    sample = data[:4096]
+    if b"\x00" in sample:
+        return "binary"
+    try:
+        decoded = sample.decode("utf-8")
+    except UnicodeDecodeError:
+        return "binary"
+    printable = sum(1 for ch in decoded if ch.isprintable() or ch in "\r\n\t")
+    if decoded and printable / len(decoded) > 0.9:
+        return "html" if decoded.lstrip()[:200].lower().startswith(("<!doctype html", "<html")) else "text"
+    return "binary"
+
+
+def _extract_document(data: bytes, filename: str = "", content_type: str = "") -> Dict[str, str]:
+    """Any document the app accepts in, one call. Returns the text and the
+    kind it turned out to be, so the caller can record where it came from."""
+    kind = _sniff_document_kind(data, filename, content_type)
+    if kind in _KNOWN_UNREADABLE:
+        raise HTTPException(status_code=400, detail=_KNOWN_UNREADABLE[kind])
+    if kind == "pdf":
+        pdf = _pdf_extract(data, 40)
+        return {"text": "\n\n".join(t for t in pdf["page_texts"] if t), "kind": "pdf"}
+    if kind == "pptx":
+        slides = _pptx_extract(data, 60)
+        text = "\n\n".join(f"{s['heading']}\n{s['body']}".strip() for s in slides if s["heading"] or s["body"])
+        return {"text": text, "kind": "pptx"}
+    if kind == "docx":
+        return {"text": _docx_extract(data), "kind": "docx"}
+    if kind == "rtf":
+        return {"text": _rtf_to_text(data), "kind": "rtf"}
+    if kind == "html":
+        return {"text": _html_to_text(data), "kind": "html"}
+    if kind == "text":
+        text = _decode_text(data).replace("\r\n", "\n").replace("\r", "\n")
+        return {"text": re.sub(r"\n{3,}", "\n\n", text).strip(), "kind": "text"}
+    if kind == "xlsx":
+        raise HTTPException(status_code=400, detail="Spreadsheets can't be read yet — export the sheet as .csv.")
+    raise HTTPException(
+        status_code=400,
+        detail="That file isn't readable as text. PDF, Word, PowerPoint, Markdown, plain text, CSV, HTML and RTF all work.",
+    )
 
 
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
@@ -2187,7 +2359,7 @@ class KnowledgeDocIn(BaseModel):
     pinned: Optional[bool] = None
     enabled: Optional[bool] = None
     # Ingest sources — supply one of these instead of `content`.
-    source_type: Optional[str] = None  # paste | pdf | pptx | url
+    source_type: Optional[str] = None  # paste | url | file (pdf, docx, pptx, md, txt, csv, html, rtf…)
     source_url: Optional[str] = None
     model: Optional[str] = None
 
@@ -2198,9 +2370,26 @@ class KnowledgeSearch(BaseModel):
     budget: Optional[int] = None
 
 
+_DOC_KIND_LABELS = {
+    "pdf": "PDF document", "pptx": "Deck", "docx": "Word document",
+    "rtf": "Document", "html": "Web page", "text": "Text file",
+}
+
+
+def _title_from_source_url(url: str) -> str:
+    """Blob URLs end in the original filename with a random suffix bolted on.
+    Recover something a person would recognise in a list."""
+    base = (url or "").rsplit("?", 1)[0].rsplit("/", 1)[-1]
+    stem = base.rsplit(".", 1)[0] if "." in base else base
+    stem = re.sub(r"[-_][A-Za-z0-9]{16,}$", "", stem)          # blob's random suffix
+    stem = re.sub(r"[-_]+", " ", stem).strip()
+    return stem[:1].upper() + stem[1:] if stem else ""
+
+
 async def _ingest_source(req: KnowledgeDocIn) -> Dict[str, str]:
-    """Pulls real text out of whatever was handed over. Reuses the same
-    extractors the brand analyser uses — nothing here invents content."""
+    """Pulls real text out of whatever was handed over — pasted text, a web
+    page, or a file of almost any readable kind. Nothing here invents
+    content; if a file yields no text, the caller rejects it."""
     st = (req.source_type or "paste").lower()
     if st in ("paste", "", None):
         return {"content": req.content or "", "title": req.title or "Untitled note",
@@ -2212,18 +2401,14 @@ async def _ingest_source(req: KnowledgeDocIn) -> Dict[str, str]:
         text = "\n\n".join(t for t in [page.get("description", ""), page.get("text", "")] if t)
         return {"content": text, "title": req.title or page.get("title") or req.source_url,
                 "source_kind": "url", "source_url": req.source_url}
+    # Everything else is a file. What it *is* gets decided by reading it, not
+    # by what the caller called it — a phone that labels a .md upload
+    # "application/octet-stream" still gets read as Markdown.
     data = await asyncio.to_thread(_fetch_bytes, req.source_url)
-    if st == "pdf":
-        pdf = await asyncio.to_thread(_pdf_extract, data, 40)
-        text = "\n\n".join(t for t in pdf["page_texts"] if t)
-        return {"content": text, "title": req.title or "PDF document",
-                "source_kind": "pdf", "source_url": req.source_url}
-    if st == "pptx":
-        slides = await asyncio.to_thread(_pptx_extract, data, 60)
-        text = "\n\n".join(f"{s['heading']}\n{s['body']}".strip() for s in slides if s["heading"] or s["body"])
-        return {"content": text, "title": req.title or "Deck",
-                "source_kind": "pptx", "source_url": req.source_url}
-    raise HTTPException(status_code=400, detail="source_type must be paste, pdf, pptx or url")
+    doc = await asyncio.to_thread(_extract_document, data, req.source_url, "")
+    return {"content": doc["text"],
+            "title": req.title or _title_from_source_url(req.source_url) or _DOC_KIND_LABELS.get(doc["kind"], "Document"),
+            "source_kind": doc["kind"], "source_url": req.source_url}
 
 
 @api_router.post("/knowledge")

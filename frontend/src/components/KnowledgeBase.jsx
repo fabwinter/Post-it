@@ -4,14 +4,24 @@ import { useKnowledge, KNOWLEDGE_KINDS, kindLabel } from "@/lib/useKnowledge";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
-  BookOpen, Loader2, Plus, Pin, PinOff, Trash2, Upload, Link as LinkIcon,
-  FileText, Presentation, Search, X, Eye, EyeOff,
+  BookOpen, Loader2, Plus, Pin, PinOff, Trash2, Link as LinkIcon,
+  FileText, Search, X, Eye, EyeOff,
 } from "lucide-react";
+
+// The backend works out what a file actually is by reading it, so this list
+// only needs to be wide enough that the OS picker doesn't grey things out.
+const FILE_ACCEPT = [
+  ".pdf", ".docx", ".pptx", ".rtf",
+  ".md", ".markdown", ".mdx", ".txt", ".text", ".rst", ".adoc", ".org", ".log",
+  ".csv", ".tsv", ".json", ".yaml", ".yml", ".toml", ".xml", ".html", ".htm", ".srt", ".vtt",
+  "application/pdf", "text/*",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+].join(",");
 
 const SOURCES = [
   { key: "paste", label: "Write / paste", icon: Plus },
-  { key: "pdf", label: "PDF", icon: FileText, accept: ".pdf,application/pdf" },
-  { key: "pptx", label: "Deck", icon: Presentation, accept: ".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation" },
+  { key: "file", label: "Upload a file", icon: FileText, accept: FILE_ACCEPT },
   { key: "url", label: "Web page", icon: LinkIcon },
 ];
 
@@ -49,7 +59,7 @@ export function KnowledgeBase({ brandKitId, brandName }) {
         const form = new FormData();
         form.append("file", file);
         const { data: up } = await api.post("/upload", form);
-        body = { ...body, source_type: source, source_url: up.url };
+        body = { ...body, source_type: "file", source_url: up.url };
       }
       await api.post("/knowledge", body);
       resetForm();
@@ -138,9 +148,15 @@ export function KnowledgeBase({ brandKitId, brandName }) {
             placeholder="https://yoursite.com/about"
             className="mt-2 w-full rounded-lg border border-white/10 bg-[#121212] px-3 py-2 text-sm text-white outline-none focus:border-lime" />
         )}
-        {(source === "pdf" || source === "pptx") && (
-          <input ref={fileRef} type="file" accept={activeSource?.accept} className="hidden"
-            data-testid="knowledge-file-input" onChange={(e) => add(e.target.files?.[0])} />
+        {source === "file" && (
+          <>
+            <p className="mt-2 text-[11px] leading-relaxed text-zinc-600">
+              PDF, Word, PowerPoint, Markdown, plain text, CSV, HTML, RTF — whatever you have.
+              Only the text is read; nothing is sent anywhere else.
+            </p>
+            <input ref={fileRef} type="file" accept={activeSource?.accept} className="hidden"
+              data-testid="knowledge-file-input" onChange={(e) => add(e.target.files?.[0])} />
+          </>
         )}
 
         <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -148,11 +164,11 @@ export function KnowledgeBase({ brandKitId, brandName }) {
             className={`flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] transition-colors ${pinned ? "border-lime bg-lime/10 text-lime" : "border-white/10 text-zinc-500 hover:text-white"}`}>
             <Pin size={11} /> Always include
           </button>
-          <Button onClick={() => (source === "pdf" || source === "pptx" ? fileRef.current?.click() : add())}
+          <Button onClick={() => (source === "file" ? fileRef.current?.click() : add())}
             disabled={saving} data-testid="knowledge-add"
             className="h-8 gap-1.5 rounded-lg bg-lime px-3 text-xs font-semibold text-[#0A0A0A] hover:bg-lime-hover">
             {saving ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
-            {saving ? "Reading…" : source === "pdf" || source === "pptx" ? "Upload" : "Add"}
+            {saving ? "Reading…" : source === "file" ? "Choose file" : "Add"}
           </Button>
           <span className="text-[11px] text-zinc-600">
             {pinned ? "Goes into every post." : "Pulled in when relevant."}

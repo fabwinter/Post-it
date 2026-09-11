@@ -452,6 +452,75 @@ check("a deleted doc 404s", r.status_code == 404, r.text)
 r = c.post("/api/knowledge", json={"title": "Empty", "content": "   "})
 check("an empty document is rejected", r.status_code == 400, r.text[:160])
 
+# --- knowledge ingest: every file type a person actually has ---
+# The source_type is always "file"; what it really is gets decided by reading
+# the bytes, so a mislabelled content_type must not change the outcome.
+CHAT_REPLY["value"] = '{"summary": "A file.", "tags": ["file"]}'
+
+
+def _ingest_file(name, data, content_type, title=None):
+    up = c.post("/api/upload", files={"file": (name, data, content_type)}).json()
+    body = {"brand_kit_id": acme_id, "kind": "note", "source_type": "file", "source_url": up["url"]}
+    if title:
+        body["title"] = title
+    return c.post("/api/knowledge", json=body)
+
+
+md_body = b"# Craft notes\n\nWe **sand** every edge by hand.\n\n- No shortcuts\n- No filler\n"
+r = _ingest_file("craft-notes.md", md_body, "text/markdown")
+md_doc = r.json()
+check("a .md file is ingested", r.status_code == 200, r.text[:200])
+check("markdown text is kept intact", "sand" in md_doc["content"] and "No shortcuts" in md_doc["content"], md_doc["content"][:200])
+check("a .md file records source_kind=text", md_doc["source_kind"] == "text", md_doc["source_kind"])
+check("the title falls back to the filename", md_doc["title"] == "Craft notes", md_doc["title"])
+
+r = _ingest_file("values.txt", "Honesty over hype.\nShip when it's right.".encode(), "text/plain", "Values")
+check("a .txt file is ingested", r.status_code == 200 and "Honesty over hype" in r.json()["content"], r.text[:200])
+
+# A browser that can't guess the type sends octet-stream — sniffing must win.
+r = _ingest_file("mislabelled.md", b"## Studio rules\n\nAlways name the maker.", "application/octet-stream")
+check("a text file mislabelled as octet-stream is still read",
+      r.status_code == 200 and "name the maker" in r.json()["content"], r.text[:200])
+
+from docx import Document as _DocxDocument
+docx_buf = io.BytesIO()
+_doc = _DocxDocument()
+_doc.add_heading("Brand guidelines", level=1)
+_doc.add_paragraph("Never describe us as cheap.")
+_table = _doc.add_table(rows=1, cols=2)
+_table.rows[0].cells[0].text = "Primary"
+_table.rows[0].cells[1].text = "Ink black"
+_doc.save(docx_buf)
+r = _ingest_file("guidelines.docx", docx_buf.getvalue(),
+                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+docx_doc = r.json()
+check("a .docx file is ingested", r.status_code == 200, r.text[:200])
+check("docx paragraphs are read", "Never describe us as cheap" in docx_doc["content"], docx_doc["content"][:300])
+check("docx table cells are read", "Primary | Ink black" in docx_doc["content"], docx_doc["content"][:300])
+check("a .docx file records source_kind=docx", docx_doc["source_kind"] == "docx", docx_doc["source_kind"])
+
+r = _ingest_file("about.html", b"<html><head><style>p{color:red}</style></head><body><h1>Our story</h1>"
+                               b"<p>Founded in a garage.</p><script>var x=1</script></body></html>", "text/html")
+html_doc = r.json()
+check("an .html file is ingested", r.status_code == 200, r.text[:200])
+check("html tags are stripped", "<p>" not in html_doc["content"] and "Founded in a garage" in html_doc["content"], html_doc["content"][:200])
+check("html script and style contents are dropped",
+      "var x" not in html_doc["content"] and "color:red" not in html_doc["content"], html_doc["content"][:200])
+
+r = _ingest_file("prices.csv", b"tier,price\nstarter,49\nstudio,149\n", "text/csv")
+check("a .csv file is ingested", r.status_code == 200 and "studio,149" in r.json()["content"], r.text[:200])
+
+r = _ingest_file("note.rtf", rb"{\rtf1\ansi\deff0 {\fonttbl{\f0 Helvetica;}}\f0\fs24 Slow work, made once.\par}",
+                 "application/rtf")
+check("an .rtf file is ingested", r.status_code == 200 and "Slow work, made once" in r.json()["content"], r.text[:200])
+
+# Files we genuinely cannot read say so by name, with the way out.
+r = _ingest_file("legacy.doc", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1legacy binary", "application/msword")
+check("a legacy .doc is refused with a useful message",
+      r.status_code == 400 and ".docx" in r.text, r.text[:200])
+r = _ingest_file("photo.png", b"\x89PNG\r\n\x1a\n\x00\x00binarydata", "image/png")
+check("an image is refused as knowledge", r.status_code == 400, r.text[:200])
+
 # --- brand kit: logo upload + a style field ---
 r = c.post("/api/upload", files={"file": ("logo.png", b"fakepngbytes", "image/png")})
 logo_upload = r.json()
@@ -605,6 +674,23 @@ check("deleting twice 404s", r.status_code == 404)
 
 r = c.post("/api/templates/from-file", json={"source_type": "bogus", "source_url": "x"})
 check("templates-from-file rejects a bad source_type", r.status_code == 400, r.text)
+
+# PDF and PPTX reach the knowledge base through the same generic file path.
+CHAT_REPLY["value"] = '{"summary": "A file.", "tags": ["file"]}'
+r = c.post("/api/knowledge", json={"brand_kit_id": acme_id, "source_type": "file",
+                                   "source_url": pdf_upload["url"], "title": "Deck PDF"})
+check("a PDF still ingests through source_type=file",
+      r.status_code == 200 and r.json()["source_kind"] == "pdf"
+      and "coffee brand" in r.json()["content"], r.text[:200])
+r = c.post("/api/knowledge", json={"brand_kit_id": acme_id, "source_type": "file",
+                                   "source_url": pptx_upload["url"], "title": "Consistency deck"})
+check("a PPTX still ingests through source_type=file",
+      r.status_code == 200 and r.json()["source_kind"] == "pptx"
+      and "consistency wins" in r.json()["content"].lower(), r.text[:200])
+# Old clients that still name the type explicitly keep working.
+r = c.post("/api/knowledge", json={"brand_kit_id": acme_id, "source_type": "pdf",
+                                   "source_url": pdf_upload["url"], "title": "Legacy call"})
+check("an explicit source_type=pdf is still accepted", r.status_code == 200, r.text[:200])
 
 # --- build-post follows a saved template's outline ---
 remaining = c.get("/api/templates/custom").json()
