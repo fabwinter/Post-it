@@ -452,6 +452,43 @@ check("a deleted doc 404s", r.status_code == 404, r.text)
 r = c.post("/api/knowledge", json={"title": "Empty", "content": "   "})
 check("an empty document is rejected", r.status_code == 400, r.text[:160])
 
+# --- knowledge retrieval: precomputed terms + the warm-instance corpus cache ---
+# Chunk and doc term counts are stored at ingest and reused unchanged by
+# every generation; a real change (content, pin, mute, delete) must still
+# invalidate the cache the very next call — never a stale corpus.
+CHAT_REPLY["value"] = '{"summary": "How we quote a custom order.", "tags": ["quote", "estimate"]}'
+r = c.post("/api/knowledge", json={"brand_kit_id": acme_id, "title": "Quoting process", "kind": "guideline",
+                                   "content": "We always quote in writing before starting any custom work."})
+quote_doc = r.json()
+chunk_row = DB.execute("SELECT terms FROM knowledge_chunks WHERE doc_id = ?", (quote_doc["id"],)).fetchone()
+check("a chunk's term counts are precomputed at ingest",
+      chunk_row is not None and json.loads(chunk_row["terms"]).get("quote", 0) > 0, chunk_row and chunk_row["terms"])
+doc_row = DB.execute("SELECT meta_terms FROM knowledge_docs WHERE id = ?", (quote_doc["id"],)).fetchone()
+check("a doc's title/summary/tags term counts are precomputed at ingest",
+      json.loads(doc_row["meta_terms"]).get("estimate", 0) > 0, doc_row["meta_terms"])
+
+r = c.post("/api/knowledge/search", json={"brand_kit_id": acme_id, "query": "a heron never landed here"})
+check("an unrelated topic does not retrieve the new doc",
+      not any(u["title"] == "Quoting process" for u in r.json()["used"]), r.json()["used"])
+r = c.post("/api/knowledge/search", json={"brand_kit_id": acme_id, "query": "how should we quote a custom order"})
+check("the new doc is retrieved once its own words are searched",
+      any(u["title"] == "Quoting process" for u in r.json()["used"]), r.json()["used"])
+
+# A rewrite must be found on its NEW wording immediately — proves the corpus
+# cache is invalidated by the edit rather than serving the pre-edit chunk.
+r = c.put(f"/api/knowledge/{quote_doc['id']}", json={"content": "We never start a xylophone-widget commission without a deposit."})
+check("content edit succeeds", r.status_code == 200, r.text[:200])
+r = c.post("/api/knowledge/search", json={"brand_kit_id": acme_id, "query": "xylophone widget deposit"})
+check("the edited content is retrieved right after the edit, not the stale version",
+      any(u["title"] == "Quoting process" for u in r.json()["used"]), r.json()["used"])
+new_chunk = DB.execute("SELECT terms FROM knowledge_chunks WHERE doc_id = ?", (quote_doc["id"],)).fetchone()
+new_terms = json.loads(new_chunk["terms"])
+check("re-chunking on edit recomputes term counts for the NEW text",
+      "xylophone-widget" in new_terms and "quote" not in new_terms, new_terms)
+
+r = c.delete(f"/api/knowledge/{quote_doc['id']}")
+check("cleanup: quoting doc deleted", r.status_code == 200)
+
 # --- knowledge ingest: every file type a person actually has ---
 # The source_type is always "file"; what it really is gets decided by reading
 # the bytes, so a mislabelled content_type must not change the outcome.

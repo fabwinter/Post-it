@@ -166,6 +166,14 @@ _ADD_COLUMNS = {
         ("style", "ALTER TABLE brand_kits ADD COLUMN style TEXT"),
         ("color_mode", "ALTER TABLE brand_kits ADD COLUMN color_mode TEXT NOT NULL DEFAULT 'dark'"),
     ],
+    # Precomputed retrieval terms — stemmed once at ingest instead of on
+    # every generation. See _term_counts / _chunk_term_counts / _doc_meta_terms.
+    "knowledge_docs": [
+        ("meta_terms", "ALTER TABLE knowledge_docs ADD COLUMN meta_terms TEXT NOT NULL DEFAULT '{}'"),
+    ],
+    "knowledge_chunks": [
+        ("terms", "ALTER TABLE knowledge_chunks ADD COLUMN terms TEXT NOT NULL DEFAULT '{}'"),
+    ],
 }
 
 _schema_ready = False
@@ -2144,6 +2152,50 @@ def _terms(text: str) -> List[str]:
             if len(t) > 2 and t not in _STOPWORDS]
 
 
+def _term_counts(text: str) -> Dict[str, int]:
+    """Stemmed term frequencies for one piece of text. This is the only
+    tokenizing work retrieval should ever do live — everything else is
+    computed once, at ingest, and reused unchanged on every generation."""
+    counts: Dict[str, int] = {}
+    for t in _terms(text):
+        counts[t] = counts.get(t, 0) + 1
+    return counts
+
+
+def _merge_term_counts(a: Dict[str, int], b: Dict[str, int]) -> Dict[str, int]:
+    out = dict(a)
+    for t, c in b.items():
+        out[t] = out.get(t, 0) + c
+    return out
+
+
+def _doc_meta_text(title: str, kind: str, summary: str, tags: List[str]) -> str:
+    return f"{title} {kind} {summary or ''} {' '.join(tags or [])}"
+
+
+def _doc_meta_terms(doc_row: dict) -> Dict[str, int]:
+    """A document's title/kind/summary/tags, tokenized — this is what lets a
+    chunk match a topic phrased in the document's own language rather than
+    only the passage's. Read from the precomputed column; a row written
+    before that column existed (or a genuinely term-free one) is tokenized
+    once here rather than left unscored."""
+    parsed = _maybe_json(doc_row.get("meta_terms"), "{}") if doc_row.get("meta_terms") else {}
+    if parsed:
+        return parsed
+    return _term_counts(_doc_meta_text(
+        doc_row.get("title", ""), doc_row.get("kind", ""), doc_row.get("summary", ""),
+        _maybe_json(doc_row.get("tags"), "[]"),
+    ))
+
+
+def _chunk_term_counts(chunk_row: dict) -> Dict[str, int]:
+    """A chunk's precomputed term frequencies, same fallback as above."""
+    parsed = _maybe_json(chunk_row.get("terms"), "{}") if chunk_row.get("terms") else {}
+    if parsed:
+        return parsed
+    return _term_counts(chunk_row.get("text") or "")
+
+
 def _chunk_text(text: str, target: int = 900, overlap: int = 150) -> List[str]:
     """Paragraph-aware chunking: keeps whole paragraphs together until the
     target size, then carries a little tail into the next chunk so a thought
@@ -2171,30 +2223,28 @@ def _chunk_text(text: str, target: int = 900, overlap: int = 150) -> List[str]:
     return chunks[:120]  # a hard ceiling so one huge upload can't dominate a kit
 
 
-def _bm25_rank(query: str, rows: List[Dict[str, Any]], k1: float = 1.5, b: float = 0.75) -> List[tuple]:
-    """Classic BM25 over the candidate chunks. The corpus is one brand's own
-    documents, so it comfortably fits in memory and needs no index."""
+def _bm25_rank_indexed(query: str, rows: List[Dict[str, int]], k1: float = 1.5, b: float = 0.75) -> List[tuple]:
+    """Classic BM25, but over rows that already carry their term frequencies
+    (a {stem: count} dict per row) instead of raw text. Tokenizing and
+    stemming the corpus happened once, at ingest — the only text this
+    tokenizes on the retrieval path is the query itself, a handful of words."""
     q_terms = set(_terms(query))
     if not q_terms or not rows:
         return []
-    docs = [_terms(r["text"]) for r in rows]
-    lengths = [len(d) or 1 for d in docs]
+    lengths = [sum(r.values()) or 1 for r in rows]
     avg_len = sum(lengths) / len(lengths)
     df: Dict[str, int] = {}
-    for d in docs:
-        for t in set(d) & q_terms:
+    for r in rows:
+        for t in set(r) & q_terms:
             df[t] = df.get(t, 0) + 1
-    n = len(docs)
+    n = len(rows)
     scored = []
-    for i, d in enumerate(docs):
-        if not d:
+    for i, r in enumerate(rows):
+        if not r:
             continue
-        counts: Dict[str, int] = {}
-        for t in d:
-            counts[t] = counts.get(t, 0) + 1
         score = 0.0
         for t in q_terms:
-            f = counts.get(t, 0)
+            f = r.get(t, 0)
             if not f:
                 continue
             idf = math.log(1 + (n - df[t] + 0.5) / (df[t] + 0.5))
@@ -2223,10 +2273,12 @@ async def _store_chunks(doc_id: str, brand_kit_id: Optional[str], content: str):
     await d1_query("DELETE FROM knowledge_chunks WHERE doc_id = ?", [doc_id])
     ts = now_iso()
     for seq, chunk in enumerate(_chunk_text(content)):
+        # Term frequencies computed once here, not on every generation that
+        # retrieves this chunk afterward.
         await d1_query(
-            "INSERT INTO knowledge_chunks (id, doc_id, brand_kit_id, seq, text, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            [str(uuid.uuid4()), doc_id, brand_kit_id, seq, chunk, ts],
+            "INSERT INTO knowledge_chunks (id, doc_id, brand_kit_id, seq, text, terms, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [str(uuid.uuid4()), doc_id, brand_kit_id, seq, chunk, json.dumps(_term_counts(chunk)), ts],
         )
 
 
@@ -2264,6 +2316,73 @@ async def _summarise_doc(title: str, content: str, kind: str, model: Optional[st
         return {"summary": "", "tags": []}
 
 
+# Kept warm per brand kit across generations in this process's memory.
+# A generation used to re-fetch every document and every chunk, then
+# re-tokenize the whole corpus, on every single call. Now it pays one cheap
+# aggregate query to check whether anything changed, and only re-fetches
+# (and never re-tokenizes — that's precomputed at ingest) when it did.
+_KB_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+async def _kb_version(brand_kit_id: Optional[str]) -> str:
+    rows, _ = await d1_query(
+        "SELECT COUNT(*) AS n, COALESCE(MAX(updated_at), '') AS latest FROM knowledge_docs "
+        "WHERE enabled = 1 AND (brand_kit_id = ? OR brand_kit_id IS NULL)",
+        [brand_kit_id],
+    )
+    r = rows[0] if rows else {"n": 0, "latest": ""}
+    return f"{r['n']}:{r['latest']}"
+
+
+async def _load_kb_corpus(brand_kit_id: Optional[str]) -> Dict[str, Any]:
+    """One kit's retrievable knowledge, ready to score. Cached until the
+    version check above says it changed."""
+    key = brand_kit_id or "*"
+    version = await _kb_version(brand_kit_id)
+    cached = _KB_CACHE.get(key)
+    if cached and cached["version"] == version:
+        return cached
+
+    # `content` is deliberately not selected here — most generations never
+    # need a document's full text, only its summary. Shipping every
+    # document's body on every generation was most of the bytes moved for
+    # no benefit.
+    docs, _ = await d1_query(
+        "SELECT id, brand_kit_id, title, kind, summary, tags, pinned, enabled, updated_at, meta_terms "
+        "FROM knowledge_docs WHERE enabled = 1 AND (brand_kit_id = ? OR brand_kit_id IS NULL) "
+        "ORDER BY pinned DESC, updated_at DESC LIMIT 200",
+        [brand_kit_id],
+    )
+    for d in docs:
+        d["_meta_terms"] = _doc_meta_terms(d)
+    by_id = {d["id"]: d for d in docs}
+
+    chunks, _ = await d1_query(
+        "SELECT id, doc_id, brand_kit_id, seq, text, terms FROM knowledge_chunks "
+        "WHERE brand_kit_id = ? OR brand_kit_id IS NULL LIMIT 2000",
+        [brand_kit_id],
+    )
+    candidates = [c for c in chunks if c["doc_id"] in by_id]
+
+    # A pinned doc with no summary yet needs its real text — rare, so it's
+    # fetched on demand instead of joining `content` for every document above.
+    needs_content = [d["id"] for d in docs if d["pinned"] and not (d["summary"] or "").strip()]
+    content_by_id: Dict[str, str] = {}
+    if needs_content:
+        placeholders = ",".join("?" for _ in needs_content)
+        rows, _ = await d1_query(
+            f"SELECT id, content FROM knowledge_docs WHERE id IN ({placeholders})", needs_content
+        )
+        content_by_id = {r["id"]: (r["content"] or "") for r in rows}
+
+    if len(_KB_CACHE) > 200:  # a long-lived warm instance shouldn't accumulate forever
+        _KB_CACHE.clear()
+    corpus = {"version": version, "docs": docs, "by_id": by_id, "candidates": candidates,
+              "content_by_id": content_by_id}
+    _KB_CACHE[key] = corpus
+    return corpus
+
+
 async def knowledge_context(brand_kit_id: Optional[str], topic: str, budget: int = 2600) -> Dict[str, Any]:
     """The brand's knowledge, rendered as prompt text for one topic.
 
@@ -2275,19 +2394,15 @@ async def knowledge_context(brand_kit_id: Optional[str], topic: str, budget: int
         return empty
     try:
         await ensure_schema()
-        docs, _ = await d1_query(
-            "SELECT * FROM knowledge_docs WHERE enabled = 1 AND (brand_kit_id = ? OR brand_kit_id IS NULL) "
-            "ORDER BY pinned DESC, updated_at DESC LIMIT 200",
-            [brand_kit_id],
-        )
+        corpus = await _load_kb_corpus(brand_kit_id)
+        docs, by_id, candidates = corpus["docs"], corpus["by_id"], corpus["candidates"]
         if not docs:
             return empty
-        by_id = {d["id"]: d for d in docs}
         used, parts, spent = [], [], 0
 
         # Tier 1 — pinned truths, always in, before anything is retrieved.
         for d in [x for x in docs if x["pinned"]]:
-            text = (d["summary"] or "").strip() or (d["content"] or "").strip()
+            text = (d["summary"] or "").strip() or corpus["content_by_id"].get(d["id"], "").strip()
             if not text:
                 continue
             text = text[: max(280, budget // 4)]
@@ -2298,23 +2413,15 @@ async def knowledge_context(brand_kit_id: Optional[str], topic: str, budget: int
             used.append({"id": d["id"], "title": d["title"], "kind": d["kind"], "pinned": True})
             spent += cost
 
-        # Tier 2 — retrieved passages, scored against this topic.
+        # Tier 2 — retrieved passages, scored against this topic. Term
+        # frequencies for both the chunk and its document's title/summary/tags
+        # were computed once at ingest; only the topic itself is tokenized here.
         pinned_ids = {u["id"] for u in used}
-        chunks, _ = await d1_query(
-            "SELECT * FROM knowledge_chunks WHERE brand_kit_id = ? OR brand_kit_id IS NULL LIMIT 2000",
-            [brand_kit_id],
-        )
-        candidates = [c for c in chunks if c["doc_id"] in by_id and c["doc_id"] not in pinned_ids]
-        # Scoring each chunk together with its document's title, summary and
-        # tags lets a passage match a topic phrased in the document's language
-        # rather than only its own.
-        enriched = []
-        for c in candidates:
-            d = by_id[c["doc_id"]]
-            tags = " ".join(_maybe_json(d.get("tags"), "[]"))
-            enriched.append({**c, "text": f"{d['title']} {d['kind']} {d['summary'] or ''} {tags} {c['text']}"})
-        for score, i in _bm25_rank(topic, enriched)[:8]:
-            c = candidates[i]
+        scoreable = [c for c in candidates if c["doc_id"] not in pinned_ids]
+        scored_terms = [_merge_term_counts(_chunk_term_counts(c), by_id[c["doc_id"]]["_meta_terms"])
+                        for c in scoreable]
+        for score, i in _bm25_rank_indexed(topic, scored_terms)[:8]:
+            c = scoreable[i]
             d = by_id[c["doc_id"]]
             text = (c["text"] or "").strip()
             cost = len(text) + len(d["title"]) + 16
@@ -2428,12 +2535,14 @@ async def create_knowledge_doc(req: KnowledgeDocIn):
         "source_kind": src["source_kind"], "source_url": src["source_url"],
         "pinned": 1 if req.pinned else 0, "enabled": 1, "created_at": ts, "updated_at": ts,
     }
+    meta_terms = json.dumps(_term_counts(_doc_meta_text(record["title"], kind, record["summary"], tags)))
     await d1_query(
         "INSERT INTO knowledge_docs (id, brand_kit_id, title, kind, content, summary, tags, source_kind, "
-        "source_url, pinned, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "source_url, pinned, enabled, meta_terms, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [record["id"], record["brand_kit_id"], record["title"], record["kind"], record["content"],
          record["summary"], json.dumps(tags), record["source_kind"], record["source_url"],
-         record["pinned"], 1, ts, ts],
+         record["pinned"], 1, meta_terms, ts, ts],
     )
     await _store_chunks(record["id"], req.brand_kit_id, content)
     return _row_to_doc(record)
@@ -2478,11 +2587,15 @@ async def update_knowledge_doc(doc_id: str, req: KnowledgeDocIn):
         "brand_kit_id": req.brand_kit_id if req.brand_kit_id is not None else existing["brand_kit_id"],
     }
     ts = now_iso()
+    meta_terms = json.dumps(_term_counts(
+        _doc_meta_text(merged["title"], merged["kind"], existing["summary"], merged["tags"])
+    ))
     out, _ = await d1_query(
         "UPDATE knowledge_docs SET title=?, kind=?, content=?, tags=?, pinned=?, enabled=?, "
-        "brand_kit_id=?, updated_at=? WHERE id=? RETURNING *",
+        "brand_kit_id=?, meta_terms=?, updated_at=? WHERE id=? RETURNING *",
         [merged["title"], merged["kind"], merged["content"], json.dumps(merged["tags"]),
-         1 if merged["pinned"] else 0, 1 if merged["enabled"] else 0, merged["brand_kit_id"], ts, doc_id],
+         1 if merged["pinned"] else 0, 1 if merged["enabled"] else 0, merged["brand_kit_id"],
+         meta_terms, ts, doc_id],
     )
     # Only re-chunk when the text actually changed — re-chunking is the
     # expensive part and a pin/rename shouldn't pay for it.
