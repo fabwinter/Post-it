@@ -40,6 +40,7 @@ def fake_post(url, headers=None, json=None, timeout=None, **kw):
         if RAISE_TIMEOUT["value"]:
             import requests as _requests
             raise _requests.exceptions.ReadTimeout("Read timed out. (read timeout=110)")
+        SENT_MESSAGES.append(body.get("messages") or body.get("input") or [])
         txt = CHAT_REPLY["value"]
         if "/v1/responses" in url:
             return Resp({"data": {"output": [{"content": [{"type": "output_text", "text": txt}]}]}})
@@ -102,6 +103,7 @@ def fake_delete(url, headers=None, json=None, timeout=None, **kw):
     return Resp({})
 
 SUBMITTED = []
+SENT_MESSAGES = []  # every chat payload, so prompt assembly is assertable
 import requests
 requests.post, requests.get, requests.put, requests.delete = fake_post, fake_get, fake_put, fake_delete
 
@@ -364,6 +366,91 @@ r = c.post("/api/ai/build-post", json={"topic": "x", "platform": "instagram"})
 RAISE_TIMEOUT["value"] = False
 check("PoYo timeout returns 504", r.status_code == 504, r.text)
 check("timeout detail is a clean message, not a raw exception repr", "ReadTimeout" not in r.json()["detail"] and "didn't respond" in r.json()["detail"], r.text)
+
+# --- brand knowledge base ---
+CHAT_REPLY["value"] = '{"summary": "How we price and why.", "tags": ["pricing", "positioning"]}'
+r = c.post("/api/knowledge", json={
+    "brand_kit_id": acme_id, "title": "Pricing philosophy", "kind": "philosophy",
+    "content": ("We never compete on price. Our pricing reflects the cost of doing careful work.\n\n"
+                "Discounting signals that the original number was invented. We would rather lose a deal "
+                "than teach a client that our rates are negotiable.\n\n"
+                "Every quote includes a written scope so the number is legible, not a mystery.")})
+doc = r.json()
+check("knowledge doc ingests pasted text", r.status_code == 200 and doc["title"] == "Pricing philosophy", r.text[:200])
+check("ingest auto-summarises and tags", doc["summary"] == "How we price and why." and "pricing" in doc["tags"], doc)
+check("ingest records real character count", doc["chars"] > 200, doc["chars"])
+chunk_rows = DB.execute("SELECT count(*) FROM knowledge_chunks WHERE doc_id = ?", (doc["id"],)).fetchone()[0]
+check("ingest chunks the document", chunk_rows >= 1, chunk_rows)
+
+CHAT_REPLY["value"] = '{"summary": "Our origin story.", "tags": ["story", "founding"]}'
+r = c.post("/api/knowledge", json={
+    "brand_kit_id": acme_id, "title": "Non-negotiables", "kind": "guideline", "pinned": True,
+    "content": "Never claim to be the cheapest. Never promise a delivery date we have not scheduled."})
+pinned_doc = r.json()
+check("a doc can be pinned at ingest", pinned_doc["pinned"] is True, pinned_doc)
+
+r = c.post("/api/knowledge", json={
+    "brand_kit_id": acme_id, "title": "Kiln case study", "kind": "case_study",
+    "content": "We rebuilt the Kiln pottery studio's booking flow. Their no-show rate fell by a third "
+               "after we added a deposit step and a reminder the morning of the class."})
+case_doc = r.json()
+
+r = c.get(f"/api/knowledge?brand_kit_id={acme_id}")
+listed = r.json()
+check("knowledge list returns the kit's docs", len(listed) == 3, len(listed))
+check("pinned docs sort first", listed[0]["pinned"] is True, [d["title"] for d in listed])
+check("list omits full content but keeps a preview", all(len(d["content"]) <= 280 for d in listed), [len(d["content"]) for d in listed])
+
+# Retrieval: the pinned doc is always in; the topical one is fetched on merit.
+r = c.post("/api/knowledge/search", json={"brand_kit_id": acme_id, "query": "should we offer a discount?"})
+found = r.json()
+check("search returns a prompt block", r.status_code == 200 and found["chars"] > 0, r.text[:200])
+check("pinned knowledge is always included", any(u["pinned"] and u["title"] == "Non-negotiables" for u in found["used"]), found["used"])
+check("BM25 retrieves the topically relevant doc", any(u["title"] == "Pricing philosophy" for u in found["used"]), found["used"])
+check("an unrelated doc is left out", not any(u["title"] == "Kiln case study" for u in found["used"]), found["used"])
+
+r = c.post("/api/knowledge/search", json={"brand_kit_id": acme_id, "query": "pottery studio booking no-shows"})
+check("a different topic retrieves a different doc",
+      any(u["title"] == "Kiln case study" for u in r.json()["used"]), r.json()["used"])
+
+# Knowledge reaches an actual generation.
+CHAT_REPLY["value"] = "A post about pricing."
+r = c.post("/api/ai/write", json={"brief": "why we do not discount", "brand_kit_id": acme_id})
+check("write succeeds with knowledge grounding", r.status_code == 200, r.text[:200])
+sent = SENT_MESSAGES[-1][0]["content"]
+check("the knowledge block reaches the prompt", "BRAND KNOWLEDGE" in sent, sent[-400:])
+check("retrieved knowledge text is in the prompt", "compete on price" in sent, sent[-400:])
+check("the brand kit still rides along", "BRAND CONTEXT" in sent, sent[-400:])
+
+r = c.post("/api/ai/write", json={"brief": "why we do not discount", "brand_kit_id": acme_id, "use_knowledge": False})
+check("use_knowledge=false opts out", "BRAND KNOWLEDGE" not in SENT_MESSAGES[-1][0]["content"])
+
+# A doc scoped to no kit is shared with every kit.
+CHAT_REPLY["value"] = '{"summary": "Shared.", "tags": ["shared"]}'
+c.post("/api/knowledge", json={"title": "House style", "kind": "guideline", "pinned": True,
+                               "content": "Write in British English. Use the Oxford comma."})
+r = c.post("/api/knowledge/search", json={"brand_kit_id": side_id, "query": "anything at all"})
+check("kit-less docs apply to every kit", any(u["title"] == "House style" for u in r.json()["used"]), r.json()["used"])
+r = c.post("/api/knowledge/search", json={"brand_kit_id": side_id, "query": "discount"})
+check("another kit's docs stay out", not any(u["title"] == "Pricing philosophy" for u in r.json()["used"]), r.json()["used"])
+
+# Edit, disable, delete.
+r = c.put(f"/api/knowledge/{case_doc['id']}", json={"title": "Kiln — booking rebuild", "pinned": True})
+check("a doc can be renamed and pinned", r.json()["title"] == "Kiln — booking rebuild" and r.json()["pinned"] is True, r.text[:200])
+r = c.put(f"/api/knowledge/{case_doc['id']}", json={"enabled": False})
+check("a doc can be disabled", r.json()["enabled"] is False, r.text[:200])
+r = c.post("/api/knowledge/search", json={"brand_kit_id": acme_id, "query": "pottery studio booking"})
+check("a disabled doc is not retrieved", not any(u["title"].startswith("Kiln") for u in r.json()["used"]), r.json()["used"])
+
+r = c.delete(f"/api/knowledge/{case_doc['id']}")
+check("a doc can be deleted", r.status_code == 200, r.text)
+check("deleting a doc drops its chunks",
+      DB.execute("SELECT count(*) FROM knowledge_chunks WHERE doc_id = ?", (case_doc["id"],)).fetchone()[0] == 0)
+r = c.get(f"/api/knowledge/{case_doc['id']}")
+check("a deleted doc 404s", r.status_code == 404, r.text)
+
+r = c.post("/api/knowledge", json={"title": "Empty", "content": "   "})
+check("an empty document is rejected", r.status_code == 400, r.text[:160])
 
 # --- brand kit: logo upload + a style field ---
 r = c.post("/api/upload", files={"file": ("logo.png", b"fakepngbytes", "image/png")})
