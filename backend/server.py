@@ -1884,16 +1884,19 @@ async def ai_generate(req: GenerateRequest):
             prompt = f"{prompt}. Colour palette: {palette}. Keep the image free of any text or lettering."
 
     if req.kind == "image":
-        model = opts.get("model", "gpt-image-2")
+        model = opts.get("model", "gpt-image-2.5-sunburst")
         payload = {"prompt": prompt, "size": opts.get("size", "1:1")}
         if model.startswith("gpt-image"):
             payload["quality"] = opts.get("quality", "medium")
         if opts.get("resolution"):
             payload["resolution"] = opts["resolution"]
         # A non-empty image_urls turns every one of these models from
-        # text-to-image into reference-image editing (verified per-model:
-        # gpt-image-2, nano-banana-2/-pro, qwen-image-3, flux-dev, z-image all
-        # accept it under this exact field name).
+        # text-to-image into reference-image editing (verified per-model,
+        # 2026-09-11: gpt-image-2.5-sunburst, nano-banana-2/-pro,
+        # seedream-5.0-pro, qwen-image-3, z-image all accept it under this
+        # exact field name — the frontend (Studio.jsx IMAGE_MODELS) is the
+        # source of truth for which model gets which size/resolution/quality
+        # enum; this endpoint just forwards what it's given).
         if opts.get("image_urls"):
             payload["image_urls"] = opts["image_urls"]
     elif req.kind == "video":

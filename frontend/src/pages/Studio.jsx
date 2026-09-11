@@ -138,29 +138,71 @@ function TextGen() {
   );
 }
 
-// refMax: how many reference images each model's real schema (image_urls)
-// accepts — verified per model (poyo_search_models). Every one of these
-// models uses reference images to edit rather than to strictly clone, so the
-// same field doubles as "turn this photo into..." and "combine these into...".
+// Re-verified against each model's real input schema (poyo_get_model_schema,
+// 2026-09-11) — sizes, resolution tiers and quality levels genuinely differ
+// per model, same reasoning as VIDEO_MODELS below. refMax is each model's
+// declared image_urls cap (undeclared caps get a conservative default).
+// gpt-image-2 -> gpt-image-2.5-sunburst (adds xhigh/max quality and 4K) and
+// flux-dev -> seedream-5.0-pro (flux-dev's schema has no resolution/quality
+// control at all — seedream-5.0-pro is a stronger like-for-like) are the two
+// swaps from the previous lineup; everything else was already current.
 const IMAGE_MODELS = [
-  { value: "gpt-image-2", label: "GPT Image 2", refMax: 4 },
-  { value: "nano-banana-2", label: "Nano Banana 2", refMax: 4 },
-  { value: "nano-banana-pro", label: "Nano Banana Pro", refMax: 4 },
-  { value: "qwen-image-3", label: "Qwen Image 3", refMax: 3 },
-  { value: "flux-dev", label: "FLUX Dev", refMax: 1 },
-  { value: "z-image", label: "Z-Image", refMax: 1 },
+  {
+    value: "gpt-image-2.5-sunburst", label: "GPT Image 2.5",
+    sizes: ["auto", "1:1", "2:3", "3:2", "4:3", "3:4", "4:5", "5:4", "16:9", "9:16", "21:9"], defaultSize: "1:1",
+    qualities: ["low", "medium", "high", "xhigh", "max"], defaultQuality: "medium",
+    resolutions: ["1K", "2K", "4K"], defaultResolution: "1K",
+    refMax: 6,
+  },
+  {
+    value: "nano-banana-2", label: "Nano Banana 2",
+    sizes: ["auto", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"], defaultSize: "auto",
+    qualities: null,
+    resolutions: ["1K", "2K", "4K"], defaultResolution: "1K",
+    refMax: 4,
+  },
+  {
+    value: "nano-banana-pro", label: "Nano Banana Pro",
+    sizes: ["auto", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"], defaultSize: "auto",
+    qualities: null,
+    resolutions: ["1K", "2K", "4K"], defaultResolution: "1K",
+    refMax: 4,
+  },
+  {
+    value: "seedream-5.0-pro", label: "Seedream 5 Pro",
+    sizes: ["1:1", "4:3", "3:4", "16:9", "9:16", "2:3", "3:2", "21:9"], defaultSize: "1:1",
+    qualities: null,
+    resolutions: ["1K", "2K"], defaultResolution: "1K",
+    refMax: 8,
+  },
+  {
+    value: "qwen-image-3", label: "Qwen Image 3",
+    sizes: ["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16", "21:9"], defaultSize: "1:1",
+    qualities: null,
+    resolutions: ["1K", "2K"], defaultResolution: "1K",
+    refMax: 3,
+  },
+  {
+    value: "z-image", label: "Z-Image",
+    sizes: ["1:1", "4:3", "3:4", "16:9", "9:16"], defaultSize: "1:1",
+    qualities: null,
+    resolutions: null,
+    refMax: 1,
+  },
 ];
-const IMAGE_SIZES = ["1:1", "4:5", "3:2", "2:3", "16:9", "9:16", "4:3", "3:4"];
-const IMAGE_QUALITY = ["low", "medium", "high"];
 
-// Verified against each model's real input schema (poyo_search_models) —
-// they genuinely differ: some have no resolution field, duration is a fixed
-// enum for some and a free range for others, and the audio flag is named
-// generate_audio, sound, or audio depending on the model (or doesn't exist).
-// resolutions/aspects: null means the model has no such field at all.
-// refImages: the reference-image field this model's schema actually declares
-// — field name, how many, and (hailuo-2.3 only) a single scalar URL rather
-// than an array. null means this model has no image-to-video path at all.
+// Re-verified against each model's real input schema (poyo_get_model_schema,
+// 2026-09-11) — every one of these was still current and every declared
+// field still matched exactly. The one change: sora-2-official ->
+// sora-2-pro-official, a strict upgrade (adds a resolution tier the base
+// model has no field for at all). Fields genuinely differ across models:
+// some have no resolution field, duration is a fixed enum for some and a
+// free range for others, and the audio flag is named generate_audio, sound,
+// or audio depending on the model (or doesn't exist). resolutions/aspects:
+// null means the model has no such field at all. refImages: the
+// reference-image field this model's schema actually declares — field
+// name, how many, and (hailuo-2.3 only) a single scalar URL rather than an
+// array. null means this model has no image-to-video path at all.
 const VIDEO_MODELS = [
   {
     value: "seedance-2-fast", label: "Seedance 2 Fast",
@@ -211,10 +253,10 @@ const VIDEO_MODELS = [
     refImages: { field: "image_urls", max: 3 },
   },
   {
-    value: "sora-2-official", label: "Sora 2",
-    resolutions: null,
+    value: "sora-2-pro-official", label: "Sora 2 Pro",
+    resolutions: ["720p", "1024p", "1080p"], defaultResolution: "1024p",
     durations: { type: "enum", values: [4, 8, 12, 16, 20] }, defaultDuration: 4,
-    aspects: ["16:9", "9:16"], defaultAspect: "16:9",
+    aspects: ["auto", "16:9", "9:16"], defaultAspect: "16:9",
     audioField: null,
     refImages: { field: "image_urls", max: 1 },
   },
@@ -314,9 +356,10 @@ function MediaGen({ kind, initialPrompt = "" }) {
   const [instrumental, setInstrumental] = useState(false);
 
   // image controls
-  const [imgModel, setImgModel] = useState("gpt-image-2");
-  const [imgSize, setImgSize] = useState("1:1");
-  const [imgQuality, setImgQuality] = useState("medium");
+  const [imgModel, setImgModel] = useState(IMAGE_MODELS[0].value);
+  const [imgSize, setImgSize] = useState(IMAGE_MODELS[0].defaultSize);
+  const [imgQuality, setImgQuality] = useState(IMAGE_MODELS[0].defaultQuality);
+  const [imgResolution, setImgResolution] = useState(IMAGE_MODELS[0].defaultResolution);
   // video controls
   const [vidModel, setVidModel] = useState(VIDEO_MODELS[0].value);
   const [vidRes, setVidRes] = useState(VIDEO_MODELS[0].defaultResolution);
@@ -351,6 +394,9 @@ function MediaGen({ kind, initialPrompt = "" }) {
   const onImageModel = (v) => {
     const m = IMAGE_MODELS.find((x) => x.value === v) || IMAGE_MODELS[0];
     setImgModel(v);
+    setImgSize(m.defaultSize);
+    setImgQuality(m.defaultQuality || "");
+    setImgResolution(m.defaultResolution || "");
     setRefImages((s) => s.slice(0, m.refMax));
   };
   const onVideoModel = (v) => {
@@ -369,7 +415,8 @@ function MediaGen({ kind, initialPrompt = "" }) {
   const buildOptions = () => {
     if (kind === "image") {
       const o = { model: imgModel, size: imgSize };
-      if (imgModel.startsWith("gpt-image")) o.quality = imgQuality;
+      if (currentImageModel.qualities) o.quality = imgQuality;
+      if (currentImageModel.resolutions) o.resolution = imgResolution;
       if (refImages.length) o.image_urls = refImages.map((r) => r.url);
       return o;
     }
@@ -458,13 +505,18 @@ function MediaGen({ kind, initialPrompt = "" }) {
             <Field label="Model">
               <StudioSelect value={imgModel} onChange={onImageModel} options={IMAGE_MODELS} testid="studio-image-model" />
             </Field>
-            <div className="flex gap-3">
+            <div className="flex flex-wrap gap-3">
               <Field label="Aspect / Size">
-                <StudioSelect value={imgSize} onChange={setImgSize} options={IMAGE_SIZES} testid="studio-image-size" />
+                <StudioSelect value={imgSize} onChange={setImgSize} options={currentImageModel.sizes} testid="studio-image-size" />
               </Field>
-              {imgModel.startsWith("gpt-image") && (
+              {currentImageModel.resolutions && (
+                <Field label="Resolution">
+                  <StudioSelect value={imgResolution} onChange={setImgResolution} options={currentImageModel.resolutions} testid="studio-image-resolution" />
+                </Field>
+              )}
+              {currentImageModel.qualities && (
                 <Field label="Quality">
-                  <StudioSelect value={imgQuality} onChange={setImgQuality} options={IMAGE_QUALITY} testid="studio-image-quality" />
+                  <StudioSelect value={imgQuality} onChange={setImgQuality} options={currentImageModel.qualities} testid="studio-image-quality" />
                 </Field>
               )}
             </div>

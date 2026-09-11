@@ -207,6 +207,32 @@ r = c.post("/api/ai/generate", json={"kind": "image", "prompt": "a cat", "option
 check("image submit", r.json()["task_id"] == "task-123", r.text)
 check("brand palette injected into image prompt", "Colour palette" in SUBMITTED[-1]["input"]["prompt"], SUBMITTED[-1])
 check("use_brand not leaked to PoYo", "use_brand" not in SUBMITTED[-1]["input"], SUBMITTED[-1])
+
+# The current Studio image/video picker (2026-09-11) — each request forwards
+# whatever the frontend sends for that model's own fields; this checks the
+# two model-specific bits the backend itself adds or gates: `quality` for
+# any gpt-image* id, and generic pass-through of `resolution`/`image_urls`.
+r = c.post("/api/ai/generate", json={"kind": "image", "prompt": "a poster",
+                                     "options": {"model": "gpt-image-2.5-sunburst", "size": "21:9", "quality": "high", "resolution": "2K"}})
+check("gpt-image-2.5-sunburst submit succeeds", r.status_code == 200, r.text)
+check("quality forwarded for a gpt-image* model", SUBMITTED[-1]["input"]["quality"] == "high", SUBMITTED[-1])
+check("resolution forwarded generically", SUBMITTED[-1]["input"]["resolution"] == "2K", SUBMITTED[-1])
+check("size forwarded", SUBMITTED[-1]["input"]["size"] == "21:9", SUBMITTED[-1])
+check("submitted against the real model id", SUBMITTED[-1]["model"] == "gpt-image-2.5-sunburst", SUBMITTED[-1])
+
+r = c.post("/api/ai/generate", json={"kind": "image", "prompt": "a scene",
+                                     "options": {"model": "seedream-5.0-pro", "size": "16:9", "resolution": "1K"}})
+check("seedream-5.0-pro submit succeeds", r.status_code == 200, r.text)
+check("a non-gpt-image model gets no quality field (it doesn't declare one)",
+      "quality" not in SUBMITTED[-1]["input"], SUBMITTED[-1])
+check("its resolution still forwards generically", SUBMITTED[-1]["input"]["resolution"] == "1K", SUBMITTED[-1])
+
+r = c.post("/api/ai/generate", json={"kind": "video", "prompt": "a scene",
+                                     "options": {"model": "sora-2-pro-official", "duration": 8,
+                                                 "resolution": "1024p", "aspect_ratio": "16:9"}})
+check("sora-2-pro-official submit succeeds", r.status_code == 200, r.text)
+check("video options forward generically (resolution the base sora model never had)",
+      SUBMITTED[-1]["input"]["resolution"] == "1024p" and SUBMITTED[-1]["input"]["duration"] == 8, SUBMITTED[-1])
 row = DB.execute("SELECT status FROM generations WHERE task_id='task-123'").fetchone()
 check("media row stored running", row["status"] == "running", dict(row))
 r = c.get("/api/generations?group=media")

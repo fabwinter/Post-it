@@ -321,7 +321,7 @@ export default function Composer() {
     try {
       const { data } = await api.post("/ai/generate", {
         kind: "image", prompt,
-        options: { model: "gpt-image-2", size: aspect === "9:16" ? "9:16" : aspect === "4:5" ? "4:5" : "1:1", use_brand: true },
+        options: { model: "gpt-image-2.5-sunburst", size: aspect === "9:16" ? "9:16" : aspect === "4:5" ? "4:5" : "1:1", use_brand: true },
       });
       const result = await pollTask(data.task_id);
       const url = (result.files || []).find((f) => f.file_url)?.file_url;
