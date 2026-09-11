@@ -11,6 +11,7 @@ import requests
 import xml.etree.ElementTree as ET
 import colorsys
 import io
+import math
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
@@ -124,6 +125,23 @@ _CREATE_TABLES = [
         source_url TEXT NOT NULL, format TEXT NOT NULL DEFAULT 'carousel',
         theme TEXT NOT NULL DEFAULT 'midnight', colors TEXT NOT NULL DEFAULT '{}',
         slides TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL)""",
+    # The brand's long-form memory. A kit says how the brand sounds; these say
+    # what it actually knows, believes and has done. brand_kit_id NULL means
+    # the document applies to every kit.
+    """CREATE TABLE IF NOT EXISTS knowledge_docs (
+        id TEXT PRIMARY KEY, brand_kit_id TEXT, title TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'note', content TEXT NOT NULL DEFAULT '',
+        summary TEXT, tags TEXT NOT NULL DEFAULT '[]',
+        source_kind TEXT NOT NULL DEFAULT 'paste', source_url TEXT,
+        pinned INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+    # One row per retrievable passage. `embedding` stays NULL under lexical
+    # retrieval and is where vectors land if an embedding provider is ever
+    # configured — the retriever reads whichever is present.
+    """CREATE TABLE IF NOT EXISTS knowledge_chunks (
+        id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, brand_kit_id TEXT,
+        seq INTEGER NOT NULL DEFAULT 0, text TEXT NOT NULL,
+        embedding TEXT, created_at TEXT NOT NULL)""",
 ]
 
 # Columns added after the first release. Existing databases predate them, so
@@ -302,6 +320,7 @@ class IdeateRequest(BaseModel):
     model: Optional[str] = None
     use_brand: bool = True
     brand_kit_id: Optional[str] = None
+    use_knowledge: bool = True
 
 
 class WriteRequest(BaseModel):
@@ -311,6 +330,7 @@ class WriteRequest(BaseModel):
     model: Optional[str] = None
     use_brand: bool = True
     brand_kit_id: Optional[str] = None
+    use_knowledge: bool = True
 
 
 class RepurposeRequest(BaseModel):
@@ -497,7 +517,7 @@ async def ai_ideate(req: IdeateRequest):
         "You are a world-class social media strategist and viral content ideator. "
         "You output ONLY a numbered list of distinct, specific, scroll-stopping content ideas. "
         "No preamble, no closing remarks. Each idea is one line: a punchy hook or angle."
-        + (brand_prompt(await load_brand(req.brand_kit_id)) if req.use_brand else "")
+        + await brand_and_knowledge(req, req.topic)
     )
     user = f"Give me {req.count} fresh content ideas{platform_note} about: {req.topic}"
     model = req.model or CHAT_MODEL
@@ -526,7 +546,7 @@ async def ai_write(req: WriteRequest):
         f"You are an elite copywriter. Write a single ready-to-publish {req.platform} post. "
         f"Tone: {req.tone}. Platform rules: {guide} "
         "Return ONLY the post text, no explanations, no quotation marks, no markdown headers."
-        + (brand_prompt(await load_brand(req.brand_kit_id)) if req.use_brand else "")
+        + await brand_and_knowledge(req, req.brief)
     )
     model = req.model or CHAT_MODEL
     content = await chat([{"role": "system", "content": system}, {"role": "user", "content": req.brief}], model, 0.85)
@@ -660,6 +680,7 @@ class TemplateRequest(BaseModel):
     model: Optional[str] = None
     use_brand: bool = True
     brand_kit_id: Optional[str] = None
+    use_knowledge: bool = True
 
 
 @api_router.post("/ai/templates")
@@ -671,7 +692,7 @@ async def ai_templates(req: TemplateRequest):
         f"You are a viral content strategist. Write {n} distinct {req.platform} posts about the given topic, "
         f"each following this template: {style} Platform rules: {guide} "
         f'Return ONLY JSON: {{"posts": [{n} strings, each a complete ready-to-publish post]}}. No explanations.'
-        + (brand_prompt(await load_brand(req.brand_kit_id)) if req.use_brand else "")
+        + await brand_and_knowledge(req, req.topic)
     )
     content = await chat(
         [{"role": "system", "content": system}, {"role": "user", "content": req.topic}],
@@ -697,6 +718,7 @@ class RestyleRequest(BaseModel):
     model: Optional[str] = None
     use_brand: bool = True
     brand_kit_id: Optional[str] = None
+    use_knowledge: bool = True
 
 
 @api_router.post("/ai/restyle")
@@ -711,7 +733,7 @@ async def ai_restyle(req: RestyleRequest):
         f"Keep the same core message and facts — restructure and rephrase the delivery, don't invent new claims. "
         f"Platform rules: {guide} "
         "Return ONLY the rewritten post text, no explanations, no quotation marks, no markdown headers."
-        + (brand_prompt(await load_brand(req.brand_kit_id)) if req.use_brand else "")
+        + await brand_and_knowledge(req, req.content)
     )
     model = req.model or CHAT_MODEL
     content = await chat(
@@ -1890,6 +1912,418 @@ async def delete_brand_kit(kit_id: str):
     return {"ok": True}
 
 
+# ---------------- Brand knowledge base ----------------
+# A brand kit captures how the brand SOUNDS. This captures what it KNOWS:
+# values, philosophy, previous work, case studies, inspiration, audience
+# research, offers, house rules. Documents belong to a kit (or to every kit
+# when brand_kit_id is NULL) and reach a generation two different ways:
+#
+#   PINNED    — short, load-bearing truths (positioning, non-negotiables,
+#               claims you must never make). Injected into every generation,
+#               never left to a retriever's judgement.
+#   RETRIEVED — everything else, scored against the topic at hand and
+#               included only when relevant, within a character budget.
+#
+# Retrieval is lexical (BM25), not semantic: PoYo's catalogue is chat and
+# media generation only — it publishes no embedding or reranking model — so
+# there is no honest way to compute vectors with the provider this app
+# already uses. BM25 over a brand's own corpus (tens to hundreds of
+# documents, sharing the brand's vocabulary) is a genuinely good fit rather
+# than a consolation prize, and it costs no extra model call or latency.
+# The chunks table carries an `embedding` column so that if an embedding
+# provider is ever configured, vectors slot in beside this without a
+# migration or a change to any caller.
+KNOWLEDGE_KINDS = [
+    "values", "philosophy", "story", "product", "case_study",
+    "inspiration", "audience", "offer", "faq", "guideline", "note",
+]
+
+# Deliberately small: the corpus is one brand's own writing, so common words
+# carry less signal than they would across mixed domains, and IDF handles the
+# rest without a big hand-maintained list.
+_STOPWORDS = {
+    "the", "and", "for", "are", "but", "not", "you", "your", "with", "that", "this", "from", "they",
+    "have", "has", "was", "were", "our", "out", "how", "why", "what", "when", "who", "all", "can",
+    "will", "just", "its", "it's", "about", "into", "than", "then", "them", "some", "more", "most",
+    "any", "been", "being", "would", "could", "should", "there", "their", "these", "those", "over",
+}
+
+
+# Longest first, so "ization" is stripped before "tion" and "s". This is
+# deliberately cruder than a Porter stemmer: retrieval only needs the query
+# and the documents reduced the SAME way, so a linguistically wrong stem
+# ("business" -> "busi") still matches correctly as long as it's consistent.
+# Without it, a search for "discount" misses a document that says
+# "discounting", which is exactly the miss that matters most here.
+_SUFFIXES = ("ational", "iveness", "fulness", "ousness", "ization", "tional", "ements",
+             "ement", "ments", "ances", "ences", "ingly", "ment", "ness", "tion", "sion",
+             "able", "ible", "ance", "ence", "ing", "ies", "ied", "ers", "est", "ed", "ly", "er", "es", "s")
+
+
+def _stem(token: str) -> str:
+    for suffix in _SUFFIXES:
+        if token.endswith(suffix) and len(token) - len(suffix) >= 3:
+            return token[: -len(suffix)]
+    return token
+
+
+def _terms(text: str) -> List[str]:
+    return [_stem(t) for t in re.findall(r"[a-z0-9][a-z0-9'\-]*", (text or "").lower())
+            if len(t) > 2 and t not in _STOPWORDS]
+
+
+def _chunk_text(text: str, target: int = 900, overlap: int = 150) -> List[str]:
+    """Paragraph-aware chunking: keeps whole paragraphs together until the
+    target size, then carries a little tail into the next chunk so a thought
+    split across the boundary is still retrievable from either side."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    chunks: List[str] = []
+    current = ""
+    for para in paragraphs:
+        # A single oversized paragraph is split on sentence boundaries.
+        pieces = [para] if len(para) <= target else re.findall(r"[^.!?]+[.!?]*", para)
+        for piece in pieces:
+            piece = piece.strip()
+            if not piece:
+                continue
+            if current and len(current) + len(piece) + 2 > target:
+                chunks.append(current.strip())
+                current = (current[-overlap:] + " " if overlap else "") + piece
+            else:
+                current = f"{current}\n\n{piece}".strip() if current else piece
+    if current.strip():
+        chunks.append(current.strip())
+    return chunks[:120]  # a hard ceiling so one huge upload can't dominate a kit
+
+
+def _bm25_rank(query: str, rows: List[Dict[str, Any]], k1: float = 1.5, b: float = 0.75) -> List[tuple]:
+    """Classic BM25 over the candidate chunks. The corpus is one brand's own
+    documents, so it comfortably fits in memory and needs no index."""
+    q_terms = set(_terms(query))
+    if not q_terms or not rows:
+        return []
+    docs = [_terms(r["text"]) for r in rows]
+    lengths = [len(d) or 1 for d in docs]
+    avg_len = sum(lengths) / len(lengths)
+    df: Dict[str, int] = {}
+    for d in docs:
+        for t in set(d) & q_terms:
+            df[t] = df.get(t, 0) + 1
+    n = len(docs)
+    scored = []
+    for i, d in enumerate(docs):
+        if not d:
+            continue
+        counts: Dict[str, int] = {}
+        for t in d:
+            counts[t] = counts.get(t, 0) + 1
+        score = 0.0
+        for t in q_terms:
+            f = counts.get(t, 0)
+            if not f:
+                continue
+            idf = math.log(1 + (n - df[t] + 0.5) / (df[t] + 0.5))
+            score += idf * (f * (k1 + 1)) / (f + k1 * (1 - b + b * lengths[i] / avg_len))
+        if score > 0:
+            scored.append((score, i))
+    scored.sort(key=lambda s: s[0], reverse=True)
+    return scored
+
+
+def _row_to_doc(row: dict, include_content: bool = True) -> dict:
+    out = {
+        "id": row["id"], "brand_kit_id": row["brand_kit_id"], "title": row["title"],
+        "kind": row["kind"], "summary": row["summary"] or "",
+        "tags": _maybe_json(row.get("tags"), "[]"),
+        "source_kind": row["source_kind"], "source_url": row["source_url"],
+        "pinned": bool(row["pinned"]), "enabled": bool(row["enabled"]),
+        "chars": len(row.get("content") or ""),
+        "created_at": row["created_at"], "updated_at": row["updated_at"],
+    }
+    out["content"] = row["content"] if include_content else (row["content"] or "")[:280]
+    return out
+
+
+async def _store_chunks(doc_id: str, brand_kit_id: Optional[str], content: str):
+    await d1_query("DELETE FROM knowledge_chunks WHERE doc_id = ?", [doc_id])
+    ts = now_iso()
+    for seq, chunk in enumerate(_chunk_text(content)):
+        await d1_query(
+            "INSERT INTO knowledge_chunks (id, doc_id, brand_kit_id, seq, text, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [str(uuid.uuid4()), doc_id, brand_kit_id, seq, chunk, ts],
+        )
+
+
+async def _summarise_doc(title: str, content: str, kind: str, model: Optional[str] = None) -> Dict[str, Any]:
+    """One cheap call per document at ingest time — never per generation. Its
+    output also feeds retrieval: the summary and tags are scored alongside the
+    document's own chunks, which helps a document surface for a topic that
+    uses different words than the document itself does."""
+    if not (content or "").strip():
+        return {"summary": "", "tags": []}
+    # The tags are doing real retrieval work, not decoration. Lexical search
+    # can only match words that are present, so this asks for the vocabulary
+    # the document itself never uses — the synonyms and the questions someone
+    # would actually type. Paying for that once at ingest is what stops a
+    # search for "who is this for" missing a document titled "Who we serve".
+    system = (
+        "You catalogue a brand's internal reference material so it can be found again by keyword search. "
+        "Return ONLY JSON: "
+        '{"summary": "one sentence, max 160 chars, describing what this document tells a copywriter", '
+        '"tags": ["8-14 lowercase search terms. Include the obvious topic words AND, importantly, words '
+        'that do NOT appear in the document: synonyms, the plain-English question this document answers, '
+        'and how someone might refer to this topic casually. One to three words each."]}'
+    )
+    try:
+        raw = await chat(
+            [{"role": "system", "content": system},
+             {"role": "user", "content": f"Kind: {kind}\nTitle: {title}\n\n{content[:4000]}"}],
+            model or CHAT_MODEL, 0.4, 300,
+        )
+        data = _extract_json(raw) or {}
+        tags = [str(t).lower().strip() for t in (data.get("tags") or []) if str(t).strip()][:8]
+        return {"summary": (data.get("summary") or "").strip()[:200], "tags": tags}
+    except Exception:
+        logger.exception("Could not summarise knowledge doc %s", title)
+        return {"summary": "", "tags": []}
+
+
+async def knowledge_context(brand_kit_id: Optional[str], topic: str, budget: int = 2600) -> Dict[str, Any]:
+    """The brand's knowledge, rendered as prompt text for one topic.
+
+    Never raises: a knowledge base that is empty, unreachable or malformed
+    degrades to a generation without it rather than failing the generation —
+    the same contract load_brand() keeps."""
+    empty = {"block": "", "used": []}
+    if not (topic or "").strip():
+        return empty
+    try:
+        await ensure_schema()
+        docs, _ = await d1_query(
+            "SELECT * FROM knowledge_docs WHERE enabled = 1 AND (brand_kit_id = ? OR brand_kit_id IS NULL) "
+            "ORDER BY pinned DESC, updated_at DESC LIMIT 200",
+            [brand_kit_id],
+        )
+        if not docs:
+            return empty
+        by_id = {d["id"]: d for d in docs}
+        used, parts, spent = [], [], 0
+
+        # Tier 1 — pinned truths, always in, before anything is retrieved.
+        for d in [x for x in docs if x["pinned"]]:
+            text = (d["summary"] or "").strip() or (d["content"] or "").strip()
+            if not text:
+                continue
+            text = text[: max(280, budget // 4)]
+            cost = len(text) + len(d["title"]) + 16
+            if spent + cost > budget * 0.6:
+                break
+            parts.append(f"- [{d['title']} · {d['kind']}] {text}")
+            used.append({"id": d["id"], "title": d["title"], "kind": d["kind"], "pinned": True})
+            spent += cost
+
+        # Tier 2 — retrieved passages, scored against this topic.
+        pinned_ids = {u["id"] for u in used}
+        chunks, _ = await d1_query(
+            "SELECT * FROM knowledge_chunks WHERE brand_kit_id = ? OR brand_kit_id IS NULL LIMIT 2000",
+            [brand_kit_id],
+        )
+        candidates = [c for c in chunks if c["doc_id"] in by_id and c["doc_id"] not in pinned_ids]
+        # Scoring each chunk together with its document's title, summary and
+        # tags lets a passage match a topic phrased in the document's language
+        # rather than only its own.
+        enriched = []
+        for c in candidates:
+            d = by_id[c["doc_id"]]
+            tags = " ".join(_maybe_json(d.get("tags"), "[]"))
+            enriched.append({**c, "text": f"{d['title']} {d['kind']} {d['summary'] or ''} {tags} {c['text']}"})
+        for score, i in _bm25_rank(topic, enriched)[:8]:
+            c = candidates[i]
+            d = by_id[c["doc_id"]]
+            text = (c["text"] or "").strip()
+            cost = len(text) + len(d["title"]) + 16
+            if spent + cost > budget:
+                continue
+            parts.append(f"- [{d['title']} · {d['kind']}] {text}")
+            if not any(u["id"] == d["id"] for u in used):
+                used.append({"id": d["id"], "title": d["title"], "kind": d["kind"], "pinned": False})
+            spent += cost
+
+        if not parts:
+            return empty
+        block = (
+            " BRAND KNOWLEDGE — real reference material from this brand. Ground what you write in it: "
+            "reuse its specifics, positions and examples, and never contradict it. Do not quote these "
+            "labels or mention that you were given reference material.\n" + "\n".join(parts) + "\n"
+        )
+        return {"block": block, "used": used}
+    except Exception:
+        logger.exception("Could not build knowledge context")
+        return empty
+
+
+async def brand_and_knowledge(req, topic: str) -> str:
+    """The brand kit and its knowledge base as one prompt suffix — the single
+    place every text endpoint picks up brand grounding."""
+    if not getattr(req, "use_brand", True):
+        return ""
+    brand = await load_brand(getattr(req, "brand_kit_id", None))
+    out = brand_prompt(brand)
+    if getattr(req, "use_knowledge", True):
+        out += (await knowledge_context(brand.get("id"), topic))["block"]
+    return out
+
+
+class KnowledgeDocIn(BaseModel):
+    brand_kit_id: Optional[str] = None
+    title: Optional[str] = None
+    kind: str = "note"
+    content: Optional[str] = None
+    tags: Optional[List[str]] = None
+    pinned: Optional[bool] = None
+    enabled: Optional[bool] = None
+    # Ingest sources — supply one of these instead of `content`.
+    source_type: Optional[str] = None  # paste | pdf | pptx | url
+    source_url: Optional[str] = None
+    model: Optional[str] = None
+
+
+class KnowledgeSearch(BaseModel):
+    brand_kit_id: Optional[str] = None
+    query: str
+    budget: Optional[int] = None
+
+
+async def _ingest_source(req: KnowledgeDocIn) -> Dict[str, str]:
+    """Pulls real text out of whatever was handed over. Reuses the same
+    extractors the brand analyser uses — nothing here invents content."""
+    st = (req.source_type or "paste").lower()
+    if st in ("paste", "", None):
+        return {"content": req.content or "", "title": req.title or "Untitled note",
+                "source_kind": "paste", "source_url": ""}
+    if not req.source_url:
+        raise HTTPException(status_code=400, detail="source_url is required for this source_type")
+    if st == "url":
+        page = await asyncio.to_thread(_url_analysis, req.source_url)
+        text = "\n\n".join(t for t in [page.get("description", ""), page.get("text", "")] if t)
+        return {"content": text, "title": req.title or page.get("title") or req.source_url,
+                "source_kind": "url", "source_url": req.source_url}
+    data = await asyncio.to_thread(_fetch_bytes, req.source_url)
+    if st == "pdf":
+        pdf = await asyncio.to_thread(_pdf_extract, data, 40)
+        text = "\n\n".join(t for t in pdf["page_texts"] if t)
+        return {"content": text, "title": req.title or "PDF document",
+                "source_kind": "pdf", "source_url": req.source_url}
+    if st == "pptx":
+        slides = await asyncio.to_thread(_pptx_extract, data, 60)
+        text = "\n\n".join(f"{s['heading']}\n{s['body']}".strip() for s in slides if s["heading"] or s["body"])
+        return {"content": text, "title": req.title or "Deck",
+                "source_kind": "pptx", "source_url": req.source_url}
+    raise HTTPException(status_code=400, detail="source_type must be paste, pdf, pptx or url")
+
+
+@api_router.post("/knowledge")
+async def create_knowledge_doc(req: KnowledgeDocIn):
+    await ensure_schema()
+    src = await _ingest_source(req)
+    content = (src["content"] or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Nothing readable came out of that source")
+    kind = req.kind if req.kind in KNOWLEDGE_KINDS else "note"
+    meta = await _summarise_doc(src["title"], content, kind, req.model)
+    tags = req.tags if req.tags is not None else meta["tags"]
+    ts = now_iso()
+    record = {
+        "id": str(uuid.uuid4()), "brand_kit_id": req.brand_kit_id, "title": src["title"][:200],
+        "kind": kind, "content": content, "summary": meta["summary"], "tags": tags,
+        "source_kind": src["source_kind"], "source_url": src["source_url"],
+        "pinned": 1 if req.pinned else 0, "enabled": 1, "created_at": ts, "updated_at": ts,
+    }
+    await d1_query(
+        "INSERT INTO knowledge_docs (id, brand_kit_id, title, kind, content, summary, tags, source_kind, "
+        "source_url, pinned, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [record["id"], record["brand_kit_id"], record["title"], record["kind"], record["content"],
+         record["summary"], json.dumps(tags), record["source_kind"], record["source_url"],
+         record["pinned"], 1, ts, ts],
+    )
+    await _store_chunks(record["id"], req.brand_kit_id, content)
+    return _row_to_doc(record)
+
+
+@api_router.get("/knowledge")
+async def list_knowledge_docs(brand_kit_id: Optional[str] = None):
+    """Documents for one kit plus the ones shared across every kit."""
+    await ensure_schema()
+    rows, _ = await d1_query(
+        "SELECT * FROM knowledge_docs WHERE brand_kit_id = ? OR brand_kit_id IS NULL "
+        "ORDER BY pinned DESC, updated_at DESC LIMIT 200",
+        [brand_kit_id],
+    )
+    return [_row_to_doc(r, include_content=False) for r in rows]
+
+
+@api_router.get("/knowledge/{doc_id}")
+async def get_knowledge_doc(doc_id: str):
+    await ensure_schema()
+    rows, _ = await d1_query("SELECT * FROM knowledge_docs WHERE id = ?", [doc_id])
+    if not rows:
+        raise HTTPException(status_code=404, detail="Knowledge document not found")
+    return _row_to_doc(rows[0])
+
+
+@api_router.put("/knowledge/{doc_id}")
+async def update_knowledge_doc(doc_id: str, req: KnowledgeDocIn):
+    await ensure_schema()
+    rows, _ = await d1_query("SELECT * FROM knowledge_docs WHERE id = ?", [doc_id])
+    if not rows:
+        raise HTTPException(status_code=404, detail="Knowledge document not found")
+    existing = _row_to_doc(rows[0])
+    content = req.content if req.content is not None else existing["content"]
+    merged = {
+        "title": (req.title or existing["title"])[:200],
+        "kind": req.kind if req.kind in KNOWLEDGE_KINDS else existing["kind"],
+        "content": content,
+        "tags": req.tags if req.tags is not None else existing["tags"],
+        "pinned": existing["pinned"] if req.pinned is None else req.pinned,
+        "enabled": existing["enabled"] if req.enabled is None else req.enabled,
+        "brand_kit_id": req.brand_kit_id if req.brand_kit_id is not None else existing["brand_kit_id"],
+    }
+    ts = now_iso()
+    out, _ = await d1_query(
+        "UPDATE knowledge_docs SET title=?, kind=?, content=?, tags=?, pinned=?, enabled=?, "
+        "brand_kit_id=?, updated_at=? WHERE id=? RETURNING *",
+        [merged["title"], merged["kind"], merged["content"], json.dumps(merged["tags"]),
+         1 if merged["pinned"] else 0, 1 if merged["enabled"] else 0, merged["brand_kit_id"], ts, doc_id],
+    )
+    # Only re-chunk when the text actually changed — re-chunking is the
+    # expensive part and a pin/rename shouldn't pay for it.
+    if req.content is not None and req.content != existing["content"]:
+        await _store_chunks(doc_id, merged["brand_kit_id"], merged["content"])
+    return _row_to_doc(out[0])
+
+
+@api_router.delete("/knowledge/{doc_id}")
+async def delete_knowledge_doc(doc_id: str):
+    await ensure_schema()
+    rows, _ = await d1_query("DELETE FROM knowledge_docs WHERE id = ? RETURNING id", [doc_id])
+    if not rows:
+        raise HTTPException(status_code=404, detail="Knowledge document not found")
+    await d1_query("DELETE FROM knowledge_chunks WHERE doc_id = ?", [doc_id])
+    return {"ok": True}
+
+
+@api_router.post("/knowledge/search")
+async def search_knowledge(req: KnowledgeSearch):
+    """What the writer would actually be given for this topic. Exposed so the
+    retrieval is inspectable rather than a black box."""
+    ctx = await knowledge_context(req.brand_kit_id, req.query, req.budget or 2600)
+    return {"used": ctx["used"], "block": ctx["block"], "chars": len(ctx["block"])}
+
+
 # ---------------- Generation history ----------------
 class BulkDeleteRequest(BaseModel):
     ids: List[str]
@@ -2092,6 +2526,7 @@ class BuildPostRequest(BaseModel):
     use_brand: bool = True
     custom_template_id: Optional[str] = None
     brand_kit_id: Optional[str] = None
+    use_knowledge: bool = True
 
 
 @api_router.get("/platform-specs")
@@ -2196,6 +2631,8 @@ async def ai_build_post(req: BuildPostRequest):
 
     brand = await load_brand(req.brand_kit_id) if req.use_brand else {}
     brand_note = brand_prompt(brand) if brand else ""
+    if brand and req.use_knowledge:
+        brand_note += (await knowledge_context(brand.get("id"), req.topic))["block"]
     tone = req.tone or (brand.get("voice") if brand else "") or "confident, specific, no fluff"
 
     template_note = ""

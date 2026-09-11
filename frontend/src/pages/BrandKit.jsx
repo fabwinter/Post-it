@@ -3,6 +3,7 @@ import { api, apiErrorMessage } from "@/lib/api";
 import { useBrandKits } from "@/lib/useBrand";
 import { BRAND_FONTS } from "@/lib/fonts";
 import { VisualCard } from "@/components/VisualCard";
+import { KnowledgeBase } from "@/components/KnowledgeBase";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
@@ -362,6 +363,17 @@ export default function BrandKit() {
             className="w-full gap-2 rounded-lg bg-lime font-semibold text-[#0A0A0A] hover:bg-lime-hover sm:w-auto">
             {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} {form.id ? "Save brand kit" : "Create brand kit"}
           </Button>
+
+          {/* The knowledge base attaches to a saved kit, so it appears once
+              there is an id to attach it to. */}
+          {form.id ? (
+            <KnowledgeBase brandKitId={form.id} brandName={form.name} />
+          ) : (
+            <section className="rounded-xl border border-dashed border-white/10 p-5 text-xs text-zinc-600" data-testid="knowledge-locked">
+              Save this kit to start building its knowledge base — values, philosophy, previous work and house
+              rules the writer should draw on.
+            </section>
+          )}
         </div>
 
         <div className="lg:sticky lg:top-6 lg:self-start">
