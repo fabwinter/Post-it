@@ -16,7 +16,7 @@ import { MediaPicker } from "@/components/MediaPicker";
 import { useTemplateStyles } from "@/lib/templateStyles";
 import { useCustomTemplates } from "@/lib/useCustomTemplates";
 import { elementsFromSpec, newElement } from "@/lib/slideElements";
-import { BRAND_FONTS } from "@/lib/fonts";
+import { BRAND_FONTS, groupFontsByCategory } from "@/lib/fonts";
 import { ElementsLibrary } from "@/components/ElementsLibrary";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -1049,6 +1049,7 @@ function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, 
   const el = elements.find((x) => x.id === selectedId);
   const fontOptions = brand?.fonts?.display && !BRAND_FONTS.some((f) => f.key === brand.fonts.display)
     ? [{ key: brand.fonts.display, label: `${brand.fonts.display} (brand)` }, ...BRAND_FONTS] : BRAND_FONTS;
+  const fontGroups = groupFontsByCategory(fontOptions);
 
   return (
     <div className="mt-3" data-testid="composer-element-panel">
@@ -1089,7 +1090,11 @@ function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, 
               <div className="mt-2 grid grid-cols-2 gap-2">
                 <select value={el.fontFamily || "Inter"} onChange={(e) => onPatch(el.id, { fontFamily: e.target.value })} data-testid="composer-element-font"
                   className="rounded-lg border border-white/10 bg-[#0A0A0A] px-2 py-1.5 text-xs text-white outline-none [color-scheme:dark]">
-                  {fontOptions.map((f) => <option key={f.key} value={f.key}>{f.label || f.key}</option>)}
+                  {fontGroups.map(({ category, fonts }) => (
+                    <optgroup key={category} label={category}>
+                      {fonts.map((f) => <option key={f.key} value={f.key}>{f.label || f.key}</option>)}
+                    </optgroup>
+                  ))}
                 </select>
                 <select value={el.fontWeight || 600} onChange={(e) => onPatch(el.id, { fontWeight: Number(e.target.value) })} data-testid="composer-element-weight"
                   className="rounded-lg border border-white/10 bg-[#0A0A0A] px-2 py-1.5 text-xs text-white outline-none [color-scheme:dark]">

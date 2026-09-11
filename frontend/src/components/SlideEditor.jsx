@@ -1,10 +1,51 @@
-import { useRef } from "react";
+import { useState, useRef } from "react";
+import { Ruler } from "lucide-react";
 import { VisualCard } from "@/components/VisualCard";
 import { elementBoxStyle, MIN_SIZE } from "@/lib/slideElements";
 
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 const dist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
 const angleOf = (a, b) => (Math.atan2(b.clientY - a.clientY, b.clientX - a.clientX) * 180) / Math.PI;
+
+// 0/10/20…100 — the marks a 10% grid and its ruler both need.
+const TICKS = Array.from({ length: 11 }, (_, i) => i * 10);
+
+// A faint 10% grid plus a highlighted centerline, so lining up an element
+// with the middle of the card (or with another element on the same tenth)
+// doesn't need trial and error. Pure CSS gradients rather than 20-odd divs:
+// cheap to render and never intercepts pointer events.
+function GridOverlay() {
+  return (
+    <div
+      className="pointer-events-none absolute inset-0"
+      style={{
+        backgroundImage: [
+          "repeating-linear-gradient(to right, rgba(255,255,255,0.16) 0, rgba(255,255,255,0.16) 1px, transparent 1px, transparent 10%)",
+          "repeating-linear-gradient(to bottom, rgba(255,255,255,0.16) 0, rgba(255,255,255,0.16) 1px, transparent 1px, transparent 10%)",
+        ].join(","),
+      }}
+    >
+      <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-lime/50" />
+      <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-lime/50" />
+    </div>
+  );
+}
+
+// Percentage labels along the top and left edges — the same coordinate
+// space patchElement already works in (x/y/w/h are 0-100), so a number here
+// is exactly what you'd type into a property field.
+function RulerOverlay() {
+  return (
+    <div className="pointer-events-none absolute inset-0 select-none font-mono text-[8px] text-lime/70">
+      {TICKS.map((t) => (
+        <span key={`x${t}`} className="absolute top-0.5" style={{ left: `${t}%` }}>{t}</span>
+      ))}
+      {TICKS.map((t) => (
+        <span key={`y${t}`} className="absolute left-0.5" style={{ top: `${t}%` }}>{t}</span>
+      ))}
+    </div>
+  );
+}
 
 // A freeform slide's live preview, with drag-to-move, a resize handle, a
 // rotate handle (mouse/desktop), and two-finger pinch (scale + rotate
@@ -16,6 +57,7 @@ export function SlideEditor({ spec, brand, selectedId, onSelect, onChangeElement
   const containerRef = useRef(null);
   const dragState = useRef(null);
   const pinchState = useRef(null);
+  const [showGrid, setShowGrid] = useState(false);
 
   const pct = (clientX, clientY) => {
     const rect = containerRef.current.getBoundingClientRect();
@@ -81,9 +123,19 @@ export function SlideEditor({ spec, brand, selectedId, onSelect, onChangeElement
       onPointerMove={onPointerMove} onPointerUp={endDrag} onPointerCancel={endDrag}
       onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}
       onPointerDown={() => onSelect(null)} data-testid="slide-editor-canvas">
+      <button
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={() => setShowGrid((s) => !s)}
+        data-testid="slide-editor-grid-toggle"
+        title={showGrid ? "Hide ruler & grid" : "Show ruler & grid"}
+        className={`absolute right-1.5 top-1.5 z-30 flex h-6 w-6 items-center justify-center rounded-md border transition-colors ${showGrid ? "border-lime bg-lime/20 text-lime" : "border-white/20 bg-black/40 text-zinc-300 hover:text-white"}`}>
+        <Ruler size={12} />
+      </button>
       <div ref={cardRef} className="absolute inset-0">
         <VisualCard spec={spec} brand={brand} scale={0.86} />
       </div>
+      {showGrid && <GridOverlay />}
+      {showGrid && <RulerOverlay />}
       {(spec.elements || []).map((el) => {
         const box = elementBoxStyle(el);
         const selected = el.id === selectedId;
