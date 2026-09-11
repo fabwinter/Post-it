@@ -94,11 +94,12 @@ export function MediaPicker({ open, onOpenChange, defaultType = "image", orienta
     }
   };
 
-  const removeUpload = async (e, id) => {
+  const removeUpload = async (e, upload) => {
     e.stopPropagation();
+    if (!window.confirm(`Delete "${upload.filename || "this file"}"? This can't be undone.`)) return;
     const prev = uploads;
-    setUploads((s) => s.filter((u) => u.id !== id));
-    try { await api.delete(`/uploads/${id}`); }
+    setUploads((s) => s.filter((u) => u.id !== upload.id));
+    try { await api.delete(`/uploads/${upload.id}`); }
     catch (err) { toast.error(apiErrorMessage(err, "Delete failed.")); setUploads(prev); }
   };
 
@@ -212,7 +213,7 @@ export function MediaPicker({ open, onOpenChange, defaultType = "image", orienta
                       className="group flex w-full items-center gap-2.5 rounded-lg border border-white/10 bg-[#121212] p-3 text-left transition-colors hover:border-lime">
                       <Music2 size={16} className="flex-shrink-0 text-lime" />
                       <span className="min-w-0 flex-1 truncate text-sm text-zinc-200">{u.filename}</span>
-                      <button onClick={(e) => removeUpload(e, u.id)} data-testid={`media-delete-${u.id}`}
+                      <button onClick={(e) => removeUpload(e, u)} data-testid={`media-delete-${u.id}`}
                         className="flex-shrink-0 text-zinc-600 opacity-0 transition-opacity hover:text-magic group-hover:opacity-100"><Trash2 size={14} /></button>
                     </button>
                   ))}
@@ -233,7 +234,7 @@ export function MediaPicker({ open, onOpenChange, defaultType = "image", orienta
                           <Play size={20} className="text-white drop-shadow" fill="white" />
                         </div>
                       )}
-                      <button onClick={(e) => removeUpload(e, u.id)} data-testid={`media-delete-${u.id}`}
+                      <button onClick={(e) => removeUpload(e, u)} data-testid={`media-delete-${u.id}`}
                         className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-md bg-black/60 text-white opacity-0 transition-opacity hover:text-magic group-hover:opacity-100">
                         <Trash2 size={12} />
                       </button>

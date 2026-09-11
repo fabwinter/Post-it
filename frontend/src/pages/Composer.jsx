@@ -407,6 +407,7 @@ export default function Composer() {
 
   const remove = async () => {
     if (!postId) { navigate("/"); return; }
+    if (!window.confirm(`Delete "${title || "this post"}"? This can't be undone.`)) return;
     await api.delete(`/posts/${postId}`); toast.success("Deleted"); navigate("/");
   };
 

@@ -27,10 +27,11 @@ export default function Library() {
       .finally(() => setLoading(false));
   }, [tab]);
 
-  const removeUpload = async (id) => {
+  const removeUpload = async (upload) => {
+    if (!window.confirm(`Delete "${upload.filename || "this file"}"? This can't be undone.`)) return;
     const prev = uploads;
-    setUploads((s) => s.filter((u) => u.id !== id));
-    try { await api.delete(`/uploads/${id}`); toast.success("Deleted"); }
+    setUploads((s) => s.filter((u) => u.id !== upload.id));
+    try { await api.delete(`/uploads/${upload.id}`); toast.success("Deleted"); }
     catch (e) { toast.error(apiErrorMessage(e, "Delete failed.")); setUploads(prev); }
   };
 
@@ -127,7 +128,7 @@ export default function Library() {
                 <div className="mt-3 flex gap-2">
                   <Button onClick={() => navigate("/composer", { state: { mediaUrl: u.url, mediaType: u.kind } })}
                     className="h-8 flex-1 gap-1.5 rounded-lg bg-lime text-xs font-semibold text-[#0A0A0A] hover:bg-lime-hover" data-testid={`library-use-${u.id}`}><Send size={13} /> Use</Button>
-                  <Button variant="ghost" onClick={() => removeUpload(u.id)} data-testid={`library-delete-${u.id}`}
+                  <Button variant="ghost" onClick={() => removeUpload(u)} data-testid={`library-delete-${u.id}`}
                     className="h-8 px-2.5 text-zinc-500 hover:text-magic"><Trash2 size={14} /></Button>
                 </div>
               </div>

@@ -64,9 +64,10 @@ export function HistoryDrawer() {
 
   useEffect(() => { if (open) load(filter); }, [filter, open, load]);
 
-  const remove = async (id) => {
-    setItems((s) => s.filter((x) => x.id !== id));
-    try { await api.delete(`/generations/${id}`); toast.success("Deleted"); }
+  const remove = async (g) => {
+    if (!window.confirm(`Delete "${g.title || "this"}"? This can't be undone.`)) return;
+    setItems((s) => s.filter((x) => x.id !== g.id));
+    try { await api.delete(`/generations/${g.id}`); toast.success("Deleted"); }
     catch (e) { toast.error(apiErrorMessage(e, "Delete failed.")); load(filter); }
   };
 
@@ -204,7 +205,7 @@ export function HistoryDrawer() {
                         <Pencil size={12} />
                       </Button>
                     )}
-                    <Button variant="ghost" onClick={() => remove(g.id)} data-testid={`history-delete-${g.id}`}
+                    <Button variant="ghost" onClick={() => remove(g)} data-testid={`history-delete-${g.id}`}
                       className="h-7 px-2.5 text-zinc-600 hover:text-magic">
                       <Trash2 size={13} />
                     </Button>
