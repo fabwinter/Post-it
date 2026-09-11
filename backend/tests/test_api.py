@@ -23,6 +23,10 @@ class Resp:
             self.content = self.text.encode()
         self.headers = {"content-type": "application/json"}
     def json(self): return self._b
+    def close(self): pass
+    def iter_content(self, chunk_size=65536):
+        for i in range(0, len(self.content), chunk_size):
+            yield self.content[i:i + chunk_size]
 
 def fake_post(url, headers=None, json=None, timeout=None, **kw):
     body = json or {}
@@ -72,7 +76,10 @@ def fake_get(url, headers=None, timeout=None, params=None, **kw):
             ],
         }]})
     if url in BLOBS:
-        return Resp(BLOBS[url])
+        r = Resp(BLOBS[url])
+        if url in BLOB_CONTENT_TYPES:
+            r.headers = {"content-type": BLOB_CONTENT_TYPES[url]}
+        return r
     if url == FAKE_WEBSITE_URL:
         return Resp(FAKE_WEBSITE_HTML)
     raise AssertionError("unexpected GET " + url)
@@ -89,6 +96,7 @@ made by people who care about where it comes from and who it reaches.</p>
 </body></html>"""
 
 BLOBS = {}
+BLOB_CONTENT_TYPES = {}  # url -> content-type, for tests that care what proxy-image sees
 def fake_put(url, headers=None, data=None, timeout=None, **kw):
     assert "blob.vercel-storage.com" in url
     pathname = url.split("blob.vercel-storage.com/")[-1] + "-rand"
@@ -254,6 +262,30 @@ r = c.put(f"/api/posts/{pid}", json={"assets": [{"type": "visual", "spec": {"tem
 check("post update assets", r.json()["assets"][0]["spec"]["template"] == "slide" and r.json()["format"] == "reel", r.text[:200])
 r = c.get(f"/api/posts/{pid}")
 check("post round-trips assets", r.json()["assets"][0]["spec"]["template"] == "slide", r.text[:200])
+
+# --- posts: alt_text and per-platform caption overrides ---
+r = c.post("/api/posts", json={
+    "title": "Multi-platform", "content": "The Instagram-length version, up to 2200 chars.",
+    "platforms": ["instagram", "twitter"], "alt_text": "A photo of the studio at dawn.",
+    "content_by_platform": {"twitter": "The 280-char version."},
+})
+mp = r.json()
+check("post create stores alt_text", mp["alt_text"] == "A photo of the studio at dawn.", mp)
+check("post create stores a per-platform caption override",
+      mp["content_by_platform"] == {"twitter": "The 280-char version."}, mp)
+check("an un-overridden platform is simply absent from content_by_platform",
+      "instagram" not in mp["content_by_platform"], mp)
+mp_id = mp["id"]
+r = c.get(f"/api/posts/{mp_id}")
+check("alt_text and content_by_platform round-trip", r.json()["alt_text"] == "A photo of the studio at dawn."
+      and r.json()["content_by_platform"] == {"twitter": "The 280-char version."}, r.json())
+r = c.put(f"/api/posts/{mp_id}", json={"alt_text": "Updated description.", "content_by_platform": {}})
+check("alt_text can be updated and content_by_platform cleared",
+      r.json()["alt_text"] == "Updated description." and r.json()["content_by_platform"] == {}, r.json())
+
+r = c.post("/api/posts", json={"title": "Single platform", "content": "just one", "platforms": ["instagram"]})
+check("alt_text defaults to empty string", r.json()["alt_text"] == "", r.json())
+check("content_by_platform defaults to an empty object", r.json()["content_by_platform"] == {}, r.json())
 
 # --- legacy: media library still only shows real media ---
 r = c.get("/api/media")
@@ -437,6 +469,36 @@ check("another kit's docs stay out", not any(u["title"] == "Pricing philosophy" 
 # Edit, disable, delete.
 r = c.put(f"/api/knowledge/{case_doc['id']}", json={"title": "Kiln — booking rebuild", "pinned": True})
 check("a doc can be renamed and pinned", r.json()["title"] == "Kiln — booking rebuild" and r.json()["pinned"] is True, r.text[:200])
+
+# A content edit must refresh the stale summary/tags — a pinned doc's
+# summary is injected into EVERY generation verbatim, so leaving it alone
+# would keep asserting whatever the text said BEFORE the edit.
+CHAT_REPLY["value"] = '{"summary": "Original summary about pricing.", "tags": ["pricing"]}'
+r = c.post("/api/knowledge", json={"brand_kit_id": acme_id, "title": "Refund policy", "kind": "guideline",
+                                   "pinned": True, "content": "We do not offer refunds after 30 days."})
+refund_doc = r.json()
+check("summary set at creation", refund_doc["summary"] == "Original summary about pricing.", refund_doc)
+
+CHAT_REPLY["value"] = '{"summary": "Updated summary about extended refunds.", "tags": ["refunds", "extended"]}'
+r = c.put(f"/api/knowledge/{refund_doc['id']}", json={"content": "We now offer refunds for up to 90 days."})
+updated = r.json()
+check("a content edit refreshes the summary", updated["summary"] == "Updated summary about extended refunds.", updated)
+check("a content edit refreshes the tags", updated["tags"] == ["refunds", "extended"], updated)
+
+# A rename/pin WITHOUT a content change must NOT re-summarise — no wasted
+# model call, and the (still accurate) summary is left exactly alone.
+sent_before = len(SENT_MESSAGES)
+r = c.put(f"/api/knowledge/{refund_doc['id']}", json={"title": "Refund policy v2", "pinned": True})
+check("a metadata-only edit doesn't touch the summary", r.json()["summary"] == "Updated summary about extended refunds.", r.json())
+check("a metadata-only edit makes no model call", len(SENT_MESSAGES) == sent_before, len(SENT_MESSAGES) - sent_before)
+
+# The refreshed summary is what a generation actually receives, not just
+# what the API response shows.
+r = c.post("/api/knowledge/search", json={"brand_kit_id": acme_id, "query": "anything — pinned rides along regardless"})
+check("the refreshed summary is what generations actually see",
+      any(u["title"] == "Refund policy v2" for u in r.json()["used"]), r.json()["used"])
+r = c.delete(f"/api/knowledge/{refund_doc['id']}")
+check("cleanup: refund doc deleted", r.status_code == 200)
 r = c.put(f"/api/knowledge/{case_doc['id']}", json={"enabled": False})
 check("a doc can be disabled", r.json()["enabled"] is False, r.text[:200])
 r = c.post("/api/knowledge/search", json={"brand_kit_id": acme_id, "query": "pottery studio booking"})
@@ -451,6 +513,22 @@ check("a deleted doc 404s", r.status_code == 404, r.text)
 
 r = c.post("/api/knowledge", json={"title": "Empty", "content": "   "})
 check("an empty document is rejected", r.status_code == 400, r.text[:160])
+
+# --- brand kit export: the only way any of it leaves the database ---
+r = c.get(f"/api/brand-kits/{acme_id}/export")
+check("export succeeds", r.status_code == 200, r.text[:200])
+bundle = r.json()
+check("export names the kit", bundle["brand_kit"]["id"] == acme_id, bundle["brand_kit"])
+check("export includes the kit's own colours and voice",
+      bundle["brand_kit"]["voice"] == "dry and technical", bundle["brand_kit"])
+doc_titles = {d["title"] for d in bundle["knowledge_docs"]}
+check("export includes this kit's own knowledge docs", "Pricing philosophy" in doc_titles, doc_titles)
+check("export includes docs shared across every kit (brand_kit_id NULL)", "House style" in doc_titles, doc_titles)
+check("export carries full content, not the truncated list-view preview",
+      any(d["title"] == "Pricing philosophy" and len(d["content"]) > 280 for d in bundle["knowledge_docs"]),
+      [d["chars"] for d in bundle["knowledge_docs"]])
+r = c.get("/api/brand-kits/does-not-exist/export")
+check("export 404s for an unknown kit", r.status_code == 404, r.text[:160])
 
 # --- knowledge retrieval: precomputed terms + the warm-instance corpus cache ---
 # Chunk and doc term counts are stored at ingest and reused unchanged by
@@ -741,6 +819,67 @@ CHAT_REPLY["value"] = json.dumps({
 r = c.post("/api/ai/build-post", json={"topic": "why coffee matters", "platform": "instagram", "custom_template_id": image_template_id})
 b = r.json()
 check("build-post with an image template uses the template's theme", b["theme"] == "midnight", b)
+
+# --- SSRF guard: any endpoint that fetches a caller-supplied URL runs through this ---
+for bad_url, why in [
+    ("ftp://example.com/x", "non-http(s) scheme"),
+    ("http://127.0.0.1/", "loopback"),
+    ("http://localhost/", "loopback by name"),
+    ("http://169.254.169.254/latest/meta-data/", "cloud metadata address"),
+    ("http://10.0.0.5/", "private range"),
+    ("http://192.168.1.1/", "private range"),
+    ("http://[::1]/", "IPv6 loopback"),
+]:
+    try:
+        server._assert_public_http_url(bad_url)
+        check(f"SSRF guard rejects {why}", False, bad_url)
+    except Exception as e:
+        check(f"SSRF guard rejects {why}", isinstance(e, server.HTTPException) and e.status_code == 400, str(e))
+
+# A real public address (literal IP, no DNS needed) is not blocked.
+try:
+    server._assert_public_http_url("https://8.8.8.8/")
+    check("SSRF guard allows a public address", True)
+except Exception as e:
+    check("SSRF guard allows a public address", False, str(e))
+
+# A hostname that can't resolve at all isn't a reachable target either way —
+# every fake domain the rest of this suite uses (blob.example, *.test) relies
+# on exactly this not being treated as a block.
+try:
+    server._assert_public_http_url("https://this-does-not-exist.invalid/")
+    check("SSRF guard doesn't block an unresolvable host (can't be an SSRF target)", True)
+except Exception as e:
+    check("SSRF guard doesn't block an unresolvable host (can't be an SSRF target)", False, str(e))
+
+# --- proxy-image: same guard, plus a content-type allowlist ---
+r = c.get("/api/proxy-image", params={"url": "http://169.254.169.254/"})
+check("proxy-image refuses a private/metadata address", r.status_code == 400, r.text[:160])
+BLOBS["https://blob.example/not-an-image"] = b"plain text, not media"
+BLOB_CONTENT_TYPES["https://blob.example/not-an-image"] = "text/plain"
+r = c.get("/api/proxy-image", params={"url": "https://blob.example/not-an-image"})
+check("proxy-image refuses a non-image/video content-type", r.status_code == 400, r.text[:160])
+BLOBS["https://blob.example/pic.png"] = b"fakepngbytes"
+BLOB_CONTENT_TYPES["https://blob.example/pic.png"] = "image/png"
+r = c.get("/api/proxy-image", params={"url": "https://blob.example/pic.png"})
+check("proxy-image re-serves an actual image", r.status_code == 200 and r.content == b"fakepngbytes", r.status_code)
+check("proxy-image sets a permissive CORS header for canvas export",
+      r.headers.get("access-control-allow-origin") == "*", dict(r.headers))
+
+# --- app access token: off by default, enforced once set, cron route exempt ---
+check("no token configured: every route is open", c.get("/api/stats").status_code == 200)
+server.APP_ACCESS_TOKEN = "super-secret"
+try:
+    check("token configured: an unauthenticated request is rejected",
+          c.get("/api/stats").status_code == 401)
+    check("token configured: the wrong token is rejected",
+          c.get("/api/stats", headers={"Authorization": "Bearer nope"}).status_code == 401)
+    check("token configured: the right token is accepted",
+          c.get("/api/stats", headers={"Authorization": "Bearer super-secret"}).status_code == 200)
+    check("the cron endpoint is exempt from the app token (it has its own CRON_SECRET)",
+          c.get("/api/cron/publish-due").status_code == 200)
+finally:
+    server.APP_ACCESS_TOKEN = None  # restore — every test above and after this block assumes no auth
 
 print("\n" + ("ALL PASS" if not FAILS else f"{len(FAILS)} FAILED: {FAILS}"))
 sys.exit(1 if FAILS else 0)

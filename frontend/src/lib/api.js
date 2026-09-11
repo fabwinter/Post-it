@@ -1,4 +1,5 @@
 import axios from "axios";
+import { getToken, setToken } from "@/lib/auth";
 
 // Empty by default so requests resolve relative to the current origin
 // (e.g. Vercel serving the frontend and the /api functions together).
@@ -7,6 +8,29 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "";
 export const API = `${BACKEND_URL}/api`;
 
 export const api = axios.create({ baseURL: API });
+
+// Attaches the shared access code once one is stored — a no-op if the
+// backend has no APP_ACCESS_TOKEN configured, since it ignores the header
+// entirely in that case. See lib/auth.js.
+api.interceptors.request.use((config) => {
+  const token = getToken();
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
+
+// A 401 means the stored code is missing, wrong, or was rotated server-side
+// — clear it and tell <AuthGate> to show the lock screen again, from
+// wherever in the app the call happened to come from.
+api.interceptors.response.use(
+  (r) => r,
+  (error) => {
+    if (error?.response?.status === 401) {
+      setToken("");
+      window.dispatchEvent(new Event("postit:unauthorized"));
+    }
+    return Promise.reject(error);
+  }
+);
 
 // FastAPI errors arrive as { detail: "..." } in the response body — axios's
 // own e.message is usually just "Request failed with status code 500",

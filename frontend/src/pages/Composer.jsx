@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { toPng } from "html-to-image";
+import JSZip from "jszip";
 import { api, pollTask, apiErrorMessage } from "@/lib/api";
 import { useTextModels } from "@/lib/useTextModels";
 import { useBrandKit, useBrandKits, activeColors } from "@/lib/useBrand";
-import { PLATFORM_LIST } from "@/lib/platforms";
+import { PLATFORM_LIST, platformOf } from "@/lib/platforms";
 import { usePlatformSpecs, specFor, aspectFor, FORMAT_LABEL, FALLBACK_SPECS } from "@/lib/platformSpecs";
 import { openHistory } from "@/lib/historyBus";
 import { PostPreview } from "@/components/PostPreview";
@@ -58,6 +59,9 @@ export default function Composer() {
   );
   const [assets, setAssets] = useState([]);
   const [hashtags, setHashtags] = useState([]);
+  const [altText, setAltText] = useState("");
+  const [contentByPlatform, setContentByPlatform] = useState({});
+  const [platformTab, setPlatformTab] = useState(null);
   const [mediaUrl, setMediaUrl] = useState(state.mediaUrl || "");
   const [mediaType, setMediaType] = useState(state.mediaType || "");
   const [scheduleAt, setScheduleAt] = useState("");
@@ -99,6 +103,8 @@ export default function Composer() {
     setTitle(plan.title || "Untitled post");
     setContent(plan.caption || "");
     setHashtags(plan.hashtags || []);
+    setAltText(plan.alt_text || "");
+    setContentByPlatform({});
     setFormat(plan.format || "single");
     setAssets(plan.assets || []);
     setActive(0);
@@ -113,6 +119,8 @@ export default function Composer() {
         setFormat(data.format || "single");
         setAssets(data.assets || []);
         setHashtags(data.hashtags || []);
+        setAltText(data.alt_text || "");
+        setContentByPlatform(data.content_by_platform || {});
         setMediaUrl((data.media_urls || [])[0] || ""); setMediaType(data.media_type || "");
         if (data.brand_kit_id) setBrandKitId(data.brand_kit_id);
         if (data.scheduled_time) setScheduleAt(toLocalInput(data.scheduled_time));
@@ -342,9 +350,42 @@ export default function Composer() {
     } catch (e) { toast.error(apiErrorMessage(e, "Export failed.")); }
   };
 
+  // Every slide, one at a time onto the same card ref used for a single
+  // download, zipped together — the only way to get a whole carousel or
+  // reel storyboard out of the browser as files.
+  const [downloadingAll, setDownloadingAll] = useState(false);
+  const downloadAllSlides = async () => {
+    if (assets.length < 2) return;
+    const startedOn = active;
+    setDownloadingAll(true);
+    try {
+      const zip = new JSZip();
+      for (let i = 0; i < assets.length; i++) {
+        setActive(i);
+        await new Promise((r) => setTimeout(r, 260)); // let the card re-render for slide i
+        if (!cardRef.current) continue;
+        const dataUrl = await toPng(cardRef.current, { pixelRatio: 2, cacheBust: true });
+        zip.file(`slide-${String(i + 1).padStart(2, "0")}.png`, dataUrl.split(",")[1], { base64: true });
+      }
+      const blob = await zip.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `${(title || "post").replace(/\W+/g, "-").toLowerCase()}-slides.zip`; a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Downloaded all ${assets.length} slides as a zip`);
+    } catch (e) { toast.error(apiErrorMessage(e, "Export failed.")); }
+    finally { setActive(startedOn); setDownloadingAll(false); }
+  };
+
   const buildPayload = (status) => ({
     title: title || (content ? content.slice(0, 40) : "Untitled post"),
-    content, platforms, status, format, assets, hashtags,
+    content, platforms, status, format, assets, hashtags, alt_text: altText,
+    // Only platforms someone actually customized are stored — everyone
+    // else falls back to `content`, so a single-platform post (the common
+    // case) round-trips with an empty object, exactly as before this existed.
+    content_by_platform: Object.fromEntries(
+      Object.entries(contentByPlatform).filter(([k, v]) => platforms.includes(k) && v.trim())
+    ),
     media_urls: mediaUrl ? [mediaUrl] : [],
     media_type: mediaType || null,
     brand_kit_id: brandKitId || null,
@@ -410,6 +451,62 @@ export default function Composer() {
           })}
         </div>
 
+        {/* Posting to more than one platform at once means one caption is
+            usually wrong for at least one of them — a 2200-char Instagram
+            caption saved verbatim as an X post, say. Unset platforms keep
+            using the caption above; nothing changes for a single-platform post. */}
+        {platforms.length > 1 && (
+          <div className="mt-4 rounded-lg border border-white/10 bg-[#0A0A0A] p-3" data-testid="composer-per-platform">
+            <div className="flex flex-wrap items-center justify-between gap-1">
+              <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Per-platform caption</span>
+              <span className="text-[10px] text-zinc-600">Unset platforms use the caption below</span>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {platforms.map((key) => {
+                const p = platformOf(key);
+                const s = specFor(specs, key);
+                const Icon = p.icon;
+                const custom = contentByPlatform[key]?.trim();
+                const text = custom || content;
+                const over = text.length > (s.char_limit || 99999);
+                return (
+                  <button key={key} onClick={() => setPlatformTab(platformTab === key ? null : key)}
+                    data-testid={`composer-platform-tab-${key}`}
+                    className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${platformTab === key ? "border-iris bg-iris/10 text-iris" : over ? "border-magic/40 text-magic" : "border-white/10 text-zinc-400 hover:text-white"}`}>
+                    <Icon size={11} /> {p.name}
+                    {!!custom && <span className="h-1 w-1 rounded-full bg-current" />}
+                  </button>
+                );
+              })}
+            </div>
+            {platformTab && platforms.includes(platformTab) && (() => {
+              const s = specFor(specs, platformTab);
+              const value = contentByPlatform[platformTab] ?? "";
+              const effective = value.trim() ? value : content;
+              const over = effective.length > (s.char_limit || 99999);
+              return (
+                <div className="mt-2">
+                  <textarea value={value} onChange={(e) => setContentByPlatform((c) => ({ ...c, [platformTab]: e.target.value }))}
+                    rows={4} data-testid="composer-platform-caption"
+                    placeholder={`Same as the caption below — type here to write a ${platformOf(platformTab).name}-only version`}
+                    className="w-full resize-none rounded-lg border border-white/10 bg-[#121212] px-3 py-2 text-sm leading-relaxed text-white outline-none focus:border-iris placeholder:text-zinc-600" />
+                  <div className="mt-1 flex items-center justify-between text-[10px]">
+                    <span className={over ? "text-magic" : "text-zinc-600"} data-testid="composer-platform-caption-count">
+                      {effective.length} / {s.char_limit} for {platformOf(platformTab).name}
+                    </span>
+                    {!!value.trim() && (
+                      <button onClick={() => setContentByPlatform((c) => { const n = { ...c }; delete n[platformTab]; return n; })}
+                        data-testid="composer-platform-caption-clear" className="text-zinc-600 hover:text-white">
+                        Use default caption
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
         <label className="mt-5 block font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">
           Format · {pspec.label} · {aspect}
         </label>
@@ -453,6 +550,15 @@ export default function Composer() {
             </div>
 
             <HashtagBar hashtags={hashtags} setHashtags={setHashtags} max={pspec.hashtags} />
+
+            <label className="mt-4 block">
+              <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">
+                Alt text <span className="normal-case tracking-normal text-zinc-700">(screen readers &amp; accessibility)</span>
+              </span>
+              <input value={altText} onChange={(e) => setAltText(e.target.value)} data-testid="composer-alt-text"
+                placeholder="Describe the visual for someone who can't see it…"
+                className="mt-1.5 w-full rounded-lg border border-white/10 bg-[#0A0A0A] px-3 py-2 text-sm text-white outline-none focus:border-iris placeholder:text-zinc-600" />
+            </label>
 
             <div className="mt-4 flex flex-wrap items-center gap-2">
               <input value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="Topic or brief…"
@@ -641,6 +747,14 @@ export default function Composer() {
                         className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
                         <Download size={13} /> PNG
                       </Button>
+                      {assets.length > 1 && (
+                        <Button variant="secondary" onClick={downloadAllSlides} disabled={downloadingAll}
+                          data-testid="composer-slide-download-all"
+                          className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
+                          {downloadingAll ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+                          {downloadingAll ? "Zipping…" : `All ${assets.length}`}
+                        </Button>
+                      )}
                       {activeAsset.spec.elements ? (
                         <Button variant="ghost" onClick={() => resetSlideLayout(active)} data-testid="composer-slide-reset-layout"
                           className="h-8 gap-1.5 px-2.5 text-xs text-zinc-500 hover:text-white">
@@ -743,9 +857,14 @@ export default function Composer() {
             </div>
           )}
 
-          {previews.map((k) => (
-            <PostPreview key={k} platformKey={k} content={fullText} mediaUrl={mediaUrl} mediaType={mediaType} />
-          ))}
+          {previews.map((k) => {
+            // A platform with its own caption previews with THAT text (plus
+            // the shared hashtags) — otherwise every preview would show the
+            // default caption even for the one platform that overrode it.
+            const custom = contentByPlatform[k]?.trim();
+            const text = custom ? [custom, hashtags.join(" ")].filter(Boolean).join("\n\n") : fullText;
+            return <PostPreview key={k} platformKey={k} content={text} mediaUrl={mediaUrl} mediaType={mediaType} />;
+          })}
         </div>
       </div>
 

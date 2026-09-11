@@ -17,6 +17,31 @@ export const THEMES = {
 
 export const THEME_LIST = Object.values(THEMES);
 
+// A brand's own picked colors can end up too close to each other — a dark
+// primary next to a dark secondary is a real palette people ship. This is
+// the one guardrail on top of "use whatever the kit says": body and heading
+// text stays legible against its own background, whatever the palette,
+// falling back to plain black or white (whichever contrasts more) rather
+// than silently rendering unreadable text.
+function _hexToRgb(hex) {
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec((hex || "").trim());
+  return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : null;
+}
+function _relativeLuminance([r, g, b]) {
+  const chan = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+  return 0.2126 * chan(r) + 0.7152 * chan(g) + 0.0722 * chan(b);
+}
+function _contrastRatio(hexA, hexB) {
+  const a = _hexToRgb(hexA), b = _hexToRgb(hexB);
+  if (!a || !b) return 21; // not a plain hex (e.g. a gradient) — nothing to check, leave it alone
+  const [l1, l2] = [_relativeLuminance(a), _relativeLuminance(b)].sort((x, y) => y - x);
+  return (l1 + 0.05) / (l2 + 0.05);
+}
+export function readableColor(hex, bgHex, minRatio = 4.5) {
+  if (_contrastRatio(hex, bgHex) >= minRatio) return hex;
+  return _contrastRatio("#FFFFFF", bgHex) >= _contrastRatio("#000000", bgHex) ? "#FFFFFF" : "#000000";
+}
+
 // The brand kit becomes a fifth theme, so "on brand" is one click rather than a
 // palette the user has to re-key into every graphic. Its colors come from
 // whichever of the kit's two palettes (dark/light) is currently active, and it
@@ -26,7 +51,7 @@ export function themeFor(key, brand) {
     const c = activeColors(brand);
     return {
       key: "brand", label: brand.name || "Brand",
-      bg: c.bg, fg: c.fg, sub: c.sub, accent: c.accent, pattern: "dots",
+      bg: c.bg, fg: readableColor(c.fg, c.bg), sub: readableColor(c.sub, c.bg), accent: c.accent, pattern: "dots",
       fonts: brand.fonts,
     };
   }
