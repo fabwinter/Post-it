@@ -76,6 +76,17 @@ export const ASPECT_CLASS = {
   "1.91:1": "aspect-[1.91/1]",
 };
 
+// The same ratios as a number (height / width), for the places that have to
+// size a card in real pixels — the full-screen canvas fits the card to the
+// stage, which a CSS aspect class can't do on its own.
+export const ASPECT_RATIO = {
+  "1:1": 1,
+  "4:5": 5 / 4,
+  "9:16": 16 / 9,
+  "16:9": 9 / 16,
+  "1.91:1": 1 / 1.91,
+};
+
 const wordmark = (brand) => (brand?.handle || brand?.name || "CREATEOS").toUpperCase();
 
 export const VisualCard = forwardRef(function VisualCard(

@@ -10,8 +10,9 @@ import { usePlatformSpecs, specFor, aspectFor, FORMAT_LABEL, FALLBACK_SPECS } fr
 import { openHistory } from "@/lib/historyBus";
 import { PostPreview } from "@/components/PostPreview";
 import { ModelPicker } from "@/components/ModelPicker";
-import { VisualCard, ASPECT_CLASS, THEME_LIST, themeFor } from "@/components/VisualCard";
+import { VisualCard, ASPECT_CLASS, ASPECT_RATIO, THEME_LIST, themeFor } from "@/components/VisualCard";
 import { SlideEditor } from "@/components/SlideEditor";
+import { CanvasEditor } from "@/components/CanvasEditor";
 import { MediaPicker } from "@/components/MediaPicker";
 import { useTemplateStyles } from "@/lib/templateStyles";
 import { useCustomTemplates } from "@/lib/useCustomTemplates";
@@ -26,7 +27,7 @@ import {
   Plus, ChevronLeft, ChevronRight, Download, ImagePlus, History, Hash, Film, Layers,
   Search, Wand, Palette, Upload, FileText, Image as ImageIcon, Presentation,
   Type, Square, LayoutTemplate, Undo2, Redo2, Copy, ChevronsUp, ChevronsDown, AlignLeft, AlignCenter, AlignRight,
-  Shapes, CopyPlus, BookmarkPlus,
+  Shapes, CopyPlus, BookmarkPlus, Maximize2,
 } from "lucide-react";
 
 // Pexels only accepts these three; map a platform's aspect onto the closest one
@@ -81,6 +82,7 @@ export default function Composer() {
   const [renderingSlide, setRenderingSlide] = useState(null);
   const [stockTarget, setStockTarget] = useState(null); // "slide-image" | "slide-video" | "media" | "element-new" | "element-replace"
   const [libraryOpen, setLibraryOpen] = useState(false);
+  const [canvasOpen, setCanvasOpen] = useState(false);
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [styleTemplate, setStyleTemplate] = useState(state.applyTemplate || "hooks");
   const [restyling, setRestyling] = useState(false);
@@ -123,6 +125,10 @@ export default function Composer() {
   const pspec = specFor(specs, primary);
   const aspect = aspectFor(specs, primary, format);
   const aspectCls = ASPECT_CLASS[aspect] || "aspect-square";
+  // How wide the inline canvas is allowed to get. It takes the flexible
+  // grid track now, so the only thing that has to be capped is height —
+  // a 9:16 card at the full column width would be taller than the screen.
+  const inlineCanvasMaxW = Math.round(Math.min(560, 520 / (ASPECT_RATIO[aspect] || 1)));
   const isDeck = format === "carousel" || format === "reel" || format === "thread";
 
   // Applying a plan is the whole idea→post shortcut landing: copy, hashtags,
@@ -827,7 +833,7 @@ export default function Composer() {
           </div>
 
           {/* Visual block */}
-          <div className="rounded-xl border border-white/10 bg-[#121212] p-5" data-testid="composer-visuals">
+          <div className="rounded-xl border border-white/10 bg-[#121212] p-3 sm:p-5" data-testid="composer-visuals">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">
                 {format === "reel" ? "Storyboard" : format === "carousel" ? "Slides" : "Visual"}
@@ -889,33 +895,35 @@ export default function Composer() {
                     instead of living in separate page columns, so dragging an
                     element and adjusting its properties happen inches apart. */}
                 {activeAsset && (
-                  <div className="mt-4 rounded-lg border border-white/10 bg-[#0A0A0A] p-4">
+                  <div className="mt-4 rounded-lg border border-white/10 bg-[#0A0A0A] p-2.5 sm:p-4">
                     <div className="flex items-center justify-between">
                       <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">
                         {activeAsset.type === "scene" ? `Scene ${active + 1}` : activeAsset.spec.template === "cover" ? "Cover slide" : `Slide ${active + 1}`}
                       </span>
                       <div className="flex gap-1">
+                        <IconBtn onClick={() => setCanvasOpen(true)} testid="composer-open-canvas" title="Edit full screen"><Maximize2 size={14} /></IconBtn>
                         <IconBtn onClick={() => moveSlide(active, -1)} disabled={active === 0} testid="composer-slide-left"><ChevronLeft size={14} /></IconBtn>
                         <IconBtn onClick={() => moveSlide(active, 1)} disabled={active === assets.length - 1} testid="composer-slide-right"><ChevronRight size={14} /></IconBtn>
                         <IconBtn onClick={() => removeSlide(active)} testid="composer-slide-remove" danger><X size={14} /></IconBtn>
                       </div>
                     </div>
 
-                    <div className="mt-4 md:grid md:grid-cols-[200px_minmax(0,1fr)] md:items-start md:gap-5">
-                      {/* Canvas — a hard-capped 200px grid track, so it can
-                          never push the controls track wider than the space
-                          actually left in this column (a flex `flex-1` alone
-                          let content overflow the real column budget on
-                          common laptop widths and silently steal clicks
-                          meant for the right-hand platform-preview column). */}
-                      <div className="mx-auto w-full max-w-[240px] md:mx-0 md:w-full">
+                    <div className="mt-4 md:grid md:grid-cols-[minmax(0,1fr)_minmax(230px,280px)] md:items-start md:gap-5">
+                      {/* Canvas — the flexible track, so it grows into
+                          whatever the column actually has, capped only by
+                          how tall this aspect may get. Both tracks use
+                          minmax(0, …) so neither can be forced wider than
+                          the column by its own content (a flex `flex-1`
+                          could, and silently stole clicks meant for the
+                          right-hand platform-preview column). */}
+                      <div className="mx-auto w-full md:mx-0" style={{ maxWidth: inlineCanvasMaxW }}>
                         {activeAsset.spec.elements ? (
-                          <SlideEditor spec={activeAsset.spec} brand={brand} aspectCls={aspectCls} cardRef={cardRef}
+                          <SlideEditor spec={activeAsset.spec} brand={brand} aspectCls={aspectCls} cardRef={canvasOpen ? null : cardRef}
                             selectedId={selectedElementId} onSelect={setSelectedElementId}
                             onChangeElement={patchElement} />
                         ) : (
                           <div ref={previewBoxRef} className={`${aspectCls} w-full overflow-hidden rounded-xl`}>
-                            <div ref={cardRef} className="h-full w-full">
+                            <div ref={canvasOpen ? null : cardRef} className="h-full w-full">
                               <VisualCard spec={activeAsset.spec} brand={brand} scale={previewScale} />
                             </div>
                           </div>
@@ -1010,6 +1018,10 @@ export default function Composer() {
                               {downloadingAll ? "Zipping…" : `All ${assets.length}`}
                             </Button>
                           )}
+                          <Button variant="secondary" onClick={() => setCanvasOpen(true)} data-testid="composer-edit-canvas"
+                            className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
+                            <Maximize2 size={13} /> Edit on canvas
+                          </Button>
                           {activeAsset.spec.elements ? (
                             <Button variant="ghost" onClick={() => resetSlideLayout(active)} data-testid="composer-slide-reset-layout"
                               className="h-8 gap-1.5 px-2.5 text-xs text-zinc-500 hover:text-white">
@@ -1105,6 +1117,30 @@ export default function Composer() {
         onSelect={onStockPick}
       />
       <ElementsLibrary open={libraryOpen} onOpenChange={setLibraryOpen} onPick={addLibraryElement} />
+
+      {/* Full-screen canvas — the same slide, the same element state, but
+          the card gets the whole viewport and every control is a thumb-sized
+          button on a rail. It sits at z-40 so the stock picker and elements
+          library (z-50 sheets) still open over the top of it. */}
+      {canvasOpen && activeAsset && (
+        <CanvasEditor
+          spec={activeAsset.spec} brand={brand} aspect={aspect} aspectCls={aspectCls} cardRef={cardRef}
+          slides={assets} slideCount={assets.length} activeIndex={active}
+          onSelectSlide={(i) => { setActive(i); setSelectedElementId(null); }}
+          onAddSlide={addSlide}
+          selectedId={selectedElementId} onSelect={setSelectedElementId} onChangeElement={patchElement}
+          onAdd={addElementToSlide} onRemove={removeElement} onDuplicate={duplicateElement}
+          onReorder={reorderElement} onApplyAll={applyElementToAllSlides}
+          onAddStock={() => setStockTarget("element-new")}
+          onBrowseStock={() => setStockTarget("element-replace")}
+          onOpenLibrary={() => setLibraryOpen(true)}
+          bgColor={activeAsset.spec.bg_color || themeFor(activeAsset.spec.theme, brand).bg}
+          onChangeBg={(hex) => patchSlide(active, { bg_color: hex })}
+          onEnterLayoutEdit={() => enterLayoutEdit(active)}
+          onUndo={undo} onRedo={redo} canUndo={canUndo} canRedo={canRedo}
+          onClose={() => setCanvasOpen(false)}
+        />
+      )}
     </div>
   );
 }
