@@ -3,13 +3,12 @@ import { toPng } from "html-to-image";
 import { api, apiErrorMessage } from "@/lib/api";
 import { useBrandKits } from "@/lib/useBrand";
 import { BRAND_FONTS, groupFontsByCategory } from "@/lib/fonts";
-import { VisualCard } from "@/components/VisualCard";
 import { BrandGuidelineDoc } from "@/components/BrandGuidelineDoc";
 import { KnowledgeBase } from "@/components/KnowledgeBase";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
-  Palette, Save, Loader2, Plus, X, Upload, ImageOff, Sparkles, Image as ImageIcon,
+  Save, Loader2, Plus, X, Upload, ImageOff, Sparkles, Image as ImageIcon,
   FileText, Link as LinkIcon, Check, Shapes, Star, Trash2, Moon, Sun, Type, Download, ScrollText,
 } from "lucide-react";
 
@@ -272,8 +271,7 @@ export default function BrandKit() {
         </button>
       </div>
 
-      <div className="mt-5 grid gap-6 lg:grid-cols-[1fr_minmax(0,340px)]">
-        <div className="space-y-5">
+      <div className="mt-5 space-y-5">
           <section className="rounded-xl border border-white/10 bg-[#121212] p-5">
             <h3 className="font-display text-base font-semibold">Identity</h3>
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
@@ -519,24 +517,6 @@ export default function BrandKit() {
               rules the writer should draw on.
             </section>
           )}
-        </div>
-
-        <div className="lg:sticky lg:top-6 lg:self-start">
-          <div className="rounded-xl border border-white/10 bg-[#121212] p-5">
-            <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">
-              <Palette size={13} className="text-lime" /> Live preview
-            </div>
-            <div className="mt-4 aspect-square w-full overflow-hidden rounded-xl" data-testid="brand-preview">
-              <VisualCard brand={form} spec={{
-                template: "cover", theme: "brand", index: 0, total: 1,
-                title: form.name && form.name !== "Default brand" ? `${form.name} — this is your cover slide` : "This is your cover slide",
-              }} />
-            </div>
-            <p className="mt-3 text-xs leading-relaxed text-zinc-600">
-              Pick the <span className="text-zinc-400">Brand</span> theme anywhere a graphic is generated to render it in these colours.
-            </p>
-          </div>
-        </div>
       </div>
 
       <section className="mt-6 rounded-xl border border-white/10 bg-[#121212] p-5" data-testid="brand-guideline-preview">
