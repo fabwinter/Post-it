@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { toPng } from "html-to-image";
 import { api, apiErrorMessage } from "@/lib/api";
 import { useBrandKits } from "@/lib/useBrand";
-import { BRAND_FONTS, groupFontsByCategory } from "@/lib/fonts";
+import { BRAND_FONTS, groupFontsByCategory, fontStack, useAllFontsLoaded } from "@/lib/fonts";
 import { BrandGuidelineDoc } from "@/components/BrandGuidelineDoc";
 import { KnowledgeBase } from "@/components/KnowledgeBase";
 import { Button } from "@/components/ui/button";
@@ -593,6 +593,7 @@ const LogoVariantUpload = ({ label, url, uploading, dark, onUpload, onUrlChange,
 };
 
 const FontField = ({ label, value, onChange, testid, className = "" }) => {
+  useAllFontsLoaded();
   // A detected font from brand analysis might not be in the curated list —
   // keep it selectable rather than silently dropping it.
   const options = BRAND_FONTS.some((f) => f.key === value) || !value
@@ -606,7 +607,7 @@ const FontField = ({ label, value, onChange, testid, className = "" }) => {
         className={`${inputCls} [color-scheme:dark]`} style={{ fontFamily: "inherit" }}>
         {groups.map(({ category, fonts }) => (
           <optgroup key={category} label={category}>
-            {fonts.map((f) => <option key={f.key} value={f.key}>{f.label || f.key}</option>)}
+            {fonts.map((f) => <option key={f.key} value={f.key} style={{ fontFamily: fontStack(f.key) }}>{f.label || f.key}</option>)}
           </optgroup>
         ))}
       </select>
