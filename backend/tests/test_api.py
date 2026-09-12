@@ -257,7 +257,16 @@ b = r.json()
 check("build-post format", b["format"] == "carousel", b)
 check("build-post normalises hashtags", b["hashtags"][0] == "#creators", b["hashtags"])
 check("build-post merges brand hashtag", "#acme" in b["hashtags"], b["hashtags"])
-check("build-post theme", b["theme"] == "chalkboard", b["theme"])
+# Acme is the default brand kit here (see line ~143) — a real saved kit
+# wins over whatever theme the model happened to pick, so its own
+# colors/logo/fonts actually show up by default instead of only after a
+# manual click on the brand swatch in the Composer.
+check("build-post defaults to the real brand kit over the model's theme pick", b["theme"] == "brand", b["theme"])
+
+r = c.post("/api/ai/build-post", json={"topic": "shipping weekly", "platform": "instagram", "format": "carousel",
+                                        "slides": 3, "use_brand": False})
+check("build-post honors the model's own theme when brand is opted out", r.json()["theme"] == "chalkboard", r.json()["theme"])
+
 check("build-post assets = cover + slides", len(b["assets"]) == 4, [a["spec"]["template"] for a in b["assets"]])
 check("cover first", b["assets"][0]["spec"]["template"] == "cover", b["assets"][0])
 check("slide indices", [a["spec"]["index"] for a in b["assets"]] == [0, 1, 2, 3], b["assets"])
