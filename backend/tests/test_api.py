@@ -965,6 +965,71 @@ check("static layout copy is kept as authored", any(e.get("text") == "SWIPE →"
 check("empty roles are dropped rather than left as blank boxes",
       all((e.get("text") or "").strip() for e in cover_els if e["type"] == "text"), cover_els)
 
+# --- templates from the Composer, and editing a saved template in place ---
+def _text_el(id_, text, font, size, weight, color, y):
+    return {"id": id_, "type": "text", "text": text, "x": 8, "y": y, "w": 84, "h": 18,
+            "fontFamily": font, "fontSize": size, "fontWeight": weight, "color": color, "align": "left"}
+
+composer_slides_v1 = [
+    {"template": "cover", "heading": "Cover", "title": "Cover", "body": "", "bg_color": "#111111",
+     "elements": [_text_el("e1", "Cover", "Poppins", 32, 800, "#ffffff", 30)]},
+    {"template": "slide", "heading": "Point one", "body": "Detail one", "bg_color": "#111111",
+     "elements": [_text_el("e2", "Point one", "Poppins", 24, 800, "#ffffff", 20),
+                  _text_el("e3", "Detail one", "Poppins", 16, 400, "#cccccc", 48)]},
+]
+CHAT_REPLY["value"] = "not valid json"  # falls back to the real outline text, not an AI abstraction
+r = c.post("/api/templates/from-composer", json={"name": "My editable template", "format": "carousel", "theme": "midnight", "slides": composer_slides_v1})
+check("from-composer saves ok", r.status_code == 200, r.text)
+tpl = r.json()
+composer_template_id = tpl["id"]
+check("from-composer saves a real layout", bool(tpl["layouts"].get("cover")), tpl["layouts"])
+check("from-composer saves the slide's own background color", tpl["bg_colors"].get("cover") == "#111111", tpl["bg_colors"])
+check("from-composer's real font reaches the layout", any(e.get("fontFamily") == "Poppins" for e in tpl["layouts"]["cover"]), tpl["layouts"])
+
+# Editing: a different theme, background, font, and one more slide than before.
+composer_slides_v2 = [
+    {"template": "cover", "heading": "New cover", "title": "New cover", "body": "", "bg_color": "#ffe600",
+     "elements": [_text_el("e1", "New cover", "Lora", 32, 800, "#111111", 30)]},
+    {"template": "slide", "heading": "Point one", "body": "Detail one", "bg_color": "#ffe600",
+     "elements": [_text_el("e2", "Point one", "Lora", 24, 800, "#111111", 20)]},
+    {"template": "slide", "heading": "Point two", "body": "Detail two", "bg_color": "#ffe600",
+     "elements": [_text_el("e4", "Point two", "Lora", 24, 800, "#111111", 20)]},
+]
+r = c.put(f"/api/templates/custom/{composer_template_id}",
+          json={"name": "Renamed template", "format": "carousel", "theme": "whiteboard", "slides": composer_slides_v2})
+check("template update succeeds", r.status_code == 200, r.text)
+updated = r.json()
+check("update overwrites the name", updated["name"] == "Renamed template", updated)
+check("update overwrites the theme (style)", updated["theme"] == "whiteboard", updated)
+check("update overwrites the background color", updated["bg_colors"]["cover"] == "#ffe600", updated["bg_colors"])
+check("update overwrites the font", any(e.get("fontFamily") == "Lora" for e in updated["layouts"]["cover"]), updated["layouts"])
+check("update changes the slide count", len(updated["slides"]) == 3, updated["slides"])
+check("updating a template edits it in place rather than creating a new one", updated["id"] == composer_template_id, updated)
+
+listed_after_update = c.get("/api/templates/custom").json()
+check("editing didn't leave a duplicate row behind",
+      sum(1 for t in listed_after_update if t["id"] == composer_template_id) == 1, listed_after_update)
+
+r = c.put("/api/templates/custom/starter:bold-hook", json={"format": "carousel", "slides": []})
+check("starter templates can't be edited", r.status_code == 400, r.text)
+r = c.put("/api/templates/custom/does-not-exist", json={"format": "carousel", "slides": []})
+check("updating an unknown template 404s", r.status_code == 404, r.text)
+
+# A post built from the edited template reflects the edit, not the original.
+CHAT_REPLY["value"] = json.dumps({
+    "format": "carousel", "title": "T", "caption": "cap", "hashtags": [],
+    "visual": {"style": "carousel", "title": "Cover", "slides": [{"heading": "h1", "body": "b1"}, {"heading": "h2", "body": "b2"}]},
+})
+r = c.post("/api/ai/build-post", json={"topic": "x", "platform": "instagram", "format": "carousel",
+                                        "custom_template_id": composer_template_id, "use_brand": False})
+built = r.json()
+cover_els = built["assets"][0]["spec"].get("elements") or []
+check("a post built from the edited template uses the edited font", any(e.get("fontFamily") == "Lora" for e in cover_els), cover_els)
+check("...and the edited background color", built["assets"][0]["spec"].get("bg_color") == "#ffe600", built["assets"][0]["spec"])
+
+r = c.delete(f"/api/templates/custom/{composer_template_id}")
+check("cleanup: the editable template can be deleted", r.status_code == 200, r.text)
+
 r = c.delete(f"/api/templates/custom/{pptx_template_id}")
 check("custom template delete succeeds", r.status_code == 200, r.text)
 check("deleted template is gone from the list", all(t["id"] != pptx_template_id for t in c.get("/api/templates/custom").json()))
