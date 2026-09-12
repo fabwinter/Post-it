@@ -70,7 +70,7 @@ export const BrandGuidelineDoc = forwardRef(function BrandGuidelineDoc({ brand, 
             )}
           </div>
           <div>
-            <div style={{ fontFamily: displayFont, fontWeight: 800, fontSize: f(24), lineHeight: 1.1 }}>{hasName ? brand.name : "[Your Brand Name]"}</div>
+            <div data-testid="brand-guideline-doc-name" style={{ fontFamily: displayFont, fontWeight: 800, fontSize: f(24), lineHeight: 1.1 }}>{hasName ? brand.name : "[Your Brand Name]"}</div>
             <div style={{ fontSize: f(10), letterSpacing: "0.12em", textTransform: "uppercase", color: "#6b7280", marginTop: f(2) }}>Brand Guidelines — Quick Reference</div>
           </div>
         </div>
@@ -133,7 +133,7 @@ export const BrandGuidelineDoc = forwardRef(function BrandGuidelineDoc({ brand, 
         {/* Right column */}
         <div>
           <SectionLabel n="03" title="Typography" f={f} />
-          <div style={{ fontFamily: displayFont, fontWeight: 800, fontSize: f(22), lineHeight: 1.2 }}>Aa</div>
+          <div data-testid="brand-guideline-doc-h1" style={{ fontFamily: displayFont, fontWeight: 800, fontSize: f(22), lineHeight: 1.2 }}>Aa</div>
           <div style={{ fontSize: f(8), color: "#9ca3af" }}>Header / H1 — {brand?.fonts?.display || "Inter"} Bold</div>
           <div style={{ fontFamily: displayFont, fontWeight: 700, fontSize: f(16), marginTop: f(8), lineHeight: 1.2 }}>Aa</div>
           <div style={{ fontSize: f(8), color: "#9ca3af" }}>Subhead / H2 — {brand?.fonts?.display || "Inter"} Bold</div>
