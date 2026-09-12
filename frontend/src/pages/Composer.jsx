@@ -16,6 +16,7 @@ import { MediaPicker } from "@/components/MediaPicker";
 import { useTemplateStyles } from "@/lib/templateStyles";
 import { useCustomTemplates } from "@/lib/useCustomTemplates";
 import { elementsFromSpec, newElement } from "@/lib/slideElements";
+import { materializeTemplateSlides } from "@/lib/templateEdit";
 import { BRAND_FONTS, groupFontsByCategory } from "@/lib/fonts";
 import { ElementsLibrary } from "@/components/ElementsLibrary";
 import { Button } from "@/components/ui/button";
@@ -94,6 +95,27 @@ export default function Composer() {
   // Only templates built for the currently chosen format make sense to build
   // from — a single-image template has nothing to offer a carousel.
   const filteredCustomTemplates = customTemplates.filter((t) => t.format === format);
+
+  // Editing an existing saved template (opened from the Template Library's
+  // "Edit" button) rather than drafting a post: the deck below is the
+  // template's own layout materialized into real editable slides, and
+  // "Save changes" overwrites that same template instead of creating a
+  // new post or a new template.
+  const [editingTemplateId, setEditingTemplateId] = useState(state.editTemplateId || null);
+  const [editingTemplateName, setEditingTemplateName] = useState("");
+  const [savingTemplateEdit, setSavingTemplateEdit] = useState(false);
+  const templateEditLoaded = useRef(false);
+  useEffect(() => {
+    if (!editingTemplateId || templateEditLoaded.current || customTemplatesLoading) return;
+    const tpl = customTemplates.find((t) => t.id === editingTemplateId);
+    if (!tpl) { templateEditLoaded.current = true; setEditingTemplateId(null); toast.error("That template no longer exists."); return; }
+    templateEditLoaded.current = true;
+    setFormat(tpl.format);
+    setEditingTemplateName(tpl.name);
+    setAssets(materializeTemplateSlides(tpl));
+    setActive(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingTemplateId, customTemplates, customTemplatesLoading]);
 
   const primary = platforms[0] || "instagram";
   const pspec = specFor(specs, primary);
@@ -402,24 +424,51 @@ export default function Composer() {
     setLibraryOpen(false);
   };
 
-  // Saves the deck currently open here as a reusable template — the outline
-  // plus, for any slide that's been customized, its actual freeform layout —
-  // so "build whole post" can start from it next time instead of from a
-  // blank AI guess.
+  // Saves the deck currently open here as a NEW reusable template — the
+  // outline plus, for any slide that's been customized, its actual freeform
+  // layout and background color — so "build whole post" can start from it
+  // next time instead of from a blank AI guess.
+  const templateSlidesPayload = () => assets.map((a) => ({
+    template: a.spec.template, heading: a.spec.heading, title: a.spec.title,
+    body: a.spec.body, elements: a.spec.elements, bg_color: a.spec.bg_color,
+  }));
+
   const saveAsTemplate = async () => {
     if (assets.length === 0) { toast.error("Nothing to save yet — add a slide first."); return; }
-    const name = window.prompt("Name this template", title !== "Untitled post" ? title : "");
+    const name = window.prompt("Name this template", editingTemplateName || (title !== "Untitled post" ? title : ""));
     if (!name || !name.trim()) return;
     setSavingTemplate(true);
     try {
-      const slides = assets.map((a) => ({
-        template: a.spec.template, heading: a.spec.heading, title: a.spec.title,
-        body: a.spec.body, elements: a.spec.elements,
-      }));
-      await api.post("/templates/from-composer", { name: name.trim(), format, theme: activeAsset?.spec?.theme || "midnight", slides });
+      await api.post("/templates/from-composer", {
+        name: name.trim(), format, theme: activeAsset?.spec?.theme || "midnight", slides: templateSlidesPayload(),
+      });
       await reloadCustomTemplates();
       toast.success(`Saved "${name.trim()}" as a template`);
     } catch (e) { toast.error(apiErrorMessage(e, "Couldn't save template.")); } finally { setSavingTemplate(false); }
+  };
+
+  // Overwrites the template currently being edited in place — the edit
+  // counterpart to saveAsTemplate's create. Colors, fonts, layout and slide
+  // count are all whatever the deck below currently looks like.
+  const saveTemplateChanges = async () => {
+    if (!editingTemplateId) return;
+    if (assets.length === 0) { toast.error("A template needs at least one slide."); return; }
+    setSavingTemplateEdit(true);
+    try {
+      await api.put(`/templates/custom/${editingTemplateId}`, {
+        name: editingTemplateName.trim() || undefined, format,
+        theme: activeAsset?.spec?.theme || "midnight", slides: templateSlidesPayload(),
+      });
+      await reloadCustomTemplates();
+      toast.success("Template updated");
+    } catch (e) { toast.error(apiErrorMessage(e, "Couldn't save changes.")); } finally { setSavingTemplateEdit(false); }
+  };
+
+  const stopEditingTemplate = () => {
+    setEditingTemplateId(null);
+    templateEditLoaded.current = false;
+    setAssets([]);
+    setActive(0);
   };
 
   // A slide's image_prompt is generated art, not a stock lookup — render it and
@@ -555,6 +604,30 @@ export default function Composer() {
           )}
         </div>
       </div>
+
+      {editingTemplateId && (
+        <div className="mt-5 flex flex-wrap items-center gap-3 rounded-xl border border-lime/30 bg-lime/5 p-4" data-testid="composer-editing-template-banner">
+          <LayoutTemplate size={16} className="flex-none text-lime" />
+          <div className="flex-1">
+            <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-lime">Editing template</div>
+            <input value={editingTemplateName} onChange={(e) => setEditingTemplateName(e.target.value)}
+              data-testid="composer-editing-template-name"
+              className="mt-1 w-full max-w-xs rounded-lg border border-white/10 bg-[#0A0A0A] px-2.5 py-1.5 text-sm text-white outline-none focus:border-lime" />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button onClick={saveTemplateChanges} disabled={savingTemplateEdit} data-testid="composer-save-template-changes"
+              className="h-8 gap-1.5 rounded-lg bg-lime px-3 text-xs font-semibold text-[#0A0A0A] hover:bg-lime-hover">
+              {savingTemplateEdit ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />} Save changes
+            </Button>
+            <Button variant="secondary" onClick={saveAsTemplate} disabled={savingTemplate} data-testid="composer-save-template-as-new"
+              className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 text-xs text-white hover:bg-white/10">
+              {savingTemplate ? <Loader2 size={13} className="animate-spin" /> : <BookmarkPlus size={13} />} Save as new
+            </Button>
+            <Button variant="ghost" onClick={stopEditingTemplate} data-testid="composer-stop-editing-template"
+              className="h-8 px-2.5 text-xs text-zinc-400 hover:text-white">Done</Button>
+          </div>
+        </div>
+      )}
 
       {/* Platform + format: everything below adapts to these two */}
       <div className="mt-7 rounded-xl border border-white/10 bg-[#121212] p-5">
@@ -762,7 +835,7 @@ export default function Composer() {
                   <IconBtn onClick={undo} disabled={!canUndo} testid="composer-undo" title="Undo (Ctrl+Z)"><Undo2 size={13} /></IconBtn>
                   <IconBtn onClick={redo} disabled={!canRedo} testid="composer-redo" title="Redo (Ctrl+Shift+Z)"><Redo2 size={13} /></IconBtn>
                 </div>
-                {assets.length > 0 && (
+                {assets.length > 0 && !editingTemplateId && (
                   <Button variant="ghost" onClick={saveAsTemplate} disabled={savingTemplate} data-testid="composer-save-template"
                     className="h-7 gap-1.5 px-2 text-xs text-zinc-400 hover:text-white">
                     {savingTemplate ? <Loader2 size={12} className="animate-spin" /> : <BookmarkPlus size={12} />} Save as template
@@ -869,6 +942,8 @@ export default function Composer() {
                             onApplyAll={applyElementToAllSlides} onOpenLibrary={() => setLibraryOpen(true)}
                             canApplyAll={assets.length > 1}
                             brand={brand}
+                            bgColor={activeAsset.spec.bg_color || themeFor(activeAsset.spec.theme, brand).bg}
+                            onChangeBg={(hex) => patchSlide(active, { bg_color: hex })}
                           />
                         ) : activeAsset.spec.template === "cover" ? (
                           <SlideField label="Cover title" value={activeAsset.spec.title} testid="composer-slide-title"
@@ -1055,7 +1130,7 @@ const SlideField = ({ label, value, onChange, rows, testid }) => (
 
 // The property panel for a slide's freeform elements — shown instead of the
 // fixed heading/body fields once a slide has entered layout-edit mode.
-function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, onRemove, onDuplicate, onReorder, onAddStock, onBrowseStock, onApplyAll, onOpenLibrary, canApplyAll, brand }) {
+function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, onRemove, onDuplicate, onReorder, onAddStock, onBrowseStock, onApplyAll, onOpenLibrary, canApplyAll, brand, bgColor, onChangeBg }) {
   const el = elements.find((x) => x.id === selectedId);
   const fontOptions = brand?.fonts?.display && !BRAND_FONTS.some((f) => f.key === brand.fonts.display)
     ? [{ key: brand.fonts.display, label: `${brand.fonts.display} (brand)` }, ...BRAND_FONTS] : BRAND_FONTS;
@@ -1063,6 +1138,13 @@ function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, 
 
   return (
     <div className="mt-3" data-testid="composer-element-panel">
+      {onChangeBg && (
+        <div className="mb-3 flex items-center gap-2">
+          <label className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">Background</label>
+          <input type="color" value={bgColor || "#0A0A0A"} onChange={(e) => onChangeBg(e.target.value)}
+            data-testid="composer-slide-bg-color" className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent p-0" />
+        </div>
+      )}
       <div className="flex flex-wrap gap-1.5">
         {[{ t: "text", I: Type, l: "Text" }, { t: "image", I: ImageIcon, l: "Image" }, { t: "logo", I: Upload, l: "Logo" }, { t: "shape", I: Square, l: "Shape" }].map(({ t, I, l }) => (
           <Button key={t} variant="secondary" onClick={() => onAdd(t)} data-testid={`composer-add-element-${t}`}

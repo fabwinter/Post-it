@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
   Flame, MessageCircleQuestion, ListOrdered, Swords, GraduationCap, Loader2, Copy, Send, Sparkles, Wand,
-  Upload, FileText, Image as ImageIcon, Presentation, Trash2, LayoutTemplate,
+  Upload, FileText, Image as ImageIcon, Presentation, Trash2, LayoutTemplate, Pencil,
 } from "lucide-react";
 
 const TEMPLATES = [
@@ -80,6 +80,7 @@ export default function Templates() {
   };
 
   const openInComposer = (tpl) => navigate("/composer", { state: { applyCustomTemplateId: tpl.id } });
+  const editTemplate = (tpl) => navigate("/composer", { state: { editTemplateId: tpl.id } });
 
   return (
     <div data-testid="templates-page">
@@ -244,6 +245,12 @@ export default function Templates() {
                     className="h-7 gap-1 rounded-lg bg-lime px-2.5 text-[11px] font-semibold text-[#0A0A0A] hover:bg-lime-hover">
                     <Wand size={12} /> Use
                   </Button>
+                  {!tpl.builtin && (
+                    <Button variant="secondary" onClick={() => editTemplate(tpl)} data-testid={`templates-custom-edit-${tpl.id}`}
+                      className="h-7 gap-1 rounded-lg border border-white/10 bg-white/5 px-2.5 text-[11px] text-white hover:bg-white/10">
+                      <Pencil size={12} /> Edit
+                    </Button>
+                  )}
                   {!tpl.builtin && (
                     <Button variant="secondary" onClick={() => deleteCustomTemplate(tpl)} data-testid={`templates-custom-delete-${tpl.id}`}
                       className="h-7 w-7 rounded-lg border border-white/10 bg-white/5 p-0 text-zinc-400 hover:text-white">

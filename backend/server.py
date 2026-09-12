@@ -2221,12 +2221,15 @@ def _layout_from_elements(elements: List[Dict[str, Any]], is_cover: bool) -> Lis
     return out
 
 
-def _layouts_from_composer_slides(slides: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _layouts_from_composer_slides(slides: List[Dict[str, Any]]) -> (Dict[str, Any], Dict[str, str]):
     """Picks one representative slide per role (cover/slide/outro) — the same
     three roles _apply_template_layouts fills at generation time — from a
-    Composer deck. Slides that never entered freeform layout editing have
-    nothing custom to save and are skipped."""
+    Composer deck, plus that slide's own background color when it has one
+    (e.g. one set directly in the editor, or carried over from a template
+    this deck was originally built from). Slides that never entered
+    freeform layout editing have nothing custom to save and are skipped."""
     layouts: Dict[str, Any] = {}
+    bg_colors: Dict[str, str] = {}
     last = len(slides) - 1
     for i, s in enumerate(slides):
         els = s.get("elements")
@@ -2236,7 +2239,9 @@ def _layouts_from_composer_slides(slides: List[Dict[str, Any]]) -> Dict[str, Any
         key = "cover" if is_cover else ("outro" if i == last and last > 0 else "slide")
         if key not in layouts:
             layouts[key] = _layout_from_elements(els, is_cover)
-    return layouts
+            if s.get("bg_color"):
+                bg_colors[key] = s["bg_color"]
+    return layouts, bg_colors
 
 
 def _layouts_from_design_slides(slides: List[Dict[str, Any]]) -> (Dict[str, Any], Dict[str, str]):
@@ -2390,6 +2395,20 @@ async def create_template_from_file(req: TemplateFromFileRequest):
     return _row_to_visual_template(record)
 
 
+async def _abstract_composer_outline(slides: List[Dict[str, Any]], model: str) -> List[Dict[str, str]]:
+    """The shared first step of saving a Composer deck as a template: an
+    abstracted outline (so a future generation writes fresh copy about a new
+    topic, never this deck's literal wording)."""
+    raw_slides = [
+        {"heading": s.get("heading") or s.get("title") or "", "body": s.get("body") or ""}
+        for s in slides
+    ]
+    return (
+        await _abstract_slides(raw_slides, model)
+        if any(s["heading"] or s["body"] for s in raw_slides) else raw_slides
+    )
+
+
 @api_router.post("/templates/from-composer")
 async def create_template_from_composer(req: TemplateFromComposerRequest):
     """Saves the deck currently open in the Composer as a reusable template:
@@ -2399,30 +2418,50 @@ async def create_template_from_composer(req: TemplateFromComposerRequest):
     and file-converted templates already speak."""
     await ensure_schema()
     model = req.model or CHAT_MODEL
-    raw_slides = [
-        {"heading": s.get("heading") or s.get("title") or "", "body": s.get("body") or ""}
-        for s in req.slides
-    ]
-    slides = (
-        await _abstract_slides(raw_slides, model)
-        if any(s["heading"] or s["body"] for s in raw_slides) else raw_slides
-    )
-    layouts = _layouts_from_composer_slides(req.slides)
+    slides = await _abstract_composer_outline(req.slides, model)
+    layouts, bg_colors = _layouts_from_composer_slides(req.slides)
 
     record = {
         "id": str(uuid.uuid4()), "name": req.name or "Untitled template",
         "source_kind": "composer", "source_url": "", "format": req.format,
         "theme": req.theme or "midnight", "colors": {}, "slides": slides,
-        "layouts": layouts, "created_at": now_iso(),
+        "layouts": layouts, "bg_colors": bg_colors, "created_at": now_iso(),
     }
     await d1_query(
-        "INSERT INTO visual_templates (id, name, source_kind, source_url, format, theme, colors, slides, layouts, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO visual_templates (id, name, source_kind, source_url, format, theme, colors, slides, layouts, bg_colors, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [record["id"], record["name"], record["source_kind"], record["source_url"], record["format"],
          record["theme"], json.dumps(record["colors"]), json.dumps(record["slides"]), json.dumps(record["layouts"]),
-         record["created_at"]],
+         json.dumps(record["bg_colors"]), record["created_at"]],
     )
     return _row_to_visual_template(record)
+
+
+@api_router.put("/templates/custom/{template_id}")
+async def update_template_from_composer(template_id: str, req: TemplateFromComposerRequest):
+    """The edit counterpart to /templates/from-composer's create: re-derives
+    a template's outline, layout and background colors from the Composer
+    deck currently open for it and overwrites the saved template in place —
+    so a template's colors, style, fonts, layout and slide count can all be
+    changed after it was first saved, not just at the moment of creation."""
+    await ensure_schema()
+    if template_id in STARTER_BY_ID:
+        raise HTTPException(status_code=400, detail="Starter templates ship with the app and can't be edited — use \"Save as new\" to keep your changes as a new template")
+    rows, _ = await d1_query("SELECT name FROM visual_templates WHERE id = ?", [template_id])
+    if not rows:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    model = req.model or CHAT_MODEL
+    slides = await _abstract_composer_outline(req.slides, model)
+    layouts, bg_colors = _layouts_from_composer_slides(req.slides)
+    name = (req.name or "").strip() or rows[0]["name"]
+
+    await d1_query(
+        "UPDATE visual_templates SET name = ?, format = ?, theme = ?, slides = ?, layouts = ?, bg_colors = ? WHERE id = ?",
+        [name, req.format, req.theme or "midnight", json.dumps(slides), json.dumps(layouts), json.dumps(bg_colors), template_id],
+    )
+    updated, _ = await d1_query("SELECT * FROM visual_templates WHERE id = ?", [template_id])
+    return _row_to_visual_template(updated[0])
 
 
 @api_router.get("/templates/custom")
