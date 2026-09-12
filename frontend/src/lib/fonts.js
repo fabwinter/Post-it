@@ -162,3 +162,27 @@ export function useBrandFonts(fonts) {
     if (fonts?.body) ensureFontLoaded(fonts.body);
   }, [fonts?.display, fonts?.body]);
 }
+
+let allFontsLoaded = false;
+
+// A font <select>'s own options are worth previewing in their real
+// typeface (that's the whole point of picking one by eye) — which needs
+// every family on the page at once, unlike ensureFontLoaded's one-at-a-time
+// lazy load for whatever's actually been chosen. One combined Google Fonts
+// request (the css2 API accepts any number of `family=` params) is far
+// cheaper than ~80 separate <link> tags.
+export function ensureAllFontsLoaded() {
+  if (allFontsLoaded) return;
+  allFontsLoaded = true;
+  const families = BRAND_FONTS.filter((f) => f.family && !loaded.has(f.key));
+  if (!families.length) return;
+  families.forEach((f) => loaded.add(f.key));
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = `https://fonts.googleapis.com/css2?${families.map((f) => `family=${f.family}`).join("&")}&display=swap`;
+  document.head.appendChild(link);
+}
+
+export function useAllFontsLoaded() {
+  useEffect(() => { ensureAllFontsLoaded(); }, []);
+}

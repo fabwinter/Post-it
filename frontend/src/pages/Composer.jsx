@@ -17,7 +17,7 @@ import { useTemplateStyles } from "@/lib/templateStyles";
 import { useCustomTemplates } from "@/lib/useCustomTemplates";
 import { elementsFromSpec, newElement } from "@/lib/slideElements";
 import { materializeTemplateSlides } from "@/lib/templateEdit";
-import { BRAND_FONTS, groupFontsByCategory } from "@/lib/fonts";
+import { BRAND_FONTS, groupFontsByCategory, fontStack, useAllFontsLoaded } from "@/lib/fonts";
 import { ElementsLibrary } from "@/components/ElementsLibrary";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -1131,6 +1131,7 @@ const SlideField = ({ label, value, onChange, rows, testid }) => (
 // The property panel for a slide's freeform elements — shown instead of the
 // fixed heading/body fields once a slide has entered layout-edit mode.
 function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, onRemove, onDuplicate, onReorder, onAddStock, onBrowseStock, onApplyAll, onOpenLibrary, canApplyAll, brand, bgColor, onChangeBg }) {
+  useAllFontsLoaded();
   const el = elements.find((x) => x.id === selectedId);
   const fontOptions = brand?.fonts?.display && !BRAND_FONTS.some((f) => f.key === brand.fonts.display)
     ? [{ key: brand.fonts.display, label: `${brand.fonts.display} (brand)` }, ...BRAND_FONTS] : BRAND_FONTS;
@@ -1184,7 +1185,7 @@ function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, 
                   className="rounded-lg border border-white/10 bg-[#0A0A0A] px-2 py-1.5 text-xs text-white outline-none [color-scheme:dark]">
                   {fontGroups.map(({ category, fonts }) => (
                     <optgroup key={category} label={category}>
-                      {fonts.map((f) => <option key={f.key} value={f.key}>{f.label || f.key}</option>)}
+                      {fonts.map((f) => <option key={f.key} value={f.key} style={{ fontFamily: fontStack(f.key) }}>{f.label || f.key}</option>)}
                     </optgroup>
                   ))}
                 </select>
