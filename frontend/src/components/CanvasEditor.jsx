@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   X, Plus, Undo2, Redo2, Type, Image as ImageIcon, Square, Search, Shapes, Upload,
-  Palette, Copy, Trash2, ChevronsUp, ChevronsDown, RotateCw, CopyPlus, Check,
+  Palette, Copy, Trash2, ChevronsUp, ChevronsDown, RotateCw, CopyPlus, Check, BookmarkPlus,
   AlignLeft, AlignCenter, AlignRight, Baseline, Droplets, Crop, LayoutTemplate, Layers,
 } from "lucide-react";
 import { VisualCard, ASPECT_RATIO } from "@/components/VisualCard";
@@ -101,9 +101,9 @@ const Slider = ({ label, value, min, max, step, onChange, suffix = "", testid })
 // you switch into to actually lay a slide out, especially on a phone or
 // tablet where the inline canvas+sidebar split has no room to be usable.
 export function CanvasEditor({
-  spec, brand, aspect, aspectCls, cardRef, slideCount, activeIndex, onSelectSlide, onAddSlide,
+  spec, brand, aspect, aspectCls, cardRef, slideCount, activeIndex, onSelectSlide, onAddSlide, onDuplicateSlide,
   selectedId, onSelect, onChangeElement, onAdd, onRemove, onDuplicate, onReorder,
-  onAddStock, onBrowseStock, onApplyAll, onOpenLibrary, onChangeBg, bgColor,
+  onAddStock, onBrowseStock, onApplyAll, onOpenLibrary, onSaveToLibrary, onChangeBg, bgColor,
   onEnterLayoutEdit, onClose, onUndo, onRedo, canUndo, canRedo, slides,
 }) {
   useAllFontsLoaded();
@@ -138,11 +138,18 @@ export function CanvasEditor({
     return () => window.removeEventListener("keydown", onKey);
   }, [el, sheet, selectedId, onSelect, onChangeElement, onClose]);
 
-  // Nothing behind the editor should scroll while it owns the screen.
+  // Nothing behind the editor should scroll while it owns the screen, and
+  // the app's toasts (top-right, same corner as Undo/Redo/Duplicate/Done)
+  // need to move below the header so they can't eat a click meant for one
+  // of those buttons — see the .canvas-editor-open rule in index.css.
   useEffect(() => {
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    return () => { document.body.style.overflow = prev; };
+    document.body.classList.add("canvas-editor-open");
+    return () => {
+      document.body.style.overflow = prev;
+      document.body.classList.remove("canvas-editor-open");
+    };
   }, []);
 
   const patch = (p) => el && onChangeElement(el.id, p);
@@ -163,6 +170,10 @@ export function CanvasEditor({
           Slide {activeIndex + 1}<span className="text-zinc-700">/{slideCount}</span>
         </span>
         <div className="ml-auto flex items-center gap-1">
+          <button onClick={onDuplicateSlide} data-testid="canvas-duplicate-slide" title="Duplicate slide"
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-400 hover:bg-white/5 hover:text-white">
+            <Copy size={16} />
+          </button>
           <button onClick={onUndo} disabled={!canUndo} data-testid="canvas-undo" title="Undo"
             className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-400 hover:bg-white/5 hover:text-white disabled:opacity-30">
             <Undo2 size={16} />
@@ -380,6 +391,12 @@ export function CanvasEditor({
               <Button variant="secondary" onClick={() => onApplyAll(el.id)} data-testid="canvas-apply-all"
                 className="h-10 gap-1.5 rounded-xl border border-white/10 bg-white/5 px-3 text-xs text-white hover:bg-white/10">
                 <CopyPlus size={14} /> Apply to all slides
+              </Button>
+            )}
+            {onSaveToLibrary && (
+              <Button variant="secondary" onClick={() => onSaveToLibrary(el.id)} data-testid="canvas-save-library"
+                className="h-10 gap-1.5 rounded-xl border border-white/10 bg-white/5 px-3 text-xs text-white hover:bg-white/10">
+                <BookmarkPlus size={14} /> Save to library
               </Button>
             )}
           </div>

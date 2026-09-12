@@ -96,9 +96,15 @@ export default function Composer() {
   const cardRef = useRef(null);
   const previewBoxRef = useRef(null);
   const previewScale = useCardScale(previewBoxRef, 0.45);
-  // Only templates built for the currently chosen format make sense to build
-  // from — a single-image template has nothing to offer a carousel.
-  const filteredCustomTemplates = customTemplates.filter((t) => t.format === format);
+  // Every saved template can be built for any post size — its layout is
+  // percentage-based, so it reflows to a different aspect ratio the moment
+  // the deck's format changes. Ones already built for the format in view
+  // sort first as the obvious picks; everything else stays one click away,
+  // labeled with its native size so it's clear it'll be resized to fit.
+  const sortedCustomTemplates = [...customTemplates].sort((a, b) => {
+    const am = a.format === format, bm = b.format === format;
+    return am === bm ? 0 : am ? -1 : 1;
+  });
 
   // Editing an existing saved template (opened from the Template Library's
   // "Edit" button) rather than drafting a post: the deck below is the
@@ -241,25 +247,23 @@ export default function Composer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Keeps a selected custom template's format in sync with the composer's,
-  // in one atomic pass (two separate effects racing a plain ref against
-  // not-yet-flushed state let a stale format value slip through and clear a
-  // selection that had actually just been reconciled). Arriving from
-  // Templates.jsx with a template already picked adopts that template's
-  // format; any later mismatch (the user changed format manually) drops
-  // the selection instead.
+  // Arriving from Templates.jsx with a template already picked (a deep
+  // link, not a dropdown pick made here) adopts that template's native
+  // format once, so it opens looking the way it was built. After that the
+  // format and the template selection are independent — a template's
+  // layout is percentages, so switching format just reflows it onto a
+  // different aspect ratio instead of un-selecting it. Only an outright
+  // deletion of the selected template clears the picker.
   useEffect(() => {
     if (customTemplatesLoading || !customTemplateId) return;
     const t = customTemplates.find((x) => x.id === customTemplateId);
     if (!t) { pendingTemplateSync.current = false; setCustomTemplateId(null); return; }
-    if (t.format !== format) {
-      if (pendingTemplateSync.current) { pendingTemplateSync.current = false; setFormat(t.format); }
-      else setCustomTemplateId(null);
-      return;
+    if (pendingTemplateSync.current) {
+      pendingTemplateSync.current = false;
+      if (t.format !== format) setFormat(t.format);
     }
-    pendingTemplateSync.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [format, customTemplates, customTemplatesLoading]);
+  }, [customTemplateId, customTemplates, customTemplatesLoading]);
 
   const togglePlatform = (k) => setPlatforms((s) => (s.includes(k) ? s.filter((x) => x !== k) : [...s, k]));
 
@@ -353,6 +357,22 @@ export default function Composer() {
     return next;
   });
   const removeSlide = (i) => setAssets((s) => renumber(s.filter((_, idx) => idx !== i)));
+  // A copy right after the original, elements re-keyed so dragging one
+  // slide's element never shares an id with the slide it was cloned from.
+  const duplicateSlide = (i) => setAssets((s) => {
+    const src = s[i];
+    if (!src) return s;
+    const clone = {
+      ...src,
+      spec: {
+        ...src.spec,
+        elements: src.spec.elements?.map((el) => ({ ...el, id: `el_${Math.random().toString(36).slice(2, 9)}` })),
+      },
+    };
+    const next = renumber([...s.slice(0, i + 1), clone, ...s.slice(i + 1)]);
+    setActive(i + 1);
+    return next;
+  });
   const moveSlide = (i, dir) => setAssets((s) => {
     const j = i + dir;
     if (j < 0 || j >= s.length) return s;
@@ -420,6 +440,23 @@ export default function Composer() {
       return { ...a, spec: { ...a.spec, elements: [...baseElements, copy] } };
     }));
     toast.success(`Added to all ${assets.length} slides`);
+  };
+  // The reverse direction of the library: a one-off text/shape/image you
+  // built on a slide, kept for every future post. Position, id and rotation
+  // don't travel — they'd only ever be wrong on whatever slide it lands on
+  // next — everything else about the element (its styling) does.
+  const saveElementToLibrary = async (elId) => {
+    const el = (activeAsset.spec.elements || []).find((x) => x.id === elId);
+    if (!el) return;
+    const { id, x, y, rotation, ...styling } = el;
+    const kind = el.type === "image" ? "upload" : "element";
+    const name = el.type === "text" ? (el.text || "Text").slice(0, 40)
+      : el.type === "shape" ? `${el.shape || "rect"} shape`
+      : "Image";
+    try {
+      await api.post("/library/elements", { name, kind, element: styling });
+      toast.success("Saved to your library");
+    } catch (e) { toast.error(apiErrorMessage(e, "Couldn't save to library.")); }
   };
   // A shape/icon/sticker preset from the library, or one of the user's own
   // saved uploads — either way it arrives as a ready-made element definition
@@ -594,6 +631,42 @@ export default function Composer() {
   const previews = useMemo(() => (platforms.length ? platforms : ["instagram"]), [platforms]);
   const overLimit = fullText.length > (pspec.char_limit || 99999);
   const activeAsset = assets[active];
+
+  // Ctrl/Cmd+V with an image on the clipboard (copied from another app, a
+  // browser, a screenshot tool) drops it straight onto the active slide —
+  // replacing the selected image element if there is one, otherwise landing
+  // as a brand-new element. A paste that carries no image (plain text into
+  // any of the composer's own fields) is left completely alone: we only
+  // ever preventDefault once an actual image is found.
+  useEffect(() => {
+    const onPaste = async (e) => {
+      if (!activeAsset || document.querySelector('[role="dialog"]')) return;
+      const item = Array.from(e.clipboardData?.items || []).find((it) => it.kind === "file" && it.type.startsWith("image/"));
+      if (!item) return;
+      const file = item.getAsFile();
+      if (!file) return;
+      e.preventDefault();
+      try {
+        const form = new FormData();
+        form.append("file", file);
+        const { data: up } = await api.post("/upload", form);
+        const selected = (activeAsset.spec.elements || []).find((x) => x.id === selectedElementId);
+        if (selected?.type === "image") {
+          patchElement(selected.id, { url: up.url });
+          toast.success("Pasted into the selected image");
+          return;
+        }
+        const theme = themeFor(activeAsset.spec.theme, brand);
+        const el = { ...newElement("image", theme, brand), url: up.url };
+        patchSlide(active, { elements: [...(activeAsset.spec.elements || []), el] });
+        setSelectedElementId(el.id);
+        toast.success("Pasted image onto the slide");
+      } catch (err) { toast.error(apiErrorMessage(err, "Couldn't paste that image.")); }
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeAsset, selectedElementId, active, brand]);
 
   return (
     <div data-testid="composer-page">
@@ -807,10 +880,14 @@ export default function Composer() {
                 data-testid="composer-custom-template-select"
                 className="rounded-lg border border-white/10 bg-[#0A0A0A] px-2.5 py-1.5 text-xs text-white outline-none focus:border-iris [color-scheme:dark]">
                 <option value="">No template — AI picks the format</option>
-                {filteredCustomTemplates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                {sortedCustomTemplates.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}{t.format !== format ? ` (${FORMAT_LABEL[t.format] || t.format} — will resize)` : ""}
+                  </option>
+                ))}
               </select>
-              {filteredCustomTemplates.length === 0 && (
-                <span className="text-xs text-zinc-600">No saved templates for {FORMAT_LABEL[format] || format} yet —</span>
+              {customTemplates.length === 0 && (
+                <span className="text-xs text-zinc-600">No saved templates yet —</span>
               )}
               <input ref={templateFileRef} type="file"
                 accept={templateUploadType === "pptx" ? ".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation" : templateUploadType === "pdf" ? ".pdf,application/pdf" : "image/*"}
@@ -860,6 +937,24 @@ export default function Composer() {
               </div>
             </div>
 
+            {/* Resize — right beside the deck, so fitting whatever's built
+                (or a template pulled in at a different native size) to a
+                different post type/format never means scrolling back up to
+                the Format section above. Percentage layouts reflow onto the
+                new aspect ratio immediately; nothing here regenerates content. */}
+            {pspec.formats.length > 1 && (
+              <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Size</span>
+                {pspec.formats.map((f) => (
+                  <button key={f} onClick={() => setFormat(f)} data-testid={`composer-visual-size-${f}`}
+                    title={`${FORMAT_LABEL[f] || f} · ${aspectFor(specs, primary, f)}`}
+                    className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${format === f ? "border-lime bg-lime/10 text-lime" : "border-white/10 text-zinc-400 hover:text-white"}`}>
+                    {FORMAT_LABEL[f] || f} · {aspectFor(specs, primary, f)}
+                  </button>
+                ))}
+              </div>
+            )}
+
             {assets.length === 0 ? (
               <div className="mt-4 rounded-lg border border-dashed border-white/10 p-8 text-center">
                 <p className="text-sm text-zinc-500">
@@ -902,6 +997,7 @@ export default function Composer() {
                       </span>
                       <div className="flex gap-1">
                         <IconBtn onClick={() => setCanvasOpen(true)} testid="composer-open-canvas" title="Edit full screen"><Maximize2 size={14} /></IconBtn>
+                        <IconBtn onClick={() => duplicateSlide(active)} testid="composer-slide-duplicate" title="Duplicate slide"><Copy size={14} /></IconBtn>
                         <IconBtn onClick={() => moveSlide(active, -1)} disabled={active === 0} testid="composer-slide-left"><ChevronLeft size={14} /></IconBtn>
                         <IconBtn onClick={() => moveSlide(active, 1)} disabled={active === assets.length - 1} testid="composer-slide-right"><ChevronRight size={14} /></IconBtn>
                         <IconBtn onClick={() => removeSlide(active)} testid="composer-slide-remove" danger><X size={14} /></IconBtn>
@@ -950,6 +1046,7 @@ export default function Composer() {
                             onAddStock={() => setStockTarget("element-new")}
                             onBrowseStock={() => setStockTarget("element-replace")}
                             onApplyAll={applyElementToAllSlides} onOpenLibrary={() => setLibraryOpen(true)}
+                            onSaveToLibrary={saveElementToLibrary}
                             canApplyAll={assets.length > 1}
                             brand={brand}
                             bgColor={activeAsset.spec.bg_color || themeFor(activeAsset.spec.theme, brand).bg}
@@ -1127,13 +1224,14 @@ export default function Composer() {
           spec={activeAsset.spec} brand={brand} aspect={aspect} aspectCls={aspectCls} cardRef={cardRef}
           slides={assets} slideCount={assets.length} activeIndex={active}
           onSelectSlide={(i) => { setActive(i); setSelectedElementId(null); }}
-          onAddSlide={addSlide}
+          onAddSlide={addSlide} onDuplicateSlide={() => duplicateSlide(active)}
           selectedId={selectedElementId} onSelect={setSelectedElementId} onChangeElement={patchElement}
           onAdd={addElementToSlide} onRemove={removeElement} onDuplicate={duplicateElement}
           onReorder={reorderElement} onApplyAll={applyElementToAllSlides}
           onAddStock={() => setStockTarget("element-new")}
           onBrowseStock={() => setStockTarget("element-replace")}
           onOpenLibrary={() => setLibraryOpen(true)}
+          onSaveToLibrary={saveElementToLibrary}
           bgColor={activeAsset.spec.bg_color || themeFor(activeAsset.spec.theme, brand).bg}
           onChangeBg={(hex) => patchSlide(active, { bg_color: hex })}
           onEnterLayoutEdit={() => enterLayoutEdit(active)}
@@ -1168,7 +1266,7 @@ const SlideField = ({ label, value, onChange, rows, testid }) => (
 
 // The property panel for a slide's freeform elements — shown instead of the
 // fixed heading/body fields once a slide has entered layout-edit mode.
-function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, onRemove, onDuplicate, onReorder, onAddStock, onBrowseStock, onApplyAll, onOpenLibrary, canApplyAll, brand, bgColor, onChangeBg }) {
+function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, onRemove, onDuplicate, onReorder, onAddStock, onBrowseStock, onApplyAll, onOpenLibrary, onSaveToLibrary, canApplyAll, brand, bgColor, onChangeBg }) {
   useAllFontsLoaded();
   const el = elements.find((x) => x.id === selectedId);
   const fontOptions = brand?.fonts?.display && !BRAND_FONTS.some((f) => f.key === brand.fonts.display)
@@ -1297,6 +1395,9 @@ function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, 
               <IconBtn onClick={() => onReorder(el.id, "back")} testid="composer-element-send-back"><ChevronsDown size={13} /></IconBtn>
               <IconBtn onClick={() => onReorder(el.id, "front")} testid="composer-element-bring-front"><ChevronsUp size={13} /></IconBtn>
               <IconBtn onClick={() => onDuplicate(el.id)} testid="composer-element-duplicate"><Copy size={13} /></IconBtn>
+              {onSaveToLibrary && (
+                <IconBtn onClick={() => onSaveToLibrary(el.id)} testid="composer-element-save-library" title="Save to your library"><BookmarkPlus size={13} /></IconBtn>
+              )}
               <IconBtn onClick={() => onRemove(el.id)} testid="composer-element-remove" danger><Trash2 size={13} /></IconBtn>
             </div>
           </div>

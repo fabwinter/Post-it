@@ -4,20 +4,22 @@ import { Button } from "@/components/ui/button";
 import { api, apiErrorMessage } from "@/lib/api";
 import { toast } from "sonner";
 import { ICON_MAP, ICON_ELEMENTS, STICKER_ELEMENTS, SHAPE_ELEMENTS } from "@/lib/elementLibrary";
-import { Loader2, Upload, Trash2 } from "lucide-react";
+import { Loader2, Upload, Trash2, Type as TypeIcon, Square as ShapeIcon } from "lucide-react";
 
 const TABS = [
   { key: "shapes", label: "Shapes" },
   { key: "icons", label: "Icons" },
   { key: "stickers", label: "Stickers" },
-  { key: "uploads", label: "Your uploads" },
+  { key: "uploads", label: "Your library" },
 ];
 
 // A palette of things to drop onto a slide: code-defined shapes/icons/
 // stickers (they never change, so nothing to fetch) plus a personal set of
-// uploaded logos/badges/stamps, persisted once and available on every future
-// post. Picking anything hands its element definition straight to the
-// caller, which drops it onto the active slide.
+// saved elements — uploaded logos/badges/stamps, and anything saved
+// straight off a slide (a styled text box, a shape, an image) via the
+// property panel's "Save to library" action — persisted once and available
+// on every future post. Picking anything hands its element definition
+// straight to the caller, which drops it onto the active slide.
 export function ElementsLibrary({ open, onOpenChange, onPick }) {
   const [tab, setTab] = useState("shapes");
   const [uploads, setUploads] = useState([]);
@@ -25,9 +27,11 @@ export function ElementsLibrary({ open, onOpenChange, onPick }) {
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef(null);
 
+  // No kind filter — this tab shows every saved element, not just image
+  // uploads, so a text/shape element saved off a slide shows up here too.
   const loadUploads = useCallback(() => {
     setLoading(true);
-    return api.get("/library/elements", { params: { kind: "upload" } })
+    return api.get("/library/elements")
       .then(({ data }) => setUploads(data))
       .catch(() => setUploads([]))
       .finally(() => setLoading(false));
@@ -127,14 +131,33 @@ export function ElementsLibrary({ open, onOpenChange, onPick }) {
               {!loading && uploads.length === 0 && (
                 <div className="mt-6 flex min-h-[160px] flex-col items-center justify-center gap-1 text-center text-sm text-zinc-600">
                   <span>Nothing saved yet.</span>
-                  <span className="text-xs text-zinc-700">Upload once — it's here for every future post.</span>
+                  <span className="text-xs text-zinc-700">Upload a logo, or save any element off a slide — it's here for every future post.</span>
                 </div>
               )}
               <div className="mt-3 grid grid-cols-3 gap-2.5">
                 {uploads.map((u) => (
-                  <button key={u.id} onClick={() => onPick(u.element)} data-testid={`library-upload-${u.id}`}
+                  <button key={u.id} onClick={() => onPick(u.element)} data-testid={`library-upload-${u.id}`} title={u.name}
                     className="group relative aspect-square overflow-hidden rounded-lg border border-white/10 bg-[#121212] hover:border-lime">
-                    {u.element?.url && <img src={u.element.url} alt="" className="h-full w-full object-contain p-2" />}
+                    {u.element?.type === "image" ? (
+                      u.element.url && <img src={u.element.url} alt="" className="h-full w-full object-contain p-2" />
+                    ) : u.element?.type === "text" ? (
+                      <div className="flex h-full w-full flex-col items-center justify-center gap-1 p-1.5">
+                        <TypeIcon size={16} className="text-zinc-500" />
+                        <span className="line-clamp-2 text-center text-[9px] leading-tight text-zinc-400" style={{ color: u.element.color }}>
+                          {u.element.text || "Text"}
+                        </span>
+                      </div>
+                    ) : u.element?.type === "shape" ? (
+                      <div className="flex h-full w-full items-center justify-center">
+                        <div style={{
+                          width: 28, height: u.element.shape === "ellipse" ? 28 : 16,
+                          background: u.element.color || "#E2FF3D",
+                          borderRadius: u.element.shape === "ellipse" ? "50%" : 4,
+                        }} />
+                      </div>
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center text-zinc-700"><ShapeIcon size={18} /></div>
+                    )}
                     <button onClick={(e) => removeUpload(e, u)} data-testid={`library-upload-delete-${u.id}`}
                       className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-md bg-black/60 text-white opacity-0 transition-opacity hover:text-magic group-hover:opacity-100">
                       <Trash2 size={12} />
