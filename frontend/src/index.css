@@ -77,4 +77,26 @@ body {
     0%, 100% { transform: translate(0,0) scale(1); opacity: 0.35; }
     50% { transform: translate(20px,-10px) scale(1.1); opacity: 0.5; }
 }
+
+/* Toasts render top-right at a z-index above everything else in the app,
+   which puts them right on top of whatever else lives in that corner:
+   - below the `lg` breakpoint, the sticky mobile top bar's history/menu
+     buttons sit there permanently, not just while some overlay is open;
+   - the full-screen canvas editor's Undo/Redo/Duplicate/Done row;
+   - any right-side Sheet's own header/tabs (the elements library, the
+     stock media picker).
+   A toast firing right before one of the latter two opens — "Saved to
+   your library" followed immediately by opening the library to see it —
+   can otherwise eat the first click there. CanvasEditor toggles the body
+   class while mounted; the :has() clause catches every Radix Sheet
+   generically; both rules out-specificity the media-query default. */
+@media (max-width: 1023px) {
+    [data-sonner-toaster][data-y-position="top"] {
+        top: 64px !important;
+    }
+}
+body.canvas-editor-open [data-sonner-toaster][data-y-position="top"],
+body:has([role="dialog"][data-state="open"]) [data-sonner-toaster][data-y-position="top"] {
+    top: 110px !important;
+}
 .float-blur { animation: float-blur 8s ease-in-out infinite; }
