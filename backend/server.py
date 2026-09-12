@@ -1181,11 +1181,44 @@ def _dominant_colors(image_bytes: bytes, n: int = 6) -> List[str]:
     return colors
 
 
+def _relative_luminance(hexcolor: str) -> float:
+    h = hexcolor.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+
+    def chan(v):
+        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+
+    return 0.2126 * chan(r) + 0.7152 * chan(g) + 0.0722 * chan(b)
+
+
+def _contrast_ratio(hex_a: str, hex_b: str) -> float:
+    la, lb = _relative_luminance(hex_a), _relative_luminance(hex_b)
+    lighter, darker = max(la, lb), min(la, lb)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def _readable_text_color(fg: str, bg: str, min_ratio: float = 4.5) -> str:
+    """Falls back to plain white or black when a candidate foreground
+    doesn't contrast enough against its background — mirrors
+    VisualCard.jsx's readableColor(). Extracted (not hand-picked) palettes
+    need this: a "brightest of the sampled colors" pick is only relatively
+    bright, and for a uniformly dark or uniformly light source image (a
+    moody photo, a pastel scrapbook background) that still reads as
+    invisible text on a same-toned background — every color in "brightest"
+    and "darkest" can come from the same narrow, low-contrast band."""
+    if _contrast_ratio(fg, bg) >= min_ratio:
+        return fg
+    return "#ffffff" if _contrast_ratio("#ffffff", bg) >= _contrast_ratio("#000000", bg) else "#000000"
+
+
 def _suggest_palette(hexes: List[str]) -> Dict[str, str]:
     """Assigns bg/fg/accent/sub roles to a raw color list using real HSV
     brightness/saturation — a heuristic, not a guess: the darkest and
     brightest colors become background/text (whichever way the source
-    leans), the most saturated becomes the accent."""
+    leans), the most saturated becomes the accent. The chosen foreground is
+    then guaranteed legible against the chosen background (see
+    _readable_text_color) rather than trusting "brightest sampled color" to
+    always mean "readable" — it doesn't, for a low-contrast source image."""
     if not hexes:
         return {}
 
@@ -1201,7 +1234,7 @@ def _suggest_palette(hexes: List[str]) -> Dict[str, str]:
     by_sat = sorted(scored, key=lambda t: t[2], reverse=True)
     accent = next((t[0] for t in by_sat if t[0] not in (bg, fg)), by_sat[0][0])
     sub = next((hx for hx in hexes if hx not in (bg, fg, accent)), fg)
-    return {"bg": bg, "fg": fg, "accent": accent, "sub": sub}
+    return {"bg": bg, "fg": _readable_text_color(fg, bg), "accent": accent, "sub": sub}
 
 
 _HEX_RE = re.compile(r"#(?:[0-9a-fA-F]{3}){1,2}\b")
