@@ -142,8 +142,15 @@ export function ensureFontLoaded(fontKey) {
 }
 
 export function fontStack(fontKey) {
+  if (!fontKey) return "'Inter', sans-serif";
   const f = BRAND_FONTS.find((x) => x.key === fontKey);
-  return f ? f.stack : "'Inter', sans-serif";
+  if (f) return f.stack;
+  // A name outside our curated catalog — e.g. extracted from an uploaded
+  // PPTX/PDF template ("Calibri", "Cambria", a corporate font we don't
+  // carry) — used as-is with a generic fallback rather than silently
+  // discarded for Inter, so a template's real font still shows when it's
+  // actually installed, and degrades sanely when it isn't.
+  return `'${fontKey}', sans-serif`;
 }
 
 // Loads a brand's display/body fonts as soon as they're known — call this

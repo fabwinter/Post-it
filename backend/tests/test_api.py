@@ -773,7 +773,25 @@ pptx_template_id = tpl["id"]
 CHAT_REPLY["value"] = "not valid json"
 r = c.post("/api/templates/from-file", json={"source_type": "pdf", "source_url": pdf_upload["url"]})
 tpl = r.json()
+pdf_template_id = tpl["id"]
 check("pdf template falls back to the real page text when AI output can't be parsed", tpl["slides"][0]["heading"] == "Page 1", tpl["slides"])
+# This fixture PDF has no embedded image (no colors to sample) but does
+# declare a real font resource (/BaseFont /Helvetica) — that alone should
+# still be enough to build a usable layout, not require both.
+check("a PDF with a real font but no image still gets a usable layout",
+      bool(tpl.get("layouts")), tpl.get("layouts"))
+check("...carrying the PDF's own real font, not a generic default",
+      any(e.get("fontFamily") == "Helvetica" for e in tpl["layouts"].get("cover", [])), tpl["layouts"])
+
+CHAT_REPLY["value"] = json.dumps({
+    "format": "single", "title": "T", "caption": "cap", "hashtags": [],
+    "visual": {"style": "photo", "title": "Real headline", "image_prompt": "x"}})
+r = c.post("/api/ai/build-post", json={"topic": "x", "platform": "instagram", "format": "single",
+                                        "custom_template_id": pdf_template_id, "use_brand": False})
+built = r.json()
+cover_els = built["assets"][0]["spec"].get("elements") or []
+check("a post built from an uploaded PDF template gets the PDF's real font applied",
+      any(e.get("fontFamily") == "Helvetica" for e in cover_els), cover_els)
 
 # --- templates from a file: image (palette only, no slides) ---
 r = c.post("/api/templates/from-file", json={"source_type": "image", "source_url": img_upload["url"]})
@@ -805,14 +823,39 @@ for t in starters:
 
 pptx_tpl = next(t for t in saved_only if t["source_kind"] == "pptx")
 check("a converted pptx template carries a preview", pptx_tpl["preview"] is not None, pptx_tpl["preview"])
-check("its preview is a plain slide (heading + body), not a freeform layout",
-      pptx_tpl["preview"].get("template") == "slide" and "elements" not in pptx_tpl["preview"], pptx_tpl["preview"])
+check("its preview is a real freeform layout extracted from the deck's own design, not a generic placeholder",
+      "elements" in pptx_tpl["preview"] and pptx_tpl["preview"].get("bg_color") == "#ffffff", pptx_tpl["preview"])
+check("its preview carries the deck's real theme font, not a generic default",
+      any(e.get("fontFamily") == "Calibri" for e in pptx_tpl["preview"]["elements"]), pptx_tpl["preview"])
 check("its preview shows the template's own (abstracted) outline text, not blank",
-      pptx_tpl["preview"]["heading"] == pptx_tpl["slides"][0]["heading"], pptx_tpl["preview"])
+      any(e.get("text") == pptx_tpl["slides"][0]["heading"] for e in pptx_tpl["preview"]["elements"]), pptx_tpl["preview"])
+check("the template carries a real layout usable at generation time",
+      bool(pptx_tpl.get("layouts")) and bool(pptx_tpl.get("bg_colors")), pptx_tpl.get("layouts"))
 
 image_tpl = next(t for t in saved_only if t["source_kind"] == "image")
 check("an image-only template (no slide structure) has no preview to show",
       image_tpl["preview"] is None, image_tpl["preview"])
+
+# --- building a post from an uploaded pptx template actually reproduces its design ---
+CHAT_REPLY["value"] = json.dumps({
+    "format": "carousel", "title": "T", "caption": "cap", "hashtags": [],
+    "visual": {"style": "carousel", "theme": "chalkboard", "title": "Cover",
+               "slides": [{"heading": "State the core claim", "body": "Name the timeframe when most people quit."},
+                          {"heading": "Show the payoff curve", "body": "Describe what changes once you push past that point."}]}})
+r = c.post("/api/ai/build-post", json={"topic": "consistency", "platform": "instagram", "format": "carousel",
+                                        "custom_template_id": pptx_tpl["id"], "use_brand": False})
+built = r.json()
+cover_els = built["assets"][0]["spec"].get("elements") or []
+check("a post built from an uploaded pptx template gets real freeform elements, not the model's flat fields",
+      bool(cover_els), built["assets"][0]["spec"])
+check("...positioned exactly where the source deck had them",
+      any(e.get("x") == 5.0 and e.get("y") == 4.0 for e in cover_els), cover_els)
+check("...in the source deck's real theme font",
+      any(e.get("fontFamily") == "Calibri" for e in cover_els), cover_els)
+check("...and the source deck's real background color, not a generic theme",
+      built["assets"][0]["spec"].get("bg_color") == "#ffffff", built["assets"][0]["spec"])
+check("...with the model's fresh copy poured into the title role",
+      any(e.get("text") == "Cover" for e in cover_els), cover_els)
 
 r = c.delete(f"/api/templates/custom/{starters[0]['id']}")
 check("a starter can't be deleted", r.status_code == 400 and "can't be deleted" in r.json()["detail"], r.text)

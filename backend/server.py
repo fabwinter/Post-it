@@ -21,9 +21,13 @@ from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
+from collections import Counter
 from PIL import Image
 from pypdf import PdfReader
 from pptx import Presentation
+from pptx.enum.dml import MSO_COLOR_TYPE, MSO_FILL_TYPE
+from pptx.enum.text import PP_ALIGN
+from pptx.opc.constants import RELATIONSHIP_TYPE as PPTX_RT
 from docx import Document as DocxDocument
 
 ROOT_DIR = Path(__file__).parent
@@ -148,6 +152,7 @@ _CREATE_TABLES = [
         source_url TEXT NOT NULL, format TEXT NOT NULL DEFAULT 'carousel',
         theme TEXT NOT NULL DEFAULT 'midnight', colors TEXT NOT NULL DEFAULT '{}',
         slides TEXT NOT NULL DEFAULT '[]', layouts TEXT NOT NULL DEFAULT '{}',
+        bg_colors TEXT NOT NULL DEFAULT '{}',
         created_at TEXT NOT NULL)""",
     # A personal palette of reusable elements — uploaded logos/badges/stamps
     # saved once from the Composer's elements library and available on every
@@ -208,6 +213,7 @@ _ADD_COLUMNS = {
     ],
     "visual_templates": [
         ("layouts", "ALTER TABLE visual_templates ADD COLUMN layouts TEXT NOT NULL DEFAULT '{}'"),
+        ("bg_colors", "ALTER TABLE visual_templates ADD COLUMN bg_colors TEXT NOT NULL DEFAULT '{}'"),
     ],
 }
 
@@ -1231,6 +1237,41 @@ def _extract_colors_and_fonts(markup: str) -> (List[str], List[str]):
     return hexes[:8], fonts[:3]
 
 
+# The 14 standard PDF base fonts (and a few common embedded-font names)
+# mapped to a real display name — an embedded font's /BaseFont is often a
+# subset tag like "ABCDEF+Calibri" or a PostScript name like
+# "Helvetica-Bold", neither of which is a usable CSS font-family on its own.
+_PDF_STANDARD_FONTS = {
+    "helvetica": "Helvetica", "arial": "Arial", "arialmt": "Arial",
+    "times": "Times New Roman", "timesroman": "Times New Roman", "timesnewroman": "Times New Roman",
+    "courier": "Courier New", "couriernew": "Courier New",
+    "georgia": "Georgia", "verdana": "Verdana", "calibri": "Calibri",
+    "cambria": "Georgia", "garamond": "EB Garamond",
+}
+
+
+def _pdf_fonts(reader: PdfReader, max_pages: int = 5) -> List[str]:
+    """The real font names a PDF actually uses, most-common first — cleaned
+    of subset prefixes ('ABCDEF+Calibri' -> 'Calibri') and style suffixes
+    ('Helvetica-Bold' -> 'Helvetica'), with the 14 standard PDF base fonts
+    mapped to a real display name."""
+    names = []
+    for page in reader.pages[:max_pages]:
+        try:
+            fonts = (page.get("/Resources") or {}).get("/Font")
+            if not fonts:
+                continue
+            for ref in fonts.values():
+                base = str(ref.get_object().get("/BaseFont", "") or "")
+                base = base.split("+")[-1]  # strip an embedded-subset tag
+                base = re.sub(r"[-,](Bold|Italic|Oblique|Regular|MT|PS)+$", "", base, flags=re.I)
+                if base:
+                    names.append(_PDF_STANDARD_FONTS.get(re.sub(r"[^a-z]", "", base.lower()), base))
+        except Exception:
+            continue
+    return [n for n, _ in Counter(names).most_common(3)]
+
+
 def _pdf_extract(pdf_bytes: bytes, max_pages: int = 20) -> Dict[str, Any]:
     reader = PdfReader(io.BytesIO(pdf_bytes))
     pages = reader.pages[:max_pages]
@@ -1246,7 +1287,13 @@ def _pdf_extract(pdf_bytes: bytes, max_pages: int = 20) -> Dict[str, Any]:
             pass
         if first_image:
             break
-    return {"page_count": len(reader.pages), "text": full_text[:8000], "page_texts": page_texts, "first_image": first_image}
+    fonts = []
+    try:
+        fonts = _pdf_fonts(reader)
+    except Exception:
+        pass
+    return {"page_count": len(reader.pages), "text": full_text[:8000], "page_texts": page_texts,
+            "first_image": first_image, "fonts": fonts}
 
 
 def _pptx_extract(pptx_bytes: bytes, max_slides: int = 30) -> List[Dict[str, str]]:
@@ -1266,6 +1313,157 @@ def _pptx_extract(pptx_bytes: bytes, max_slides: int = 30) -> List[Dict[str, str
                 body_parts.append(text)
         slides.append({"heading": title, "body": " ".join(body_parts)[:500]})
     return slides
+
+
+_DML_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+
+
+def _dml_qn(tag: str) -> str:
+    return f"{{{_DML_NS}}}{tag}"
+
+
+# MSO_THEME_COLOR member name -> the theme's own <a:clrScheme> child tag.
+_PPTX_THEME_COLOR_MAP = {
+    "DARK_1": "dk1", "TEXT_1": "dk1", "LIGHT_1": "lt1", "BACKGROUND_1": "lt1",
+    "DARK_2": "dk2", "TEXT_2": "dk2", "LIGHT_2": "lt2", "BACKGROUND_2": "lt2",
+    "ACCENT_1": "accent1", "ACCENT_2": "accent2", "ACCENT_3": "accent3",
+    "ACCENT_4": "accent4", "ACCENT_5": "accent5", "ACCENT_6": "accent6",
+    "HYPERLINK": "hlink", "FOLLOWED_HYPERLINK": "folHlink",
+}
+
+
+def _hex_luminance(hexcolor: str) -> float:
+    h = (hexcolor or "").lstrip("#")
+    if len(h) != 6:
+        return 0.5
+    try:
+        r, g, b = (int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    except ValueError:
+        return 0.5
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _pptx_theme(prs: Presentation) -> Dict[str, Any]:
+    """A deck's real color scheme (the 12 colors in its theme1.xml) and
+    typography (major/minor latin fonts) — resolvable even when no slide,
+    placeholder or run overrides anything explicitly, which is the common
+    case for a plain uploaded deck (python-pptx only reports what a run
+    explicitly sets, not what it inherits, so without this every color and
+    font read back as None for a totally ordinary, on-brand template)."""
+    try:
+        theme_part = prs.slide_masters[0].part.part_related_by(PPTX_RT.THEME)
+        root = ET.fromstring(theme_part.blob)
+        els = root.find(_dml_qn("themeElements"))
+        scheme = {}
+        for child in els.find(_dml_qn("clrScheme")):
+            tag = child.tag.split("}")[-1]
+            srgb = child.find(_dml_qn("srgbClr"))
+            sysclr = child.find(_dml_qn("sysClr"))
+            val = srgb.get("val") if srgb is not None else (sysclr.get("lastClr") if sysclr is not None else None)
+            if val:
+                scheme[tag] = f"#{val.lower()}"
+        fs = els.find(_dml_qn("fontScheme"))
+        major = fs.find(_dml_qn("majorFont")).find(_dml_qn("latin")).get("typeface") or None
+        minor = fs.find(_dml_qn("minorFont")).find(_dml_qn("latin")).get("typeface") or None
+        return {"scheme": scheme, "major_font": major, "minor_font": minor}
+    except Exception:
+        return {"scheme": {}, "major_font": None, "minor_font": None}
+
+
+def _pptx_resolve_color(color, scheme: Dict[str, str]) -> Optional[str]:
+    """An explicit RGB, or a scheme color (tx1/bg1/accent1/...) resolved
+    through the deck's own theme — vs. python-pptx's raw .rgb, which raises
+    for anything that isn't a literal RGB value."""
+    try:
+        if color.type == MSO_COLOR_TYPE.RGB:
+            return f"#{color.rgb}".lower()
+        if color.type == MSO_COLOR_TYPE.SCHEME:
+            key = _PPTX_THEME_COLOR_MAP.get(color.theme_color.name)
+            return scheme.get(key) if key else None
+    except Exception:
+        pass
+    return None
+
+
+def _pptx_bg_color(slide, scheme: Dict[str, str]) -> Optional[str]:
+    """Walks slide -> layout -> master looking for the first explicit solid
+    background fill; PowerPoint's own real default (no fill anywhere in that
+    chain, the common case for a plain deck) is a light background, so the
+    caller falls back to the theme's lt1 rather than an arbitrary guess."""
+    for obj in (slide, getattr(slide, "slide_layout", None), getattr(slide.slide_layout, "slide_master", None) if getattr(slide, "slide_layout", None) else None):
+        if obj is None:
+            continue
+        try:
+            fill = obj.background.fill
+            if fill.type == MSO_FILL_TYPE.SOLID:
+                resolved = _pptx_resolve_color(fill.fore_color, scheme)
+                if resolved:
+                    return resolved
+        except Exception:
+            continue
+    return None
+
+
+EMU_PER_SLIDE_UNIT = 914400  # EMUs per inch — only used as a size fallback below
+
+
+def _pptx_extract_design(pptx_bytes: bytes, max_slides: int = 20) -> Dict[str, Any]:
+    """The deck's real design, not just its text: per-slide freeform text
+    elements at their real position/size, colored and set in the deck's own
+    theme fonts, plus the overall color scheme — so a template built from an
+    uploaded PPTX actually looks like the file it came from."""
+    prs = Presentation(io.BytesIO(pptx_bytes))
+    theme = _pptx_theme(prs)
+    scheme = theme["scheme"]
+    bg_default = scheme.get("lt1") or "#ffffff"
+    fg_default = scheme.get("dk1") or "#111111"
+    fg_on_dark = scheme.get("lt1") or "#ffffff"
+    sw = prs.slide_width or (EMU_PER_SLIDE_UNIT * 10)
+    sh = prs.slide_height or (EMU_PER_SLIDE_UNIT * 7.5)
+    align_map = {PP_ALIGN.LEFT: "left", PP_ALIGN.CENTER: "center", PP_ALIGN.RIGHT: "right"}
+
+    slides = []
+    for slide in list(prs.slides)[:max_slides]:
+        bg_color = _pptx_bg_color(slide, scheme) or bg_default
+        text_color_default = fg_on_dark if _hex_luminance(bg_color) < 0.5 else fg_default
+        heading, body_parts, elements = "", [], []
+        for shape in slide.shapes:
+            if not getattr(shape, "has_text_frame", False):
+                continue
+            text = "\n".join(p.text for p in shape.text_frame.paragraphs if p.text).strip()
+            if not text:
+                continue
+            is_title = shape == slide.shapes.title
+            if is_title and not heading:
+                heading = text
+            else:
+                body_parts.append(text)
+            try:
+                left, top, width, height = shape.left, shape.top, shape.width, shape.height
+            except Exception:
+                left = top = width = height = None
+            if None in (left, top, width, height) or not width or not height:
+                continue
+            first_run = next((r for p in shape.text_frame.paragraphs for r in p.runs if r.text.strip()), None)
+            font_name = ((first_run.font.name if first_run else None)
+                         or (theme["major_font"] if is_title else theme["minor_font"]))
+            font_size = first_run.font.size.pt if (first_run and first_run.font.size) else None
+            color = (_pptx_resolve_color(first_run.font.color, scheme) if first_run else None) or text_color_default
+            bold = first_run.font.bold if (first_run and first_run.font.bold is not None) else is_title
+            para_align = next((p.alignment for p in shape.text_frame.paragraphs if p.alignment), None)
+            elements.append({
+                "type": "text", "text": text,
+                "x": round(left / sw * 100, 2), "y": round(top / sh * 100, 2),
+                "w": round(min(width / sw * 100, 100 - left / sw * 100), 2),
+                "h": round(min(height / sh * 100, 100 - top / sh * 100), 2),
+                "fontFamily": font_name, "fontSize": round(font_size) if font_size else (32 if is_title else 16),
+                "fontWeight": 800 if bold else 400, "color": color,
+                "align": align_map.get(para_align, "left"), "lineHeight": 1.2,
+                "rotation": 0, "opacity": 1,
+            })
+        slides.append({"heading": heading, "body": " ".join(body_parts)[:500],
+                        "bg_color": bg_color, "elements": elements})
+    return {"slides": slides, "scheme": scheme, "major_font": theme["major_font"], "minor_font": theme["minor_font"]}
 
 
 def _docx_extract(docx_bytes: bytes, max_blocks: int = 4000) -> str:
@@ -1589,7 +1787,8 @@ def _row_to_visual_template(row: dict):
         "source_url": row["source_url"], "format": row["format"], "theme": row["theme"],
         "colors": _maybe_json(row.get("colors"), "{}"),
         "slides": _maybe_json(row.get("slides"), "[]"),
-        "layouts": _maybe_json(row.get("layouts"), "{}"), "created_at": row["created_at"],
+        "layouts": _maybe_json(row.get("layouts"), "{}"),
+        "bg_colors": _maybe_json(row.get("bg_colors"), "{}"), "created_at": row["created_at"],
     }
 
 
@@ -1782,7 +1981,12 @@ def _template_preview(tpl: dict, layouts: Optional[dict] = None) -> Optional[dic
             "body": first.get("body") or "",
             "index": 1,
         }, 1)
-        return {"theme": tpl.get("theme"), "elements": elements}
+        bg_colors = tpl.get("bg_colors") or {}
+        preview = {"theme": tpl.get("theme"), "elements": elements}
+        bg = bg_colors.get("cover") or bg_colors.get("slide")
+        if bg:
+            preview["bg_color"] = bg
+        return preview
     if slides:
         return {"template": "slide", "theme": tpl.get("theme"), "total": 1,
                 "heading": first.get("heading") or "", "body": first.get("body") or ""}
@@ -1833,6 +2037,7 @@ def _apply_template_layouts(assets: List[Dict[str, Any]], template: dict) -> Lis
     layouts = (template or {}).get("layouts") or {}
     if not layouts:
         return assets
+    bg_colors = (template or {}).get("bg_colors") or {}
     last = len(assets) - 1
     for i, asset in enumerate(assets):
         spec = asset["spec"]
@@ -1845,6 +2050,12 @@ def _apply_template_layouts(assets: List[Dict[str, Any]], template: dict) -> Lis
         layout = layouts.get(key) or layouts.get("slide") or layouts.get("cover")
         if layout:
             spec["elements"] = _fill_layout(layout, spec, i)
+            # A source file's own background (e.g. a PPTX's real slide
+            # color) doesn't fit any of the four built-in theme keys, so it
+            # rides along separately from the role-based layout itself.
+            bg = bg_colors.get(key) or bg_colors.get("slide") or bg_colors.get("cover")
+            if bg:
+                spec["bg_color"] = bg
     return assets
 
 
@@ -1887,6 +2098,28 @@ def _layouts_from_composer_slides(slides: List[Dict[str, Any]]) -> Dict[str, Any
     return layouts
 
 
+def _layouts_from_design_slides(slides: List[Dict[str, Any]]) -> (Dict[str, Any], Dict[str, str]):
+    """Same idea as _layouts_from_composer_slides, for a deck's real
+    extracted design (see _pptx_extract_design): picks one representative
+    slide per role and also carries that slide's real background color
+    along, keyed the same way, since a source file's own color rarely
+    matches any of the four built-in theme backgrounds."""
+    layouts: Dict[str, Any] = {}
+    bg_colors: Dict[str, str] = {}
+    last = len(slides) - 1
+    for i, s in enumerate(slides):
+        els = s.get("elements")
+        if not els:
+            continue
+        is_cover = i == 0
+        key = "cover" if is_cover else ("outro" if i == last and last > 0 else "slide")
+        if key not in layouts:
+            layouts[key] = _layout_from_elements(els, is_cover)
+            if s.get("bg_color"):
+                bg_colors[key] = s["bg_color"]
+    return layouts, bg_colors
+
+
 async def _abstract_slides(slides: List[Dict[str, str]], model: str) -> List[Dict[str, str]]:
     """Turns a specific deck/PDF's real content into a reusable outline — e.g.
     "Q3 Revenue Growth" becomes "State the headline metric" — so the template
@@ -1916,14 +2149,29 @@ async def create_template_from_file(req: TemplateFromFileRequest):
     await ensure_schema()
     model = req.model or CHAT_MODEL
     colors: Dict[str, str] = {}
+    layouts: Dict[str, Any] = {}
+    bg_colors: Dict[str, str] = {}
 
     if req.source_type == "pptx":
         data = await asyncio.to_thread(_fetch_bytes, req.source_url)
-        raw_slides = await asyncio.to_thread(_pptx_extract, data)
-        if not raw_slides:
+        design = await asyncio.to_thread(_pptx_extract_design, data)
+        raw_slides = [{"heading": s["heading"], "body": s["body"]} for s in design["slides"]]
+        if not raw_slides or not any(s["heading"] or s["body"] for s in raw_slides):
             raise HTTPException(status_code=422, detail="Couldn't find any slide text in that PPTX")
         slides = await _abstract_slides(raw_slides, model)
-        fmt, theme, source_kind = "carousel", "midnight", "pptx"
+        # The deck's real color scheme and layout, not a generic guess — see
+        # _pptx_extract_design. The four built-in theme keys are still a
+        # backward-compatible carrier for anything that falls outside the
+        # extracted layout (e.g. if a slide count exceeds what got a real
+        # layout), so still pick whichever reads closer to the deck's own
+        # background rather than always defaulting to midnight.
+        scheme_hexes = list(design["scheme"].values())
+        if scheme_hexes:
+            colors = _suggest_palette(scheme_hexes)
+        bg_guess = design["scheme"].get("lt1") or "#ffffff"
+        theme = "whiteboard" if _hex_luminance(bg_guess) >= 0.5 else "midnight"
+        layouts, bg_colors = await asyncio.to_thread(_layouts_from_design_slides, design["slides"])
+        fmt, source_kind = "carousel", "pptx"
 
     elif req.source_type == "pdf":
         data = await asyncio.to_thread(_fetch_bytes, req.source_url)
@@ -1939,6 +2187,37 @@ async def create_template_from_file(req: TemplateFromFileRequest):
                 colors = _suggest_palette(hexes)
             except Exception:
                 pass
+        font = (pdf.get("fonts") or [None])[0]
+        if colors or font:
+            # No embedded per-shape geometry to recover from a PDF short of a
+            # much heavier PDF-layout dependency — but the real extracted
+            # colors and/or real font now actually reach a generated post
+            # instead of being computed and then discarded; whichever one
+            # wasn't found (a text-only PDF has no image to sample colors
+            # from; some PDFs don't expose real font resources) falls back to
+            # a sane generic default rather than blocking on the other.
+            bg = colors.get("bg", "#0A0A0A") if colors else "#0A0A0A"
+            fg = colors.get("fg", "#FFFFFF") if colors else "#FFFFFF"
+            accent = colors.get("accent", "#E2FF3D") if colors else "#E2FF3D"
+            theme = "whiteboard" if _hex_luminance(bg) >= 0.5 else "midnight"
+            layouts = {
+                "cover": [
+                    {"type": "text", "role": "title", "x": 8, "y": 30, "w": 84, "h": 40,
+                     "fontFamily": font, "fontSize": 38, "fontWeight": 800, "color": fg,
+                     "align": "left", "lineHeight": 1.05},
+                    {"type": "shape", "shape": "rect", "x": 8, "y": 85, "w": 20, "h": 1.4,
+                     "color": accent, "opacity": 1},
+                ],
+                "slide": [
+                    {"type": "text", "role": "heading", "x": 8, "y": 20, "w": 84, "h": 22,
+                     "fontFamily": font, "fontSize": 26, "fontWeight": 800, "color": fg,
+                     "align": "left", "lineHeight": 1.1},
+                    {"type": "text", "role": "body", "x": 8, "y": 48, "w": 84, "h": 34,
+                     "fontFamily": font, "fontSize": 16, "fontWeight": 400, "color": fg,
+                     "align": "left", "lineHeight": 1.4},
+                ],
+            }
+            bg_colors = {"cover": bg, "slide": bg}
         fmt, source_kind = "carousel", "pdf"
 
     elif req.source_type == "image":
@@ -1956,13 +2235,14 @@ async def create_template_from_file(req: TemplateFromFileRequest):
     record = {
         "id": str(uuid.uuid4()), "name": req.name or f"{req.source_type.upper()} template",
         "source_kind": source_kind, "source_url": req.source_url, "format": fmt, "theme": theme,
-        "colors": colors, "slides": slides, "created_at": now_iso(),
+        "colors": colors, "slides": slides, "layouts": layouts, "bg_colors": bg_colors, "created_at": now_iso(),
     }
     await d1_query(
-        "INSERT INTO visual_templates (id, name, source_kind, source_url, format, theme, colors, slides, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO visual_templates (id, name, source_kind, source_url, format, theme, colors, slides, layouts, bg_colors, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [record["id"], record["name"], record["source_kind"], record["source_url"], record["format"],
-         record["theme"], json.dumps(record["colors"]), json.dumps(record["slides"]), record["created_at"]],
+         record["theme"], json.dumps(record["colors"]), json.dumps(record["slides"]),
+         json.dumps(record["layouts"]), json.dumps(record["bg_colors"]), record["created_at"]],
     )
     return _row_to_visual_template(record)
 
