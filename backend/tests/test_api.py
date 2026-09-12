@@ -1035,6 +1035,32 @@ check("a decorative element keeps its own text and stays static",
 check("no internal role hint leaks into the saved layout",
       all("role_hint" not in e for e in design_layout), design_layout)
 
+# --- a saved template's role assignment survives being edited and re-saved ---
+# Opening a saved template in the Composer materializes its layout into a
+# real, literal-text deck for editing (see templateEdit.js's fillLayout,
+# which this simulates) — and role_hint is gone by then, already consumed
+# and replaced with `role` the first time _layout_from_elements ran, above.
+# Saving that materialized deck again used to re-derive the dynamic slots
+# from scratch by Y position, which for this exact deck picks the date
+# label (y=5.62) over the actual headline (y=15.57) — corrupting the
+# headline's role and the date label's literal text on the very first
+# edit-and-save of an uploaded template.
+materialized = []
+for e in design_layout:
+    e = dict(e)
+    if e.get("role") == "title":
+        e["text"] = "Ship weekly"
+    materialized.append(e)
+resaved_layout = server._layout_from_elements(materialized, True)
+resaved_title = next((e for e in resaved_layout if e.get("role") == "title"), None)
+check("re-saving a materialized template keeps the headline as the dynamic title slot",
+      resaved_title is not None and resaved_title.get("fontSize") == 79, resaved_title)
+check("...instead of reassigning it to whichever element now sits highest on the slide",
+      next((e for e in resaved_layout if e.get("text") == "08/09/30"), {}).get("role") is None,
+      resaved_layout)
+check("...and only one element carries the title role, not two",
+      sum(1 for e in resaved_layout if e.get("role") == "title") == 1, resaved_layout)
+
 # --- building a post from an uploaded pptx template actually reproduces its design ---
 CHAT_REPLY["value"] = json.dumps({
     "format": "carousel", "title": "T", "caption": "cap", "hashtags": [],
