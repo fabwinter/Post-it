@@ -508,14 +508,20 @@ export default function BrandKit() {
           <h3 className="flex items-center gap-2 font-display text-base font-semibold">
             <ScrollText size={15} className="text-lime" /> Brand Guideline — one-page summary
           </h3>
-          <Button variant="secondary" onClick={downloadGuideline} disabled={downloadingGuideline} data-testid="brand-guideline-download"
-            className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 text-xs text-white hover:bg-white/10">
-            {downloadingGuideline ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />} Download PNG
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button onClick={save} disabled={saving} data-testid="brand-guideline-save"
+              className="h-8 gap-1.5 rounded-lg bg-lime px-3 text-xs font-semibold text-[#0A0A0A] hover:bg-lime-hover">
+              {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />} {form.id ? "Save" : "Create brand kit"}
+            </Button>
+            <Button variant="secondary" onClick={downloadGuideline} disabled={downloadingGuideline} data-testid="brand-guideline-download"
+              className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 text-xs text-white hover:bg-white/10">
+              {downloadingGuideline ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />} Download PNG
+            </Button>
+          </div>
         </div>
         <p className="mt-1.5 text-xs leading-relaxed text-zinc-500">
           Everything above, laid out on one page — logo usage, palette, type, imagery direction and voice.
-          Updates live as you edit; Save keeps it for next time.
+          Updates live as you edit; the Save button here (or the one at the top of the form) keeps it for next time.
         </p>
         <div className="mt-4 overflow-x-auto rounded-lg">
           <BrandGuidelineDoc ref={guidelineRef} brand={form} />
