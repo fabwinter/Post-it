@@ -36,9 +36,9 @@ const orientationFor = (aspect) => {
   return aspect === "4:5" ? "portrait" : "square";
 };
 
-const emptySlide = (index, total) => ({
+const emptySlide = (index, total, theme = "midnight") => ({
   type: "visual", caption: "",
-  spec: { template: index === 0 ? "cover" : "slide", theme: "midnight", index, total, title: "", heading: "", body: "" },
+  spec: { template: index === 0 ? "cover" : "slide", theme, index, total, title: "", heading: "", body: "" },
 });
 
 export default function Composer() {
@@ -314,7 +314,11 @@ export default function Composer() {
   };
 
   const addSlide = () => setAssets((s) => {
-    const next = renumber([...s, emptySlide(s.length, s.length + 1)]);
+    // Match whatever the deck is already themed as; a brand-new deck
+    // defaults to the account's own brand kit (when one is actually saved)
+    // rather than a generic theme the user never chose.
+    const theme = s[0]?.spec?.theme || (brand?.id ? "brand" : "midnight");
+    const next = renumber([...s, emptySlide(s.length, s.length + 1, theme)]);
     setActive(next.length - 1);
     return next;
   });
@@ -651,7 +655,13 @@ export default function Composer() {
         )}
       </div>
 
-      <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_minmax(0,460px)]">
+      {/* The right column is a fixed 460px, so anything narrower than xl
+          (1280px) leaves the left column too little room for its own
+          canvas+controls split below — landscape tablets (iPad at ~1024-1194
+          CSS px) sit right in that gap. Below xl the whole page stays one
+          column instead of compounding two responsive splits into an
+          unreadably narrow one. */}
+      <div className="mt-6 grid gap-6 xl:grid-cols-[1fr_minmax(0,460px)]">
         {/* Editor */}
         <div className="min-w-0 space-y-5">
           <div className="rounded-xl border border-white/10 bg-[#121212] p-5">

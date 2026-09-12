@@ -3323,9 +3323,19 @@ async def ai_build_post(req: BuildPostRequest):
     if plan.get("format") not in allowed:
         plan["format"] = fmt if fmt != "auto" else spec["default_format"]
     # A template's theme was a deliberate choice when it was converted —
-    # honor it over whatever the model happened to pick.
-    theme = template["theme"] if template else ((plan.get("visual") or {}).get("theme")) or "midnight"
-    if theme not in THEME_KEYS:
+    # honor it over whatever the model happened to pick. Otherwise, a real
+    # saved brand kit wins by default: the model is never even offered
+    # "brand" as a choice (THEME_KEYS is its generic palette options), so
+    # without this every AI-built post would silently skip the user's own
+    # colors/logo/fonts unless they remembered to click the brand swatch by
+    # hand afterward, every single time.
+    if template:
+        theme = template["theme"]
+    elif brand and brand.get("id"):
+        theme = "brand"
+    else:
+        theme = ((plan.get("visual") or {}).get("theme")) or "midnight"
+    if theme not in THEME_KEYS and theme != "brand":
         theme = "midnight"
 
     hashtags = [h if h.startswith("#") else f"#{h}" for h in (plan.get("hashtags") or []) if h]
