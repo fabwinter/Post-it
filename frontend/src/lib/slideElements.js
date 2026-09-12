@@ -1,9 +1,38 @@
+import { useLayoutEffect, useState } from "react";
+
 // A slide can carry a freeform `elements` array instead of (alongside) its
 // fixed template fields (title/heading/body/...). Every element is
 // positioned as a percentage of the card box — 0-100 on x/y/w/h — so the
 // same numbers render identically at any card size (a 68px strip thumbnail,
 // a 380px preview, or a 2x PNG export) without unit conversion.
 const genId = () => `el_${Math.random().toString(36).slice(2, 9)}`;
+
+// Font sizes, unlike positions, are plain px — VisualCard multiplies them by
+// its `scale` prop, which only lines up with the authored design when it is
+// the card's real width over this reference width.
+export const CARD_REF_WIDTH = 440;
+
+// The scale a VisualCard should render at to fill `ref`'s box exactly.
+// Hardcoding it (the canvas used to pass 0.86 into a 200px-wide box) draws
+// every element about twice its authored size, so text overruns the box it
+// was measured into and the card clips it.
+export function useCardScale(ref, fallback = 1) {
+  const [scale, setScale] = useState(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    const measure = () => {
+      const width = el.getBoundingClientRect().width;
+      if (width) setScale(width / CARD_REF_WIDTH);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref]);
+  return scale ?? fallback;
+}
 
 export function elementBoxStyle(el) {
   return {

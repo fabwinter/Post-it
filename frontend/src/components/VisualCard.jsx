@@ -142,9 +142,15 @@ export const VisualCard = forwardRef(function VisualCard(
           const family = el.fontFamily || (el.fontKind && theme.fonts?.[el.fontKind]) || undefined;
           if (el.type === "text") {
             return (
+              // A text box imported from a design tool is sized to hug the
+              // text it was authored with, and those tools let a line spill
+              // past the box rather than cutting it off. Clipping here threw
+              // away the tail of anything even slightly larger — a swapped-in
+              // font measuring wider, or fresh copy longer than the original.
+              // The card itself still clips, so nothing escapes the slide.
               <div key={el.id} style={{ ...box, fontFamily: fontStack(family), fontSize: f(el.fontSize || 16),
                 fontWeight: el.fontWeight || 600, color: roleColor, textAlign: el.align || "left",
-                lineHeight: el.lineHeight || 1.2, whiteSpace: "pre-wrap", overflow: "hidden", wordBreak: "break-word" }}>
+                lineHeight: el.lineHeight || 1.2, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
                 {el.text}
               </div>
             );

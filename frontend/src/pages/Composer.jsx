@@ -15,7 +15,7 @@ import { SlideEditor } from "@/components/SlideEditor";
 import { MediaPicker } from "@/components/MediaPicker";
 import { useTemplateStyles } from "@/lib/templateStyles";
 import { useCustomTemplates } from "@/lib/useCustomTemplates";
-import { elementsFromSpec, newElement } from "@/lib/slideElements";
+import { elementsFromSpec, newElement, useCardScale } from "@/lib/slideElements";
 import { materializeTemplateSlides } from "@/lib/templateEdit";
 import { BRAND_FONTS, groupFontsByCategory, fontStack, useAllFontsLoaded } from "@/lib/fonts";
 import { ElementsLibrary } from "@/components/ElementsLibrary";
@@ -92,6 +92,8 @@ export default function Composer() {
   const [templateUploading, setTemplateUploading] = useState(false);
   const templateFileRef = useRef(null);
   const cardRef = useRef(null);
+  const previewBoxRef = useRef(null);
+  const previewScale = useCardScale(previewBoxRef, 0.45);
   // Only templates built for the currently chosen format make sense to build
   // from — a single-image template has nothing to offer a carousel.
   const filteredCustomTemplates = customTemplates.filter((t) => t.format === format);
@@ -912,9 +914,9 @@ export default function Composer() {
                             selectedId={selectedElementId} onSelect={setSelectedElementId}
                             onChangeElement={patchElement} />
                         ) : (
-                          <div className={`${aspectCls} w-full overflow-hidden rounded-xl`}>
+                          <div ref={previewBoxRef} className={`${aspectCls} w-full overflow-hidden rounded-xl`}>
                             <div ref={cardRef} className="h-full w-full">
-                              <VisualCard spec={activeAsset.spec} brand={brand} scale={0.86} />
+                              <VisualCard spec={activeAsset.spec} brand={brand} scale={previewScale} />
                             </div>
                           </div>
                         )}
