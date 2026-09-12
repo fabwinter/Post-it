@@ -783,6 +783,26 @@ check("a PDF with a real font but no image still gets a usable layout",
 check("...carrying the PDF's own real font, not a generic default",
       any(e.get("fontFamily") == "Helvetica" for e in tpl["layouts"].get("cover", [])), tpl["layouts"])
 
+# A source image that's uniformly dark (a moody photo, no real bright color
+# anywhere) shouldn't produce invisible text — "brightest of six dark
+# browns" still needs to fall back to white against a near-black background.
+low_contrast = server._suggest_palette(["#010000", "#762a1f", "#532619", "#37110c", "#130805", "#8b3e28"])
+check("a uniformly-dark source palette gets a genuinely legible foreground, not just 'the brightest of the dark ones'",
+      low_contrast["fg"] == "#ffffff", low_contrast)
+# The reverse case: a uniformly light/pastel source (a beige scrapbook
+# background) needs dark text, not "the darkest of the light ones".
+low_contrast_light = server._suggest_palette(["#fdf6ec", "#f7e7d0", "#f0dcc0", "#ebd2ae", "#e6c89c"])
+check("a uniformly-light source palette also gets a genuinely legible foreground",
+      server._contrast_ratio(low_contrast_light["fg"], low_contrast_light["bg"]) >= 4.5, low_contrast_light)
+# A palette that already has real contrast shouldn't be second-guessed —
+# and every extracted palette, regardless of source, ends up legible.
+good_contrast = server._suggest_palette(["#0a0a0a", "#f5f5f5"])
+check("a palette with real contrast keeps its own foreground unchanged",
+      good_contrast["fg"] in ("#0a0a0a", "#f5f5f5"), good_contrast)
+for palette in (low_contrast, low_contrast_light, good_contrast):
+    check("the final bg/fg pairing is always genuinely legible",
+          server._contrast_ratio(palette["fg"], palette["bg"]) >= 4.5, palette)
+
 CHAT_REPLY["value"] = json.dumps({
     "format": "single", "title": "T", "caption": "cap", "hashtags": [],
     "visual": {"style": "photo", "title": "Real headline", "image_prompt": "x"}})
