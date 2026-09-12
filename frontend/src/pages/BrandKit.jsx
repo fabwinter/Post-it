@@ -1,15 +1,24 @@
 import { useEffect, useRef, useState } from "react";
+import { toPng } from "html-to-image";
 import { api, apiErrorMessage } from "@/lib/api";
 import { useBrandKits } from "@/lib/useBrand";
 import { BRAND_FONTS, groupFontsByCategory } from "@/lib/fonts";
 import { VisualCard } from "@/components/VisualCard";
+import { BrandGuidelineDoc } from "@/components/BrandGuidelineDoc";
 import { KnowledgeBase } from "@/components/KnowledgeBase";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
   Palette, Save, Loader2, Plus, X, Upload, ImageOff, Sparkles, Image as ImageIcon,
-  FileText, Link as LinkIcon, Check, Shapes, Star, Trash2, Moon, Sun, Type, Download,
+  FileText, Link as LinkIcon, Check, Shapes, Star, Trash2, Moon, Sun, Type, Download, ScrollText,
 } from "lucide-react";
+
+const emptyGuideline = () => ({
+  logo_clear_space: "", logo_min_size: "", logo_dos: [], logo_donts: [],
+  imagery_mood: "", imagery_color: "", icon_style: "",
+  voice_attributes: [], voice_do: "", voice_dont: "",
+  doc_owner: "", version: "v1.0",
+});
 
 const COLOR_FIELDS = [
   { key: "bg", label: "Primary" },
@@ -31,7 +40,7 @@ const emptyKit = () => ({
             light: { bg: "#FFFFFF", fg: "#0A0A0A", accent: "#0047FF", sub: "#6b7280" } },
   color_mode: "dark", fonts: { display: "Inter", body: "Inter" },
   logo_url: null, handle: "", voice: "", style: "", audience: "",
-  hashtags: [], cta: "", banned_words: [], is_default: false,
+  hashtags: [], cta: "", banned_words: [], guideline: emptyGuideline(), is_default: false,
 });
 
 export default function BrandKit() {
@@ -41,7 +50,9 @@ export default function BrandKit() {
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [downloadingGuideline, setDownloadingGuideline] = useState(false);
   const logoInputRef = useRef(null);
+  const guidelineRef = useRef(null);
 
   const [importType, setImportType] = useState("image");
   const [importUrl, setImportUrl] = useState("");
@@ -67,6 +78,7 @@ export default function BrandKit() {
   const set = (k, v) => setForm((s) => ({ ...s, [k]: v }));
   const mode = form.color_mode === "light" ? "light" : "dark";
   const setColor = (k, v) => setForm((s) => ({ ...s, colors: { ...s.colors, [mode]: { ...s.colors[mode], [k]: v } } }));
+  const setGuideline = (k, v) => setForm((s) => ({ ...s, guideline: { ...emptyGuideline(), ...s.guideline, [k]: v } }));
 
   const selectKit = (kit) => { setSelectedId(kit.id); setForm(kit); setAnalysis(null); setApplied(false); };
   const newKit = () => { setSelectedId(null); setForm(emptyKit()); setAnalysis(null); setApplied(false); };
@@ -112,6 +124,7 @@ export default function BrandKit() {
         name: form.name, colors: form.colors, color_mode: form.color_mode, fonts: form.fonts,
         logo_url: form.logo_url || null, handle: form.handle, voice: form.voice, style: form.style,
         audience: form.audience, hashtags: form.hashtags, cta: form.cta, banned_words: form.banned_words,
+        guideline: form.guideline,
       };
       const { data } = form.id ? await api.put(`/brand-kits/${form.id}`, payload) : await api.post("/brand-kits", payload);
       setSelectedId(data.id); setForm(data);
@@ -138,6 +151,24 @@ export default function BrandKit() {
       toast.success("Downloaded — brand kit and knowledge base, in one file.");
     } catch (e) { toast.error(apiErrorMessage(e, "Couldn't export the brand kit.")); }
     finally { setExporting(false); }
+  };
+
+  // The one-page guideline reflects the form live (including unsaved edits)
+  // so what you download always matches what's on screen — but it's built
+  // from the same data Save persists, so downloading right after Save is
+  // exactly what a teammate would see if they opened this kit later.
+  const downloadGuideline = async () => {
+    if (!guidelineRef.current) return;
+    setDownloadingGuideline(true);
+    try {
+      const url = await toPng(guidelineRef.current, { pixelRatio: 2, cacheBust: true });
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${(form.name || "brand-guideline").replace(/\W+/g, "-").toLowerCase()}-guideline.png`;
+      a.click();
+      toast.success("Downloaded brand guideline");
+    } catch (e) { toast.error(apiErrorMessage(e, "Couldn't export the guideline.")); }
+    finally { setDownloadingGuideline(false); }
   };
 
   // Runs the analysis for whichever source is picked — an uploaded file for
@@ -314,6 +345,56 @@ export default function BrandKit() {
               onChange={(v) => set("banned_words", v)} placeholder="synergy" />
           </section>
 
+          <section className="rounded-xl border border-white/10 bg-[#121212] p-5" data-testid="brand-guideline-fields">
+            <h3 className="flex items-center gap-2 font-display text-base font-semibold">
+              <ScrollText size={15} className="text-lime" /> Brand Guideline
+            </h3>
+            <p className="mt-1.5 text-xs leading-relaxed text-zinc-500">
+              The extra detail a one-page guideline needs beyond a graphic theme — logo rules, imagery direction
+              and how the voice reads in practice. Everything above (colors, fonts, voice, audience) feeds the
+              same page automatically.
+            </p>
+
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <Field label="Logo clear space" value={form.guideline?.logo_clear_space}
+                onChange={(v) => setGuideline("logo_clear_space", v)}
+                placeholder="Keep a margin ≥ the height of the icon mark on every side." testid="brand-guideline-clear-space" />
+              <Field label="Logo minimum size" value={form.guideline?.logo_min_size}
+                onChange={(v) => setGuideline("logo_min_size", v)}
+                placeholder="24px digital / 0.5in print" testid="brand-guideline-min-size" />
+            </div>
+            <TagList className="mt-4" label="Logo do's" values={form.guideline?.logo_dos} testid="brand-guideline-logo-dos"
+              onChange={(v) => setGuideline("logo_dos", v)} placeholder="Use approved source files" />
+            <TagList className="mt-4" label="Logo don'ts" values={form.guideline?.logo_donts} testid="brand-guideline-logo-donts"
+              onChange={(v) => setGuideline("logo_donts", v)} placeholder="Recolor or stretch" />
+
+            <Area className="mt-4" label="Photography mood" value={form.guideline?.imagery_mood}
+              onChange={(v) => setGuideline("imagery_mood", v)}
+              placeholder="Natural light, candid, optimistic — avoid staged stock photography." rows={2} testid="brand-guideline-imagery-mood" />
+            <Area className="mt-4" label="Photography color" value={form.guideline?.imagery_color}
+              onChange={(v) => setGuideline("imagery_color", v)}
+              placeholder="Warm, slightly desaturated; avoid heavy filters." rows={2} testid="brand-guideline-imagery-color" />
+            <Area className="mt-4" label="Icon style" value={form.guideline?.icon_style}
+              onChange={(v) => setGuideline("icon_style", v)}
+              placeholder="Outline only, 1.5-2px stroke, 24px grid. Never mix filled and outline." rows={2} testid="brand-guideline-icon-style" />
+
+            <TagList className="mt-4" label="Voice attributes" values={form.guideline?.voice_attributes} testid="brand-guideline-voice-attributes"
+              onChange={(v) => setGuideline("voice_attributes", v)} placeholder="Confident" />
+            <Field className="mt-4" label="Voice — do this" value={form.guideline?.voice_do}
+              onChange={(v) => setGuideline("voice_do", v)}
+              placeholder="[Product] now supports X — here's how to turn it on." testid="brand-guideline-voice-do" />
+            <Field className="mt-4" label="Voice — not this" value={form.guideline?.voice_dont}
+              onChange={(v) => setGuideline("voice_dont", v)}
+              placeholder="We are thrilled and honored to announce our latest revolutionary innovation!!!" testid="brand-guideline-voice-dont" />
+
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <Field label="Document owner" value={form.guideline?.doc_owner}
+                onChange={(v) => setGuideline("doc_owner", v)} placeholder="Name, Role" testid="brand-guideline-owner" />
+              <Field label="Version" value={form.guideline?.version}
+                onChange={(v) => setGuideline("version", v)} placeholder="v1.0" testid="brand-guideline-version" />
+            </div>
+          </section>
+
           <section className="rounded-xl border border-white/10 bg-[#121212] p-5" data-testid="brand-import">
             <h3 className="flex items-center gap-2 font-display text-base font-semibold">
               <Sparkles size={15} className="text-lime" /> Build it from something you already have
@@ -421,6 +502,25 @@ export default function BrandKit() {
           </div>
         </div>
       </div>
+
+      <section className="mt-6 rounded-xl border border-white/10 bg-[#121212] p-5" data-testid="brand-guideline-preview">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="flex items-center gap-2 font-display text-base font-semibold">
+            <ScrollText size={15} className="text-lime" /> Brand Guideline — one-page summary
+          </h3>
+          <Button variant="secondary" onClick={downloadGuideline} disabled={downloadingGuideline} data-testid="brand-guideline-download"
+            className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 text-xs text-white hover:bg-white/10">
+            {downloadingGuideline ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />} Download PNG
+          </Button>
+        </div>
+        <p className="mt-1.5 text-xs leading-relaxed text-zinc-500">
+          Everything above, laid out on one page — logo usage, palette, type, imagery direction and voice.
+          Updates live as you edit; Save keeps it for next time.
+        </p>
+        <div className="mt-4 overflow-x-auto rounded-lg">
+          <BrandGuidelineDoc ref={guidelineRef} brand={form} />
+        </div>
+      </section>
     </div>
   );
 }
