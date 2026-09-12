@@ -1305,6 +1305,100 @@ def _pdf_fonts(reader: PdfReader, max_pages: int = 5) -> List[str]:
     return [n for n, _ in Counter(names).most_common(3)]
 
 
+def _pdf_vector_colors(reader: PdfReader, max_pages: int = 5) -> Optional[Dict[str, str]]:
+    """The PDF's own real fill colors, read directly from its vector content
+    stream (the ``R G B rg`` fill-color operator that precedes a filled
+    rectangle or a text run) — not sampled from whichever embedded raster
+    image happens to come first. A Canva/Illustrator/Figma export typically
+    paints its background and text with these vector operators, while the
+    first embedded image in such a file is often an unrelated decorative
+    overlay (and may be mostly transparent, which naive RGBA-to-RGB
+    flattening turns into solid black) — so vector colors are strongly
+    preferred over raster sampling whenever a PDF has any. Many exports
+    trace a rectangle purely to *clip* later content (`re W n`, never
+    painted) — only a rectangle that's actually filled (`re ... f`) counts
+    toward area, otherwise a full-page clip path would be indistinguishable
+    from a full-page background fill. Among painted rectangles near the
+    largest size found, the most recently painted one wins the background
+    slot, since a base fill is routinely painted over by another full-bleed
+    color layered on top of it. The color most often active when text is
+    drawn is the foreground."""
+    fill_area: Counter = Counter()
+    paint_colors: Counter = Counter()
+    max_area = 0.0
+    bg_candidate = None
+    text_colors: Counter = Counter()
+    saw_any = False
+
+    for page in reader.pages[:max_pages]:
+        try:
+            contents = page.get_contents()
+            data = contents.get_data() if contents is not None else b""
+        except Exception:
+            continue
+        if not data:
+            continue
+
+        stack: List[float] = []
+        fill_color = None
+        pending_rect_area = None
+        for tok in data.split():
+            try:
+                stack.append(float(tok))
+                continue
+            except ValueError:
+                pass
+            if tok == b"rg" and len(stack) >= 3:
+                r, g, b = stack[-3:]
+                if all(0 <= v <= 1 for v in (r, g, b)):
+                    fill_color = f"#{round(r * 255):02x}{round(g * 255):02x}{round(b * 255):02x}"
+                    saw_any = True
+            elif tok == b"re" and len(stack) >= 4:
+                pending_rect_area = abs(stack[-2] * stack[-1])
+            elif tok in (b"f", b"F", b"f*", b"B", b"B*", b"b", b"b*"):
+                if fill_color:
+                    paint_colors[fill_color] += 1
+                if pending_rect_area and fill_color:
+                    fill_area[fill_color] += pending_rect_area
+                    if pending_rect_area >= max_area * 0.9:
+                        bg_candidate = fill_color
+                    max_area = max(max_area, pending_rect_area)
+                pending_rect_area = None
+            elif tok in (b"n", b"S", b"s"):
+                pending_rect_area = None
+            elif tok in (b"Tj", b"TJ") and fill_color:
+                text_colors[fill_color] += 1
+            stack = []
+
+    if not saw_any:
+        return None
+
+    bg = bg_candidate or (fill_area.most_common(1)[0][0] if fill_area else None)
+    if not bg:
+        return None
+    remaining_by_area = [hx for hx, _count in fill_area.most_common() if hx != bg]
+    fg = (next((hx for hx, _count in text_colors.most_common() if hx != bg), None)
+          or next(iter(remaining_by_area), "#ffffff"))
+
+    def _hsv(hexcode):
+        r, g, b = (int(hexcode[i:i + 2], 16) / 255 for i in (1, 3, 5))
+        return colorsys.rgb_to_hsv(r, g, b)
+
+    # Accent/sub draw from every painted color (rectangles and curved
+    # shapes alike, e.g. doodles/icons) — fill_area alone only tracks
+    # rectangle fills and would miss a page's real decorative accents. A
+    # near-black or near-white color reads as visually neutral but can
+    # still score a deceptively high HSV saturation (e.g. #090000 is
+    # "fully saturated" red at near-zero brightness) — excluded so a real
+    # colorful accent wins over what's actually just another shade of ink.
+    others = [hx for hx, _count in paint_colors.most_common() if hx not in (bg, fg)]
+    vivid = [hx for hx in others if 0.15 <= _hsv(hx)[2] <= 0.95]
+    candidates = vivid or others
+    accent = max(candidates, key=lambda hx: _hsv(hx)[1]) if candidates else fg
+    sub = next((hx for hx in vivid if hx != accent), None) or next((hx for hx in others if hx != accent), fg)
+    return {"bg": bg, "fg": _readable_text_color(fg, bg), "accent": accent, "sub": sub}
+
+
 def _pdf_extract(pdf_bytes: bytes, max_pages: int = 20) -> Dict[str, Any]:
     reader = PdfReader(io.BytesIO(pdf_bytes))
     pages = reader.pages[:max_pages]
@@ -1325,8 +1419,13 @@ def _pdf_extract(pdf_bytes: bytes, max_pages: int = 20) -> Dict[str, Any]:
         fonts = _pdf_fonts(reader)
     except Exception:
         pass
+    vector_colors = None
+    try:
+        vector_colors = _pdf_vector_colors(reader)
+    except Exception:
+        pass
     return {"page_count": len(reader.pages), "text": full_text[:8000], "page_texts": page_texts,
-            "first_image": first_image, "fonts": fonts}
+            "first_image": first_image, "fonts": fonts, "vector_colors": vector_colors}
 
 
 def _pptx_extract(pptx_bytes: bytes, max_slides: int = 30) -> List[Dict[str, str]]:
@@ -1758,7 +1857,11 @@ async def analyze_brand_source(req: BrandAnalyzeRequest):
     elif req.source_type == "pdf":
         data = await asyncio.to_thread(_fetch_bytes, req.source_url)
         pdf = await asyncio.to_thread(_pdf_extract, data)
-        if pdf["first_image"]:
+        used_vector = False
+        if pdf["vector_colors"]:
+            result["colors"] = pdf["vector_colors"]
+            used_vector = True
+        elif pdf["first_image"]:
             try:
                 hexes = await asyncio.to_thread(_dominant_colors, pdf["first_image"])
                 result["colors"] = _suggest_palette(hexes)
@@ -1767,7 +1870,12 @@ async def analyze_brand_source(req: BrandAnalyzeRequest):
         voice = await _infer_voice_style(pdf["text"], f"a {pdf['page_count']}-page PDF", model)
         result["voice"], result["style"], result["detected_name"] = voice["voice"], voice["style"], voice["suggested_name"]
         note = f"Voice and style inferred from the PDF's actual text ({pdf['page_count']} pages read)."
-        note += " A color palette was pulled from an image embedded in the PDF." if pdf["first_image"] else " No embedded image found to pull colors from."
+        if used_vector:
+            note += " A color palette was read directly from the PDF's own vector fill colors."
+        elif pdf["first_image"]:
+            note += " A color palette was pulled from an image embedded in the PDF."
+        else:
+            note += " No usable colors found to pull a palette from."
         result["source_note"] = note
 
     elif req.source_type == "url":
@@ -2214,7 +2322,9 @@ async def create_template_from_file(req: TemplateFromFileRequest):
             raise HTTPException(status_code=422, detail="Couldn't find any text in that PDF")
         slides = await _abstract_slides(raw_slides, model)
         theme = "midnight"
-        if pdf["first_image"]:
+        if pdf["vector_colors"]:
+            colors = pdf["vector_colors"]
+        elif pdf["first_image"]:
             try:
                 hexes = await asyncio.to_thread(_dominant_colors, pdf["first_image"])
                 colors = _suggest_palette(hexes)
