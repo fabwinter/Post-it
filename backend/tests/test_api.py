@@ -139,6 +139,8 @@ check("posts has assets/format/hashtags", {"assets", "format", "hashtags"} <= co
 r = c.get("/api/brand-kits")
 check("brand kits default list", r.status_code == 200 and len(r.json()) == 1
       and r.json()[0]["colors"]["dark"]["accent"] == "#E2FF3D" and r.json()[0]["color_mode"] == "dark", r.text)
+check("the default kit carries a guideline with sane defaults, not a missing key",
+      r.json()[0].get("guideline", {}).get("version") == "v1.0", r.json()[0].get("guideline"))
 
 r = c.post("/api/brand-kits", json={"name": "Acme", "voice": "dry and technical",
                                      "hashtags": ["#acme"], "banned_words": ["synergy"]})
@@ -163,6 +165,32 @@ r = c.put(f"/api/brand-kits/{acme_id}", json={"is_default": True, "color_mode": 
 check("color_mode switches, light palette merges without clobbering dark, and default moves back",
       r.json()["color_mode"] == "light" and r.json()["colors"]["light"]["bg"] == "#FFFFFF"
       and r.json()["colors"]["dark"]["accent"] == "#E2FF3D" and r.json()["is_default"] is True, r.text)
+
+# --- brand guideline: the extra one-page-summary fields, edited and saved
+# through the same PUT the rest of the kit already uses ---
+r = c.put(f"/api/brand-kits/{acme_id}", json={"guideline": {
+    "logo_clear_space": "Keep a margin >= the icon mark's height",
+    "logo_dos": ["Use approved source files"], "logo_donts": ["Recolor or stretch"],
+    "voice_attributes": ["Confident", "Warm"], "voice_do": "Ship it.", "doc_owner": "Jamie, Brand",
+    "version": "v2.0",
+}})
+check("guideline fields save", r.status_code == 200, r.text)
+guideline = r.json()["guideline"]
+check("the edited guideline fields persist", guideline["logo_clear_space"].startswith("Keep a margin"), guideline)
+check("list fields persist", guideline["logo_dos"] == ["Use approved source files"] and guideline["voice_attributes"] == ["Confident", "Warm"], guideline)
+check("fields not touched by this update keep their defaults, not go missing",
+      guideline["icon_style"] == "" and guideline["imagery_mood"] == "", guideline)
+r = c.get(f"/api/brand-kits/{acme_id}")
+check("guideline survives a reload, not just the immediate response", r.json()["guideline"]["doc_owner"] == "Jamie, Brand", r.json()["guideline"])
+check("...and other kit fields are untouched by a guideline-only update", r.json()["voice"] == "dry and technical", r.text)
+
+# A second, unrelated partial guideline update must not wipe out what the
+# first one set — a real merge onto the saved guideline, not a replacement.
+r = c.put(f"/api/brand-kits/{acme_id}", json={"guideline": {"icon_style": "Outline only, 24px grid"}})
+guideline2 = r.json()["guideline"]
+check("a later partial guideline update doesn't erase an earlier one's fields",
+      guideline2["doc_owner"] == "Jamie, Brand" and guideline2["voice_attributes"] == ["Confident", "Warm"], guideline2)
+check("...while still applying its own new field", guideline2["icon_style"] == "Outline only, 24px grid", guideline2)
 
 r = c.get("/api/brand-kits/does-not-exist")
 check("unknown brand kit 404s", r.status_code == 404, r.text)

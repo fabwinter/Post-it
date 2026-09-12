@@ -202,6 +202,7 @@ _ADD_COLUMNS = {
     "brand_kits": [
         ("style", "ALTER TABLE brand_kits ADD COLUMN style TEXT"),
         ("color_mode", "ALTER TABLE brand_kits ADD COLUMN color_mode TEXT NOT NULL DEFAULT 'dark'"),
+        ("guideline", "ALTER TABLE brand_kits ADD COLUMN guideline TEXT NOT NULL DEFAULT '{}'"),
     ],
     # Precomputed retrieval terms — stemmed once at ingest instead of on
     # every generation. See _term_counts / _chunk_term_counts / _doc_meta_terms.
@@ -2661,6 +2662,17 @@ async def rss_import(req: RssImportRequest):
 # the rename. color_mode picks which palette this kit currently renders with.
 DEFAULT_DARK_COLORS = {"bg": "#0A0A0A", "fg": "#FFFFFF", "accent": "#E2FF3D", "sub": "#a1a1aa"}
 DEFAULT_LIGHT_COLORS = {"bg": "#FFFFFF", "fg": "#0A0A0A", "accent": "#0047FF", "sub": "#6b7280"}
+# The extra content a one-page brand guideline needs that a graphic-oriented
+# kit otherwise has no reason to collect: how the logo may be used, what
+# imagery/icons should look like, and the voice's plain attributes/examples
+# rather than just its free-text description.
+DEFAULT_GUIDELINE = {
+    "logo_clear_space": "", "logo_min_size": "",
+    "logo_dos": [], "logo_donts": [],
+    "imagery_mood": "", "imagery_color": "", "icon_style": "",
+    "voice_attributes": [], "voice_do": "", "voice_dont": "",
+    "doc_owner": "", "version": "v1.0",
+}
 DEFAULT_BRAND = {
     "name": "Default brand",
     "colors": {"dark": DEFAULT_DARK_COLORS, "light": DEFAULT_LIGHT_COLORS},
@@ -2674,6 +2686,7 @@ DEFAULT_BRAND = {
     "hashtags": [],
     "cta": "",
     "banned_words": [],
+    "guideline": DEFAULT_GUIDELINE,
 }
 
 
@@ -2690,6 +2703,7 @@ class BrandKitUpdate(BaseModel):
     hashtags: Optional[List[str]] = None
     cta: Optional[str] = None
     banned_words: Optional[List[str]] = None
+    guideline: Optional[Dict[str, Any]] = None
     is_default: Optional[bool] = None
 
 
@@ -2721,6 +2735,7 @@ def _row_to_brand(row: dict):
         "hashtags": json.loads(row["hashtags"] or "[]"),
         "cta": row["cta"] or "",
         "banned_words": json.loads(row["banned_words"] or "[]"),
+        "guideline": {**DEFAULT_GUIDELINE, **json.loads(row.get("guideline") or "{}")},
         "updated_at": row["updated_at"],
     }
 
@@ -2780,6 +2795,8 @@ async def list_brand_kits():
 async def create_brand_kit(upd: BrandKitUpdate):
     await ensure_schema()
     changes = {k: v for k, v in upd.model_dump().items() if v is not None and k != "is_default"}
+    if changes.get("guideline") is not None:
+        changes["guideline"] = {**DEFAULT_GUIDELINE, **changes["guideline"]}
     merged = {**DEFAULT_BRAND, **changes}
     if not changes.get("name"):
         merged["name"] = "New brand kit"
@@ -2789,12 +2806,12 @@ async def create_brand_kit(upd: BrandKitUpdate):
     is_first = not rows or not rows[0]["n"]
     out, _ = await d1_query(
         "INSERT INTO brand_kits (id, name, colors, color_mode, fonts, logo_url, handle, voice, style, audience, "
-        "hashtags, cta, banned_words, is_default, updated_at, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
+        "hashtags, cta, banned_words, guideline, is_default, updated_at, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
         [str(uuid.uuid4()), merged["name"], json.dumps(merged["colors"]), merged["color_mode"],
          json.dumps(merged["fonts"]), merged["logo_url"], merged["handle"], merged["voice"], merged["style"],
          merged["audience"], json.dumps(merged["hashtags"]), merged["cta"], json.dumps(merged["banned_words"]),
-         1 if is_first else 0, ts, ts],
+         json.dumps(merged["guideline"]), 1 if is_first else 0, ts, ts],
     )
     return _row_to_brand(out[0])
 
@@ -2815,15 +2832,23 @@ async def update_brand_kit(kit_id: str, upd: BrandKitUpdate):
     if not rows:
         raise HTTPException(status_code=404, detail="Brand kit not found")
     changes = {k: v for k, v in upd.model_dump().items() if v is not None and k != "is_default"}
-    merged = {**_row_to_brand(rows[0]), **changes}
+    existing = _row_to_brand(rows[0])
+    if changes.get("guideline") is not None:
+        # Unlike colors' dark/light shape, a guideline is a flat bag of
+        # scalar/list fields — a plain merge onto what's already saved, so a
+        # caller that only sends the fields it changed doesn't wipe out
+        # everything else in the guideline.
+        changes["guideline"] = {**existing["guideline"], **changes["guideline"]}
+    merged = {**existing, **changes}
     merged["colors"] = _normalize_colors(merged["colors"])
     ts = now_iso()
     out, _ = await d1_query(
         "UPDATE brand_kits SET name=?, colors=?, color_mode=?, fonts=?, logo_url=?, handle=?, voice=?, style=?, "
-        "audience=?, hashtags=?, cta=?, banned_words=?, updated_at=? WHERE id=? RETURNING *",
+        "audience=?, hashtags=?, cta=?, banned_words=?, guideline=?, updated_at=? WHERE id=? RETURNING *",
         [merged["name"], json.dumps(merged["colors"]), merged["color_mode"], json.dumps(merged["fonts"]),
          merged["logo_url"], merged["handle"], merged["voice"], merged["style"], merged["audience"],
-         json.dumps(merged["hashtags"]), merged["cta"], json.dumps(merged["banned_words"]), ts, kit_id],
+         json.dumps(merged["hashtags"]), merged["cta"], json.dumps(merged["banned_words"]),
+         json.dumps(merged["guideline"]), ts, kit_id],
     )
     if upd.is_default:
         await d1_query("UPDATE brand_kits SET is_default = 0 WHERE id != ?", [kit_id])
