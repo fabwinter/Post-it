@@ -2356,6 +2356,23 @@ def _apply_template_layouts(assets: List[Dict[str, Any]], template: dict) -> Lis
     return assets
 
 
+def _layout_hint(el: Dict[str, Any]) -> Optional[str]:
+    """Which dynamic slot (title-ish, or body) an element was already
+    established as, from either signal a text element can carry it under:
+    role_hint (an extraction's own say-so, see _pptx_extract_design) or role
+    (this same function's OWN output from a previous save — see the note on
+    _layout_from_elements below for why that second case matters)."""
+    hint = el.get("role_hint")
+    if hint:
+        return hint
+    role = el.get("role")
+    if role in ("title", "heading"):
+        return "title"
+    if role == "body":
+        return "body"
+    return None
+
+
 def _layout_from_elements(elements: List[Dict[str, Any]], is_cover: bool) -> List[Dict[str, Any]]:
     """Turns one slide's freeform elements into a reusable layout: one or two
     text elements become dynamic (role title/heading, then body — refilled
@@ -2364,12 +2381,24 @@ def _layout_from_elements(elements: List[Dict[str, Any]], is_cover: bool) -> Lis
     unchanged on every future post built from this template.
 
     An extracted design says outright which element is its headline and which
-    is its paragraph (role_hint, see _pptx_extract_design). Without that hint
-    — a deck saved from the Composer — fall back to the two topmost text
-    elements, which is a fair guess for a layout built in this app."""
+    is its paragraph (role_hint, see _pptx_extract_design) — but editing a
+    template that arrived with that hint materializes it into a real,
+    editable Composer deck first (see templateEdit.js), and role_hint isn't
+    on the result: it was already consumed and popped, replaced by this same
+    function's own `role` output the first time it ran. Re-saving that deck
+    with no memory of the hint would fall through to guessing by Y position —
+    and for a design where the actual headline isn't the visually topmost
+    text (a date stamp or handle sitting above it, as in a real Canva-style
+    layout), that guess lands on the wrong element: the badge becomes the
+    "dynamic" slot and the real headline's role is silently duplicated onto
+    it, corrupting both on the very first edit-and-save. Treating an
+    established `role` exactly like `role_hint` (_layout_hint, above) keeps
+    the assignment stable across any number of edit/save cycles; the Y-guess
+    is now reached only on a template's first save, when neither signal
+    exists at all (a deck drafted straight in the Composer)."""
     texts = [e for e in elements if e.get("type") == "text"]
-    hinted_title = next((e for e in texts if e.get("role_hint") == "title"), None)
-    hinted_body = next((e for e in texts if e.get("role_hint") == "body"), None)
+    hinted_title = next((e for e in texts if _layout_hint(e) == "title"), None)
+    hinted_body = next((e for e in texts if _layout_hint(e) == "body"), None)
     if hinted_title or hinted_body:
         roles = {id(e): role for e, role in ((hinted_title, "title"), (hinted_body, "body")) if e}
     else:
@@ -2380,6 +2409,10 @@ def _layout_from_elements(elements: List[Dict[str, Any]], is_cover: bool) -> Lis
         e = dict(el)
         e.pop("id", None)
         e.pop("role_hint", None)
+        # Cleared unconditionally so an element demoted this round (it held
+        # a role before but lost the hint contest to another element) can't
+        # keep answering to its stale role forever — see the docstring.
+        e.pop("role", None)
         role = roles.get(id(el))
         if role:
             e["role"] = ("title" if is_cover else "heading") if role == "title" else "body"
