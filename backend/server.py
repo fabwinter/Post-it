@@ -2667,12 +2667,27 @@ DEFAULT_LIGHT_COLORS = {"bg": "#FFFFFF", "fg": "#0A0A0A", "accent": "#0047FF", "
 # imagery/icons should look like, and the voice's plain attributes/examples
 # rather than just its free-text description.
 DEFAULT_GUIDELINE = {
+    # Three lockups a real guideline shows side by side, on top of the
+    # kit's own primary logo_url: full color, and the two single-color
+    # variants for a light or dark background respectively.
+    "logos": {"color": "", "black_on_white": "", "white_on_black": ""},
     "logo_clear_space": "", "logo_min_size": "",
     "logo_dos": [], "logo_donts": [],
     "imagery_mood": "", "imagery_color": "", "icon_style": "",
     "voice_attributes": [], "voice_do": "", "voice_dont": "",
     "doc_owner": "", "version": "v1.0",
 }
+def _normalize_guideline(raw) -> dict:
+    """Merges a saved (possibly partial or legacy) guideline onto
+    DEFAULT_GUIDELINE so a missing key never surfaces as a KeyError — same
+    idea as _normalize_colors, but guideline is otherwise flat aside from
+    the nested `logos` lockups, which get their own one-level merge."""
+    g = raw if isinstance(raw, dict) else {}
+    merged = {**DEFAULT_GUIDELINE, **g}
+    merged["logos"] = {**DEFAULT_GUIDELINE["logos"], **(g.get("logos") or {})}
+    return merged
+
+
 DEFAULT_BRAND = {
     "name": "Default brand",
     "colors": {"dark": DEFAULT_DARK_COLORS, "light": DEFAULT_LIGHT_COLORS},
@@ -2735,7 +2750,7 @@ def _row_to_brand(row: dict):
         "hashtags": json.loads(row["hashtags"] or "[]"),
         "cta": row["cta"] or "",
         "banned_words": json.loads(row["banned_words"] or "[]"),
-        "guideline": {**DEFAULT_GUIDELINE, **json.loads(row.get("guideline") or "{}")},
+        "guideline": _normalize_guideline(json.loads(row.get("guideline") or "{}")),
         "updated_at": row["updated_at"],
     }
 
@@ -2796,7 +2811,7 @@ async def create_brand_kit(upd: BrandKitUpdate):
     await ensure_schema()
     changes = {k: v for k, v in upd.model_dump().items() if v is not None and k != "is_default"}
     if changes.get("guideline") is not None:
-        changes["guideline"] = {**DEFAULT_GUIDELINE, **changes["guideline"]}
+        changes["guideline"] = _normalize_guideline(changes["guideline"])
     merged = {**DEFAULT_BRAND, **changes}
     if not changes.get("name"):
         merged["name"] = "New brand kit"
@@ -2834,11 +2849,14 @@ async def update_brand_kit(kit_id: str, upd: BrandKitUpdate):
     changes = {k: v for k, v in upd.model_dump().items() if v is not None and k != "is_default"}
     existing = _row_to_brand(rows[0])
     if changes.get("guideline") is not None:
-        # Unlike colors' dark/light shape, a guideline is a flat bag of
-        # scalar/list fields — a plain merge onto what's already saved, so a
+        # A guideline is mostly a flat bag of scalar/list fields (plus the
+        # nested `logos` lockups) — merge onto what's already saved, so a
         # caller that only sends the fields it changed doesn't wipe out
         # everything else in the guideline.
-        changes["guideline"] = {**existing["guideline"], **changes["guideline"]}
+        merged_guideline = {**existing["guideline"], **changes["guideline"]}
+        if "logos" in changes["guideline"]:
+            merged_guideline["logos"] = {**existing["guideline"]["logos"], **changes["guideline"]["logos"]}
+        changes["guideline"] = merged_guideline
     merged = {**existing, **changes}
     merged["colors"] = _normalize_colors(merged["colors"])
     ts = now_iso()

@@ -14,11 +14,18 @@ import {
 } from "lucide-react";
 
 const emptyGuideline = () => ({
+  logos: { color: "", black_on_white: "", white_on_black: "" },
   logo_clear_space: "", logo_min_size: "", logo_dos: [], logo_donts: [],
   imagery_mood: "", imagery_color: "", icon_style: "",
   voice_attributes: [], voice_do: "", voice_dont: "",
   doc_owner: "", version: "v1.0",
 });
+
+const LOGO_VARIANTS = [
+  { key: "color", label: "Full color" },
+  { key: "black_on_white", label: "Black on white" },
+  { key: "white_on_black", label: "White on black" },
+];
 
 const COLOR_FIELDS = [
   { key: "bg", label: "Primary" },
@@ -50,6 +57,7 @@ export default function BrandKit() {
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [uploadingVariant, setUploadingVariant] = useState(null); // key of the logo variant currently uploading, or null
   const [downloadingGuideline, setDownloadingGuideline] = useState(false);
   const logoInputRef = useRef(null);
   const guidelineRef = useRef(null);
@@ -79,6 +87,9 @@ export default function BrandKit() {
   const mode = form.color_mode === "light" ? "light" : "dark";
   const setColor = (k, v) => setForm((s) => ({ ...s, colors: { ...s.colors, [mode]: { ...s.colors[mode], [k]: v } } }));
   const setGuideline = (k, v) => setForm((s) => ({ ...s, guideline: { ...emptyGuideline(), ...s.guideline, [k]: v } }));
+  const setLogoVariant = (key, url) => setForm((s) => ({
+    ...s, guideline: { ...emptyGuideline(), ...s.guideline, logos: { ...emptyGuideline().logos, ...s.guideline?.logos, [key]: url } },
+  }));
 
   const selectKit = (kit) => { setSelectedId(kit.id); setForm(kit); setAnalysis(null); setApplied(false); };
   const newKit = () => { setSelectedId(null); setForm(emptyKit()); setAnalysis(null); setApplied(false); };
@@ -115,6 +126,19 @@ export default function BrandKit() {
       toast.success("Logo uploaded");
     } catch (e) { toast.error(apiErrorMessage(e, "Upload failed.")); }
     finally { setUploadingLogo(false); if (logoInputRef.current) logoInputRef.current.value = ""; }
+  };
+
+  const uploadLogoVariant = async (key, file, inputEl) => {
+    if (!file) return;
+    setUploadingVariant(key);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const { data } = await api.post("/upload", body);
+      setLogoVariant(key, data.url);
+      toast.success("Logo uploaded");
+    } catch (e) { toast.error(apiErrorMessage(e, "Upload failed.")); }
+    finally { setUploadingVariant(null); if (inputEl) inputEl.value = ""; }
   };
 
   const save = async () => {
@@ -355,6 +379,18 @@ export default function BrandKit() {
               same page automatically.
             </p>
 
+            <label className="mt-1 block font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">Logo lockups</label>
+            <div className="mt-1.5 grid gap-3 sm:grid-cols-3">
+              {LOGO_VARIANTS.map((v) => (
+                <LogoVariantUpload key={v.key} label={v.label} url={form.guideline?.logos?.[v.key]}
+                  uploading={uploadingVariant === v.key} dark={v.key === "white_on_black"}
+                  onUpload={(file, el) => uploadLogoVariant(v.key, file, el)}
+                  onUrlChange={(url) => setLogoVariant(v.key, url)}
+                  onRemove={() => setLogoVariant(v.key, "")}
+                  testid={`brand-guideline-logo-${v.key}`} />
+              ))}
+            </div>
+
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
               <Field label="Logo clear space" value={form.guideline?.logo_clear_space}
                 onChange={(v) => setGuideline("logo_clear_space", v)}
@@ -540,6 +576,41 @@ const Field = ({ label, value, onChange, placeholder, testid, className = "" }) 
       data-testid={testid} className={inputCls} />
   </div>
 );
+
+// One of the three logo lockups a guideline shows side by side — its own
+// upload, thumbnail (on a dark or light chip, matching what the logo is
+// meant to sit on) and a paste-a-URL fallback, same pattern as the main
+// Identity logo field but compact enough to repeat three times.
+const LogoVariantUpload = ({ label, url, uploading, dark, onUpload, onUrlChange, onRemove, testid }) => {
+  const inputRef = useRef(null);
+  return (
+    <div>
+      <label className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">{label}</label>
+      <div className={`mt-1.5 flex h-16 items-center justify-center overflow-hidden rounded-lg border border-white/10 ${dark ? "bg-black" : "bg-white"}`}
+        data-testid={`${testid}-preview`}>
+        {url ? (
+          <img src={url} alt={label} className="h-full w-full object-contain p-2" />
+        ) : (
+          <ImageOff size={16} className={dark ? "text-zinc-700" : "text-zinc-300"} />
+        )}
+      </div>
+      <div className="mt-1.5 flex gap-1">
+        <input ref={inputRef} type="file" accept="image/*,.svg" className="hidden" data-testid={`${testid}-input`}
+          onChange={(e) => onUpload(e.target.files?.[0], inputRef.current)} />
+        <Button variant="secondary" onClick={() => inputRef.current?.click()} disabled={uploading} data-testid={`${testid}-upload`}
+          className="h-7 flex-1 gap-1 rounded-lg border border-white/10 bg-white/5 px-2 text-[11px] text-white hover:bg-white/10">
+          {uploading ? <Loader2 size={11} className="animate-spin" /> : <Upload size={11} />} Upload
+        </Button>
+        {url && (
+          <Button variant="ghost" onClick={onRemove} data-testid={`${testid}-remove`}
+            className="h-7 w-7 flex-none p-0 text-zinc-500 hover:text-magic"><X size={12} /></Button>
+        )}
+      </div>
+      <input value={url || ""} onChange={(e) => onUrlChange(e.target.value)} placeholder="or paste a URL" data-testid={`${testid}-url`}
+        className="mt-1 w-full rounded-lg border border-white/10 bg-[#0A0A0A] px-2 py-1.5 text-[11px] text-zinc-400 outline-none placeholder:text-zinc-700 focus:border-lime" />
+    </div>
+  );
+};
 
 const FontField = ({ label, value, onChange, testid, className = "" }) => {
   // A detected font from brand analysis might not be in the curated list —

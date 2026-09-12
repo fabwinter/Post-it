@@ -192,6 +192,20 @@ check("a later partial guideline update doesn't erase an earlier one's fields",
       guideline2["doc_owner"] == "Jamie, Brand" and guideline2["voice_attributes"] == ["Confident", "Warm"], guideline2)
 check("...while still applying its own new field", guideline2["icon_style"] == "Outline only, 24px grid", guideline2)
 
+# --- three logo lockups (color, black-on-white, white-on-black) ---
+check("a fresh guideline's logos default to three empty, present keys, not a missing dict",
+      set(guideline2.get("logos", {}).keys()) == {"color", "black_on_white", "white_on_black"}, guideline2.get("logos"))
+r = c.put(f"/api/brand-kits/{acme_id}", json={"guideline": {"logos": {"color": "https://x/color.png"}}})
+logos1 = r.json()["guideline"]["logos"]
+check("setting one logo variant doesn't blank the other two",
+      logos1 == {"color": "https://x/color.png", "black_on_white": "", "white_on_black": ""}, logos1)
+r = c.put(f"/api/brand-kits/{acme_id}", json={"guideline": {"logos": {"black_on_white": "https://x/black.png", "white_on_black": "https://x/white.png"}}})
+logos2 = r.json()["guideline"]["logos"]
+check("a later update to the other two variants keeps the first one already set",
+      logos2 == {"color": "https://x/color.png", "black_on_white": "https://x/black.png", "white_on_black": "https://x/white.png"}, logos2)
+r = c.get(f"/api/brand-kits/{acme_id}")
+check("all three logo lockups survive a reload", r.json()["guideline"]["logos"] == logos2, r.json()["guideline"])
+
 r = c.get("/api/brand-kits/does-not-exist")
 check("unknown brand kit 404s", r.status_code == 404, r.text)
 

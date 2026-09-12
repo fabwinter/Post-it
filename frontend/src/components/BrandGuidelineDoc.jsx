@@ -25,6 +25,19 @@ const SectionLabel = ({ n, title, f }) => (
   </div>
 );
 
+const LogoChip = ({ label, url, dark, f }) => (
+  <div style={{ textAlign: "center", flex: 1 }}>
+    <div style={{ height: f(52), borderRadius: f(8), border: "1px solid #e5e7eb", background: dark ? "#141414" : "#fafafa", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+      {url ? (
+        <img src={url} alt={label} style={{ maxWidth: "78%", maxHeight: "78%", objectFit: "contain" }} />
+      ) : (
+        <span style={{ fontSize: f(7), color: dark ? "#4b5563" : "#c1c5cc" }}>LOGO</span>
+      )}
+    </div>
+    <div style={{ fontSize: f(7.5), marginTop: f(4), color: "#6b7280" }}>{label}</div>
+  </div>
+);
+
 const Swatch = ({ label, hex, f }) => (
   <div style={{ textAlign: "center", width: f(56) }}>
     <div style={{ width: f(44), height: f(44), borderRadius: f(8), background: hex || "#e5e7eb", border: "1px solid rgba(0,0,0,0.08)", margin: "0 auto" }} />
@@ -71,18 +84,14 @@ export const BrandGuidelineDoc = forwardRef(function BrandGuidelineDoc({ brand, 
         {/* Left column */}
         <div>
           <SectionLabel n="01" title="Logo Usage" f={f} />
-          <div style={{ display: "flex", gap: f(12), alignItems: "flex-start" }}>
-            <div style={{ width: f(60), height: f(60), flexShrink: 0, borderRadius: f(8), border: "1px solid #e5e7eb", display: "flex", alignItems: "center", justifyContent: "center", background: "#fafafa", overflow: "hidden" }}>
-              {brand?.logo_url ? (
-                <img src={brand.logo_url} alt="" style={{ maxWidth: "80%", maxHeight: "80%", objectFit: "contain" }} />
-              ) : (
-                <span style={{ fontSize: f(8), color: "#c1c5cc" }}>No logo</span>
-              )}
-            </div>
-            <div style={{ fontSize: f(9.5), lineHeight: 1.6, color: "#4b5563" }}>
-              <div><strong>Clear space:</strong> {g.logo_clear_space || "—"}</div>
-              <div><strong>Min size:</strong> {g.logo_min_size || "—"}</div>
-            </div>
+          <div style={{ display: "flex", gap: f(8) }}>
+            <LogoChip label="Full color" url={g.logos?.color || brand?.logo_url} dark={false} f={f} />
+            <LogoChip label="Black on white" url={g.logos?.black_on_white} dark={false} f={f} />
+            <LogoChip label="White on black" url={g.logos?.white_on_black} dark f={f} />
+          </div>
+          <div style={{ fontSize: f(9.5), lineHeight: 1.6, color: "#4b5563", marginTop: f(8) }}>
+            <div><strong>Clear space:</strong> {g.logo_clear_space || "—"}</div>
+            <div><strong>Min size:</strong> {g.logo_min_size || "—"}</div>
           </div>
           {(g.logo_dos?.length > 0 || g.logo_donts?.length > 0) && (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: f(10), marginTop: f(10), fontSize: f(9) }}>
