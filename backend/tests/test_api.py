@@ -783,6 +783,74 @@ check("a PDF with a real font but no image still gets a usable layout",
 check("...carrying the PDF's own real font, not a generic default",
       any(e.get("fontFamily") == "Helvetica" for e in tpl["layouts"].get("cover", [])), tpl["layouts"])
 
+# --- templates from a file: PDF vector colors take priority over raster ---
+# A Canva/Illustrator/Figma-style export paints its real background and text
+# with vector fill-color operators (`rg` + `re f`), not necessarily via an
+# embedded raster image — and even when an image IS embedded, it can be an
+# unrelated decorative overlay unrepresentative of the page's real design
+# (the bug this fixture guards against). This content stream fills a
+# full-page rect light blue, then draws text in dark green.
+vector_content = (
+    b".7725 .8706 1 rg\n0 0 200 200 re f\n"
+    b".1961 .2941 .2431 rg\nBT /F1 18 Tf 10 100 Td (Bold modern coffee brand) Tj ET\n"
+)
+vector_pdf = (
+    b"%PDF-1.4\n1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj\n"
+    b"2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj\n"
+    b"3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
+    b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>endobj\n"
+    b"4 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj\n"
+    b"5 0 obj<< /Length " + str(len(vector_content)).encode() + b" >>\nstream\n" + vector_content + b"endstream\nendobj\n"
+    b"xref\n0 6\n0000000000 65535 f \n"
+    b"trailer<< /Size 6 /Root 1 0 R >>\nstartxref\n0\n%%EOF"
+)
+vector_colors = server._pdf_extract(vector_pdf)["vector_colors"]
+check("a full-page filled rect (not merely a clip path) is recognized as the background",
+      vector_colors["bg"] == "#c5deff", vector_colors)
+check("the color active while text is drawn is recognized as the foreground",
+      vector_colors["fg"] == "#324b3e", vector_colors)
+
+r = c.post("/api/upload", files={"file": ("vector.pdf", vector_pdf, "application/pdf")})
+vector_pdf_upload = r.json()
+CHAT_REPLY["value"] = "not valid json"
+r = c.post("/api/templates/from-file", json={"source_type": "pdf", "source_url": vector_pdf_upload["url"]})
+vector_tpl = r.json()
+check("a template built from a PDF with real vector colors uses them, not a generic default",
+      vector_tpl["bg_colors"]["cover"] == "#c5deff", vector_tpl.get("bg_colors"))
+check("...and the vector-extracted text color reaches the layout too",
+      any(e.get("color") == "#324b3e" for e in vector_tpl["layouts"].get("cover", [])), vector_tpl["layouts"])
+
+r = c.post("/api/brand-kit/analyze", json={"source_type": "pdf", "source_url": vector_pdf_upload["url"]})
+vector_brand = r.json()
+check("brand-kit PDF analysis also prefers real vector colors over raster sampling",
+      vector_brand["colors"]["bg"] == "#c5deff", vector_brand["colors"])
+check("the source note is honest about where the palette came from",
+      "vector" in vector_brand["source_note"].lower(), vector_brand["source_note"])
+
+# A rectangle traced only to set a clip region (`re W n`, never painted)
+# must not be mistaken for a painted background.
+clip_only_content = (
+    b"0 0 200 200 re W n\n"
+    b".9 .1 .1 rg\n50 50 20 20 re f\n"
+)
+clip_only_pdf = (
+    b"%PDF-1.4\n1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj\n"
+    b"2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj\n"
+    b"3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 5 0 R >>endobj\n"
+    b"5 0 obj<< /Length " + str(len(clip_only_content)).encode() + b" >>\nstream\n" + clip_only_content + b"endstream\nendobj\n"
+    b"xref\n0 6\n0000000000 65535 f \n"
+    b"trailer<< /Size 6 /Root 1 0 R >>\nstartxref\n0\n%%EOF"
+)
+clip_colors = server._pdf_extract(clip_only_pdf)["vector_colors"]
+check("a clip-only rectangle (re W n, never filled) isn't mistaken for a painted background",
+      clip_colors["bg"] == "#e61a1a", clip_colors)
+
+# A PDF with no `rg` fill operators at all (a scanned/photo-only page) has
+# no vector colors to offer, so callers correctly fall back to raster
+# sampling of an embedded image instead.
+check("a PDF with no vector fill operators reports no vector colors",
+      server._pdf_extract(minimal_pdf)["vector_colors"] is None, minimal_pdf)
+
 # A source image that's uniformly dark (a moody photo, no real bright color
 # anywhere) shouldn't produce invisible text — "brightest of six dark
 # browns" still needs to fall back to white against a near-black background.
@@ -824,8 +892,8 @@ r = c.get("/api/templates/custom")
 listed = r.json()
 saved_only = [t for t in listed if not t.get("builtin")]
 starters = [t for t in listed if t.get("builtin")]
-check("custom templates list returns saved templates", len(saved_only) == 3, len(saved_only))
-check("saved templates come before the starters", [t.get("builtin", False) for t in listed] == [False] * 3 + [True] * len(starters), len(listed))
+check("custom templates list returns saved templates", len(saved_only) == 4, len(saved_only))
+check("saved templates come before the starters", [t.get("builtin", False) for t in listed] == [False] * 4 + [True] * len(starters), len(listed))
 
 # --- starter templates ship with the app ---
 check("starters are listed alongside saved templates", len(starters) == len(server.STARTER_TEMPLATES) and len(starters) >= 5, len(starters))
