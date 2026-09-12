@@ -1,7 +1,7 @@
 import { useState, useRef } from "react";
 import { Ruler } from "lucide-react";
 import { VisualCard } from "@/components/VisualCard";
-import { elementBoxStyle, MIN_SIZE } from "@/lib/slideElements";
+import { elementBoxStyle, MIN_SIZE, useCardScale } from "@/lib/slideElements";
 
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 const dist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
@@ -58,6 +58,7 @@ export function SlideEditor({ spec, brand, selectedId, onSelect, onChangeElement
   const dragState = useRef(null);
   const pinchState = useRef(null);
   const [showGrid, setShowGrid] = useState(false);
+  const cardScale = useCardScale(containerRef, 0.45);
 
   const pct = (clientX, clientY) => {
     const rect = containerRef.current.getBoundingClientRect();
@@ -132,7 +133,7 @@ export function SlideEditor({ spec, brand, selectedId, onSelect, onChangeElement
         <Ruler size={12} />
       </button>
       <div ref={cardRef} className="absolute inset-0">
-        <VisualCard spec={spec} brand={brand} scale={0.86} />
+        <VisualCard spec={spec} brand={brand} scale={cardScale} />
       </div>
       {showGrid && <GridOverlay />}
       {showGrid && <RulerOverlay />}

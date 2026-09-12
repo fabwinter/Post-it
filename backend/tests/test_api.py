@@ -966,6 +966,75 @@ image_tpl = next(t for t in saved_only if t["source_kind"] == "image")
 check("an image-only template (no slide structure) has no preview to show",
       image_tpl["preview"] is None, image_tpl["preview"])
 
+# --- a real design-tool export: plain text boxes, no placeholders, display
+# type with tight leading, and a decorative word drawn wider than the slide ---
+from pptx.util import Emu as _Emu, Pt as _Pt
+
+design_buf = io.BytesIO()
+dprs = _Presentation()
+dprs.slide_width, dprs.slide_height = _Emu(10287000), _Emu(12852400)  # 1080x1350, a 4:5 post
+dslide = dprs.slides.add_slide(dprs.slide_layouts[6])  # blank: no title placeholder at all
+
+
+def _textbox(left, top, width, height, text, size_pt, line_pt, align=None):
+    box = dslide.shapes.add_textbox(_Emu(left), _Emu(top), _Emu(width), _Emu(height))
+    para = box.text_frame.paragraphs[0]
+    run = para.add_run()
+    run.text = text
+    run.font.size = _Pt(size_pt)
+    para.line_spacing = _Pt(line_pt)
+    if align is not None:
+        para.alignment = align
+    return box
+
+
+# Mirrors the reported deck: a tiny date label sits highest, the headline is
+# the biggest phrase, and a one-word script watermark is set larger still and
+# stretched to nearly twice the slide width.
+_textbox(740258, 722000, 3194231, 303337, "08/09/30", 18.18, 25.46)
+_textbox(583956, 2000918, 10614867, 6698173, "Healing\nIs\nNot\nLinear", 145.69, 129.66)
+_textbox(6126699, 4913622, 3526397, 3439956, "SOME DAYS YOU WILL FEEL LIGHT, GROUNDED AND HOPEFUL.", 18.18, 25.46)
+_textbox(-4362637, 5123488, 18701790, 9042109, "Harper", 526.5, 737.1)
+dprs.save(design_buf)
+design = server._pptx_extract_design(design_buf.getvalue())
+dslide_out = design["slides"][0]
+els = dslide_out["elements"]
+by_text = {e["text"]: e for e in els}
+
+# 810pt-wide slide, 440px-wide reference card: 145.69pt of headline is 79px
+# here. Writing the raw point size (what this used to do) draws it at nearly
+# twice the intended size, so the card clips the tail off every heading.
+check("a point size is restated against the card's own reference width, not copied raw",
+      by_text["Healing\nIs\nNot\nLinear"]["fontSize"] == 79, by_text["Healing\nIs\nNot\nLinear"]["fontSize"])
+check("...which holds for body copy on the same slide too",
+      by_text["SOME DAYS YOU WILL FEEL LIGHT, GROUNDED AND HOPEFUL."]["fontSize"] == 10,
+      by_text["SOME DAYS YOU WILL FEEL LIGHT, GROUNDED AND HOPEFUL."]["fontSize"])
+# 129.66pt of leading on a 145.69pt font is 0.89 — display type is routinely
+# set tighter than single spacing, and assuming 1.2 overflows its own box.
+check("the deck's real line spacing is carried through, not assumed",
+      by_text["Healing\nIs\nNot\nLinear"]["lineHeight"] == 0.89, by_text["Healing\nIs\nNot\nLinear"]["lineHeight"])
+check("a blank-layout deck with no title placeholder still finds its headline",
+      dslide_out["heading"] == "Healing\nIs\nNot\nLinear", dslide_out["heading"])
+check("...preferring the phrase over a bigger one-word watermark",
+      "Harper" not in dslide_out["heading"], dslide_out["heading"])
+check("the headline is the element marked to receive generated copy",
+      by_text["Healing\nIs\nNot\nLinear"].get("role_hint") == "title", by_text["Healing\nIs\nNot\nLinear"])
+check("...and the paragraph is the one marked for body copy, not the date label",
+      by_text["SOME DAYS YOU WILL FEEL LIGHT, GROUNDED AND HOPEFUL."].get("role_hint") == "body", els)
+check("a word drawn wider than the slide keeps its bleed rather than being squeezed into a wrap",
+      by_text["Harper"]["x"] < 0 and by_text["Harper"]["w"] > 100, by_text["Harper"])
+
+design_layout = server._layout_from_elements(els, True)
+title_el = next(e for e in design_layout if e.get("role") == "title")
+check("the generated-copy slot is the headline's box, at the headline's size",
+      title_el["fontSize"] == 79 and title_el["y"] == 15.57, title_el)
+check("...pulled back inside the canvas so fresh copy of any length still wraps into view",
+      title_el["x"] >= 0 and title_el["x"] + title_el["w"] <= 100, title_el)
+check("a decorative element keeps its own text and stays static",
+      any(e.get("text") == "Harper" and not e.get("role") for e in design_layout), design_layout)
+check("no internal role hint leaks into the saved layout",
+      all("role_hint" not in e for e in design_layout), design_layout)
+
 # --- building a post from an uploaded pptx template actually reproduces its design ---
 CHAT_REPLY["value"] = json.dumps({
     "format": "carousel", "title": "T", "caption": "cap", "hashtags": [],

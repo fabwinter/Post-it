@@ -1538,6 +1538,84 @@ def _pptx_bg_color(slide, scheme: Dict[str, str]) -> Optional[str]:
 
 
 EMU_PER_SLIDE_UNIT = 914400  # EMUs per inch — only used as a size fallback below
+EMU_PER_POINT = 12700
+# VisualCard renders every element's fontSize as px against a card this wide
+# (see its own `f()` scaler), so a point size from a deck has to be restated
+# in the same terms before it means anything here.
+CARD_REF_WIDTH = 440
+_PPTX_FONT_STYLE_SUFFIX = re.compile(
+    r"\s+(bold|italic|oblique|regular|light|medium|semibold|semi\s?bold|extrabold|black|thin|heavy|book)$", re.I)
+
+
+def _pptx_font_px(size_pt: float, slide_w_emu: int) -> float:
+    """A point size only means something relative to the slide it sits on:
+    146pt fills an 810pt-wide slide the way 79px fills a 440px-wide card.
+    Writing the raw point value straight onto an element renders every
+    heading roughly twice its intended size, and since the card clips
+    overflow the tail of the text just disappears."""
+    slide_pt = (slide_w_emu or 0) / EMU_PER_POINT
+    if slide_pt <= 0:
+        return size_pt
+    return size_pt / slide_pt * CARD_REF_WIDTH
+
+
+def _pptx_line_height(para, font_pt: Optional[float]) -> Optional[float]:
+    """A paragraph's real leading, as a CSS-style multiple. python-pptx
+    returns a plain float for percentage spacing and a Length for the
+    exact-points form design tools actually emit — display type is routinely
+    set tighter than single spacing, so assuming 1.2 for everything pushes a
+    headline off the bottom of its own box."""
+    try:
+        spacing = para.line_spacing
+    except Exception:
+        return None
+    if spacing is None:
+        return None
+    # Length subclasses int, so check for the points accessor before treating
+    # the value as a bare multiple.
+    pts = getattr(spacing, "pt", None)
+    if pts is not None:
+        return round(pts / font_pt, 3) if font_pt else None
+    try:
+        return round(float(spacing), 3)
+    except (TypeError, ValueError):
+        return None
+
+
+def _pptx_box(left, top, width, height, sw, sh) -> Optional[tuple]:
+    """A shape's box as percentages of the canvas, keeping any deliberate
+    bleed past the edges. Shrinking an oversized box to fit instead makes
+    its text wrap where the design never wrapped it — a display word set
+    wider than the slide on purpose comes out broken across three lines
+    rather than running off both edges as drawn. The card clips its own
+    overflow, so bleed costs nothing; only a box with no overlap at all
+    (something parked off the artboard entirely) is worth dropping."""
+    if None in (left, top, width, height) or not width or not height or sw <= 0 or sh <= 0:
+        return None
+    x, y = left / sw * 100, top / sh * 100
+    w, h = width / sw * 100, height / sh * 100
+    if x + w <= 1 or y + h <= 1 or x >= 99 or y >= 99:
+        return None
+    def bound(v):  # keeps a wild value (a shape parked miles off the artboard) finite
+        return round(max(-200.0, min(300.0, v)), 2)
+
+    return bound(x), bound(y), bound(w), bound(h)
+
+
+def _pptx_clean_font(name: Optional[str]) -> Optional[str]:
+    """"Open Sauce Bold" is the family "Open Sauce" asked for at a bold
+    weight — which is what fontWeight already carries. Keeping the style in
+    the family name only makes the CSS lookup miss a font the viewer may
+    genuinely have installed."""
+    if not name:
+        return name
+    cleaned = name.strip()
+    for _ in range(2):  # "Foo Bold Italic" needs two passes
+        stripped = _PPTX_FONT_STYLE_SUFFIX.sub("", cleaned).strip()
+        if stripped == cleaned or not stripped:
+            break
+        cleaned = stripped
+    return cleaned or name
 
 
 def _pptx_extract_design(pptx_bytes: bytes, max_slides: int = 20) -> Dict[str, Any]:
@@ -1557,46 +1635,123 @@ def _pptx_extract_design(pptx_bytes: bytes, max_slides: int = 20) -> Dict[str, A
 
     slides = []
     for slide in list(prs.slides)[:max_slides]:
-        bg_color = _pptx_bg_color(slide, scheme) or bg_default
+        shape_bg, blocks = _pptx_shape_fills(slide, scheme, sw, sh)
+        bg_color = _pptx_bg_color(slide, scheme) or shape_bg or bg_default
         text_color_default = fg_on_dark if _hex_luminance(bg_color) < 0.5 else fg_default
-        heading, body_parts, elements = "", [], []
+        try:
+            title_shape = slide.shapes.title
+        except Exception:
+            title_shape = None
+
+        texts = []  # one entry per text shape, before any role is decided
         for shape in slide.shapes:
             if not getattr(shape, "has_text_frame", False):
                 continue
             text = "\n".join(p.text for p in shape.text_frame.paragraphs if p.text).strip()
             if not text:
                 continue
-            is_title = shape == slide.shapes.title
-            if is_title and not heading:
-                heading = text
-            else:
-                body_parts.append(text)
             try:
-                left, top, width, height = shape.left, shape.top, shape.width, shape.height
+                box = _pptx_box(shape.left, shape.top, shape.width, shape.height, sw, sh)
             except Exception:
-                left = top = width = height = None
-            if None in (left, top, width, height) or not width or not height:
+                box = None
+            if not box:
                 continue
+            is_title = title_shape is not None and shape == title_shape
             first_run = next((r for p in shape.text_frame.paragraphs for r in p.runs if r.text.strip()), None)
-            font_name = ((first_run.font.name if first_run else None)
+            font_pt = first_run.font.size.pt if (first_run and first_run.font.size) else None
+            font_name = (_pptx_clean_font(first_run.font.name if first_run else None)
                          or (theme["major_font"] if is_title else theme["minor_font"]))
-            font_size = first_run.font.size.pt if (first_run and first_run.font.size) else None
             color = (_pptx_resolve_color(first_run.font.color, scheme) if first_run else None) or text_color_default
             bold = first_run.font.bold if (first_run and first_run.font.bold is not None) else is_title
+            first_para = next((p for p in shape.text_frame.paragraphs if p.text), None)
             para_align = next((p.alignment for p in shape.text_frame.paragraphs if p.alignment), None)
-            elements.append({
-                "type": "text", "text": text,
-                "x": round(left / sw * 100, 2), "y": round(top / sh * 100, 2),
-                "w": round(min(width / sw * 100, 100 - left / sw * 100), 2),
-                "h": round(min(height / sh * 100, 100 - top / sh * 100), 2),
-                "fontFamily": font_name, "fontSize": round(font_size) if font_size else (32 if is_title else 16),
-                "fontWeight": 800 if bold else 400, "color": color,
-                "align": align_map.get(para_align, "left"), "lineHeight": 1.2,
-                "rotation": 0, "opacity": 1,
+            line_height = _pptx_line_height(first_para, font_pt) if first_para else None
+            x, y, w, h = box
+            texts.append({
+                "is_title": is_title, "font_pt": font_pt or 0, "text": text,
+                "element": {
+                    "type": "text", "text": text, "x": x, "y": y, "w": w, "h": h,
+                    "fontFamily": font_name,
+                    "fontSize": round(_pptx_font_px(font_pt, sw)) if font_pt else (32 if is_title else 16),
+                    "fontWeight": 800 if bold else 400, "color": color,
+                    "align": align_map.get(para_align, "left"),
+                    "lineHeight": line_height if line_height and line_height > 0 else 1.2,
+                    "rotation": 0, "opacity": 1,
+                },
             })
-        slides.append({"heading": heading, "body": " ".join(body_parts)[:500],
-                        "bg_color": bg_color, "elements": elements})
+
+        headline = _pptx_pick_headline(texts)
+        rest = [t for t in texts if t is not headline]
+        # The longest remaining text is the paragraph slot a generated post's
+        # body copy belongs in — not whichever label happens to sit highest.
+        body_src = max(rest, key=lambda t: len(t["text"]), default=None)
+        if headline:
+            headline["element"]["role_hint"] = "title"
+        if body_src and len(body_src["text"]) > 24:
+            body_src["element"]["role_hint"] = "body"
+
+        elements = blocks + [t["element"] for t in texts]
+        slides.append({
+            "heading": headline["text"] if headline else "",
+            "body": " ".join(t["text"] for t in rest)[:500],
+            "bg_color": bg_color, "elements": elements,
+        })
     return {"slides": slides, "scheme": scheme, "major_font": theme["major_font"], "minor_font": theme["minor_font"]}
+
+
+def _pptx_pick_headline(texts: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The slide's actual headline. A deck exported from a design tool is
+    usually plain text boxes with no title placeholder at all, so trusting
+    `shapes.title` alone leaves the heading empty and dumps every word into
+    the body — which hands the model a blob to abstract and lets generated
+    copy land in the date stamp. Falls back to the biggest type on the
+    slide, preferring something that reads as a phrase over a one-word
+    logotype or watermark, which is often set larger than the headline
+    itself."""
+    if not texts:
+        return None
+    titled = next((t for t in texts if t["is_title"]), None)
+    if titled:
+        return titled
+    phrases = [t for t in texts if len(t["text"].split()) > 1]
+    return max(phrases or texts, key=lambda t: (t["font_pt"], -t["element"]["y"]))
+
+
+def _pptx_shape_fills(slide, scheme: Dict[str, str], sw: int, sh: int) -> (Optional[str], List[Dict[str, Any]]):
+    """Solid-filled shapes: the one covering (near enough) the whole slide is
+    the design's real background — decks built in a design tool paint it as
+    a shape rather than setting a slide background, so without this the
+    background silently falls back to the theme's default. Everything else
+    becomes a real block element, since a color band behind a headline is
+    part of the layout, not decoration to drop."""
+    bg, blocks = None, []
+    for shape in slide.shapes:
+        try:
+            fill = shape.fill
+            if fill.type != MSO_FILL_TYPE.SOLID:
+                continue
+            color = _pptx_resolve_color(fill.fore_color, scheme)
+        except Exception:
+            continue
+        if not color:
+            continue
+        try:
+            coverage = (shape.width or 0) * (shape.height or 0) / (sw * sh)
+        except Exception:
+            coverage = 0
+        if coverage >= 0.9:
+            bg = bg or color
+            continue
+        try:
+            box = _pptx_box(shape.left, shape.top, shape.width, shape.height, sw, sh)
+        except Exception:
+            box = None
+        if not box:
+            continue
+        x, y, w, h = box
+        blocks.append({"type": "shape", "shape": "rect", "x": x, "y": y, "w": w, "h": h,
+                       "color": color, "rotation": 0, "opacity": 1})
+    return bg, blocks
 
 
 def _docx_extract(docx_bytes: bytes, max_blocks: int = 4000) -> str:
@@ -2202,22 +2357,42 @@ def _apply_template_layouts(assets: List[Dict[str, Any]], template: dict) -> Lis
 
 
 def _layout_from_elements(elements: List[Dict[str, Any]], is_cover: bool) -> List[Dict[str, Any]]:
-    """Turns one slide's freeform elements into a reusable layout: the
-    topmost one or two text elements become dynamic (role title/heading, then
-    body — refilled with fresh copy every time this template is used);
-    everything else (images, shapes, extra badges) is carried through exactly
-    as designed, unchanged on every future post built from this template."""
-    texts_by_y = sorted((e for e in elements if e.get("type") == "text"), key=lambda e: e.get("y", 0))
-    dynamic_ids = {id(e) for e in texts_by_y[:2]}
+    """Turns one slide's freeform elements into a reusable layout: one or two
+    text elements become dynamic (role title/heading, then body — refilled
+    with fresh copy every time this template is used); everything else
+    (images, shapes, extra badges) is carried through exactly as designed,
+    unchanged on every future post built from this template.
+
+    An extracted design says outright which element is its headline and which
+    is its paragraph (role_hint, see _pptx_extract_design). Without that hint
+    — a deck saved from the Composer — fall back to the two topmost text
+    elements, which is a fair guess for a layout built in this app."""
+    texts = [e for e in elements if e.get("type") == "text"]
+    hinted_title = next((e for e in texts if e.get("role_hint") == "title"), None)
+    hinted_body = next((e for e in texts if e.get("role_hint") == "body"), None)
+    if hinted_title or hinted_body:
+        roles = {id(e): role for e, role in ((hinted_title, "title"), (hinted_body, "body")) if e}
+    else:
+        topmost = sorted(texts, key=lambda e: e.get("y", 0))[:2]
+        roles = {id(e): ("title" if i == 0 else "body") for i, e in enumerate(topmost)}
     out = []
-    assigned_title = False
     for el in elements:
         e = dict(el)
         e.pop("id", None)
-        if id(el) in dynamic_ids:
-            e["role"] = ("title" if is_cover else "heading") if not assigned_title else "body"
-            assigned_title = True
+        e.pop("role_hint", None)
+        role = roles.get(id(el))
+        if role:
+            e["role"] = ("title" if is_cover else "heading") if role == "title" else "body"
             e.pop("text", None)
+            # A slot that will be refilled with copy of some unknown future
+            # length has to be able to hold it: keep the design's own box for
+            # static art, but pull a dynamic one back inside the canvas so
+            # fresh copy wraps into view instead of running off the edge the
+            # source's hand-broken lines never reached.
+            for pos, size in (("x", "w"), ("y", "h")):
+                start = max(0.0, float(e.get(pos, 0) or 0))
+                e[pos] = round(start, 2)
+                e[size] = round(max(1.0, min(float(e.get(size, 0) or 0), 100 - start)), 2)
         out.append(e)
     return out
 
