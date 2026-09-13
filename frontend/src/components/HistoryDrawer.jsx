@@ -15,7 +15,7 @@ const KIND_META = {
   ideate: { label: "Ideas", icon: Lightbulb },
   write: { label: "Copy", icon: PenLine },
   repurpose: { label: "Repurpose", icon: Repeat },
-  templates: { label: "Templates", icon: Flame },
+  templates: { label: "Batch", icon: Flame },
   restyle: { label: "Restyle", icon: Wand },
   coach: { label: "Coach", icon: GraduationCap },
   visual: { label: "Visual", icon: Shapes },

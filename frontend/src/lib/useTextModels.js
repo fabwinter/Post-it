@@ -17,7 +17,8 @@ export const CHAT_MODELS = [
 ];
 
 // Fetched once per page load and shared across every component that asks —
-// there's no reason for Studio, Repurpose, and Visuals to each hit /ai/models.
+// there's no reason for every model picker on the page (the Composer's own
+// plus its Source/Visual/Batch panels) to each hit /ai/models.
 let cached = null;
 
 async function loadModels() {
