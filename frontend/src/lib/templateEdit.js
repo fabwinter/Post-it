@@ -34,23 +34,34 @@ export function materializeTemplateSlides(tpl) {
   const outline = tpl.slides && tpl.slides.length ? tpl.slides : [{ heading: tpl.name || "", body: "" }];
   const layouts = tpl.layouts || {};
   const bgColors = tpl.bg_colors || {};
-  const hasCover = !!layouts.cover;
+  const clips = tpl.clips || {};
+  // A reel has no "cover" slide (a scene never carries template: "cover" —
+  // see _plan_to_assets), so a reel template's slides materialize as
+  // `type: "scene"` throughout: that's what makes VideoClipEditor render for
+  // them, exactly as it does for a freshly generated reel.
+  const isReel = tpl.format === "reel";
+  const hasCover = !isReel && !!layouts.cover;
   const last = outline.length - 1;
 
   return outline.map((s, i) => {
     const isCover = i === 0 && hasCover;
-    const key = isCover ? "cover" : (i === last && last > 0 && layouts.outro ? "outro" : "slide");
+    const isOutro = !isCover && i === last && last > 0 && (layouts.outro || bgColors.outro || clips.outro);
+    const key = isCover ? "cover" : (isOutro ? "outro" : "slide");
     const layout = layouts[key] || layouts.slide || layouts.cover;
     const elements = layout ? fillLayout(layout, s, hasCover ? i : i + 1) : undefined;
     const bg = bgColors[key] || bgColors.slide || bgColors.cover;
+    // Independent of `elements`/layout for the same reason it's saved that
+    // way: a scene can carry a clip with nothing else customized.
+    const clip = clips[key] || clips.slide || clips.cover;
     return {
-      type: "visual", caption: "",
+      type: isReel ? "scene" : "visual", caption: "",
       spec: {
         template: isCover ? "cover" : "slide", theme: tpl.theme || "midnight",
         index: hasCover ? i : i + 1, total: outline.length, coverCounts: hasCover,
         title: s.heading || s.title || "", heading: s.heading || "", body: s.body || "",
         ...(elements ? { elements } : {}),
         ...(bg ? { bg_color: bg } : {}),
+        ...(clip ? { clip, video_url: clip.url || "" } : {}),
       },
     };
   });

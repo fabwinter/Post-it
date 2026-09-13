@@ -1214,6 +1214,41 @@ cover_els = built["assets"][0]["spec"].get("elements") or []
 check("a post built from the edited template uses the edited font", any(e.get("fontFamily") == "Lora" for e in cover_els), cover_els)
 check("...and the edited background color", built["assets"][0]["spec"].get("bg_color") == "#ffe600", built["assets"][0]["spec"])
 
+
+# --- a reel scene's clip is saved and reapplied, even with no custom layout ---
+# VideoClipEditor renders for every reel scene regardless of whether it's
+# ever entered freeform layout edit, so a scene can carry a stock/uploaded
+# clip with no `elements` at all — that must not be gated on `elements` the
+# way layout/background are, or the clip is silently dropped on save.
+reel_slides_v1 = [
+    {"template": "slide", "heading": "Week 1", "body": "You publish. Nobody claps.",
+     "clip": {"url": "https://cdn.test/week1.mp4", "credit": "Pexels", "opacity": 0.6, "speed": 1},
+     "video_url": "https://cdn.test/week1.mp4"},
+    {"template": "slide", "heading": "Week 6", "body": "Three people reply."},
+]
+r = c.post("/api/templates/from-composer", json={"name": "Reel template", "format": "reel", "theme": "midnight", "slides": reel_slides_v1})
+check("a reel with an un-laid-out clip saves ok", r.status_code == 200, r.text)
+reel_tpl = r.json()
+reel_template_id = reel_tpl["id"]
+check("the clip reaches the saved template", reel_tpl.get("clips", {}).get("slide", {}).get("url") == "https://cdn.test/week1.mp4", reel_tpl.get("clips"))
+check("...with its edit (opacity) intact, not just the bare url", reel_tpl["clips"]["slide"].get("opacity") == 0.6, reel_tpl["clips"])
+check("a scene with no clip contributes nothing (the first scene's clip isn't duplicated onto it)",
+      "outro" not in reel_tpl.get("clips", {}) or not reel_tpl["clips"].get("outro"), reel_tpl.get("clips"))
+
+CHAT_REPLY["value"] = json.dumps({
+    "format": "reel", "title": "T", "caption": "cap", "hashtags": [],
+    "visual": {"style": "video", "script": [{"scene": "s1", "on_screen_text": "a", "voiceover": "b", "video_prompt": "p"},
+                                             {"scene": "s2", "on_screen_text": "c", "voiceover": "d", "video_prompt": "q"}]},
+})
+r = c.post("/api/ai/build-post", json={"topic": "x", "platform": "instagram", "format": "reel",
+                                        "custom_template_id": reel_template_id, "use_brand": False})
+built = r.json()
+check("a reel built from the template gets the saved clip on every scene (falls back to the one saved role)",
+      all(a["spec"].get("video_url") == "https://cdn.test/week1.mp4" for a in built["assets"]), built["assets"])
+
+r = c.delete(f"/api/templates/custom/{reel_template_id}")
+check("cleanup: the reel template can be deleted", r.status_code == 200, r.text)
+
 r = c.delete(f"/api/templates/custom/{composer_template_id}")
 check("cleanup: the editable template can be deleted", r.status_code == 200, r.text)
 
@@ -1333,6 +1368,30 @@ r = c.get("/api/proxy-image", params={"url": "https://blob.example/pic.png"})
 check("proxy-image re-serves an actual image", r.status_code == 200 and r.content == b"fakepngbytes", r.status_code)
 check("proxy-image sets a permissive CORS header for canvas export",
       r.headers.get("access-control-allow-origin") == "*", dict(r.headers))
+
+# --- uploads/from-url: the Library's "+" downloading a Stock pick ---
+r = c.post("/api/uploads/from-url", params={}, json={"url": "http://169.254.169.254/"})
+check("uploads/from-url refuses a private/metadata address", r.status_code == 400, r.text[:160])
+
+BLOBS["https://images.pexels.com/city.jpg"] = b"fake-stock-photo-bytes"
+BLOB_CONTENT_TYPES["https://images.pexels.com/city.jpg"] = "image/jpeg"
+r = c.post("/api/uploads/from-url", json={"url": "https://images.pexels.com/city.jpg", "filename": "Jane Doe - photo-1"})
+check("a stock pick downloads and saves ok", r.status_code == 200, r.text)
+stock_upload = r.json()
+check("the real bytes were fetched and stored, not just the url referenced", BLOBS[stock_upload["url"]] == b"fake-stock-photo-bytes")
+check("its kind is inferred from the real content-type", stock_upload["kind"] == "image", stock_upload)
+check("the filename is sanitised the same way a direct upload's is", stock_upload["filename"] == "Jane-Doe---photo-1", stock_upload["filename"])
+
+r = c.get("/api/uploads")
+check("the downloaded stock item shows up in the uploads list", any(u["id"] == stock_upload["id"] for u in r.json()), r.text[:200])
+
+BLOBS["https://blob.example/not-media.txt"] = b"plain text, not media"
+BLOB_CONTENT_TYPES["https://blob.example/not-media.txt"] = "text/plain"
+r = c.post("/api/uploads/from-url", json={"url": "https://blob.example/not-media.txt"})
+check("a non-media link is rejected rather than silently added", r.status_code == 400, r.text)
+
+r = c.delete(f"/api/uploads/{stock_upload['id']}")
+check("cleanup: the downloaded stock item can be deleted like any upload", r.status_code == 200, r.text)
 
 # --- app access token: off by default, enforced once set, cron route exempt ---
 check("no token configured: every route is open", c.get("/api/stats").status_code == 200)

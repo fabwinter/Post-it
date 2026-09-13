@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, apiErrorMessage } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { MediaPicker } from "@/components/MediaPicker";
 import { toast } from "sonner";
-import { Images, Send, Download, Trash2, Image as ImageIcon, Video, Music, Mic, Upload, Sparkles } from "lucide-react";
+import { Images, Send, Download, Trash2, Image as ImageIcon, Video, Music, Mic, Upload, Sparkles, Plus, Loader2 } from "lucide-react";
 
 const KIND_ICON = { image: ImageIcon, video: Video, music: Music, voice: Mic, audio: Music, file: Upload };
 
@@ -18,6 +19,8 @@ export default function Library() {
   const [media, setMedia] = useState([]);
   const [uploads, setUploads] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [adding, setAdding] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -35,6 +38,37 @@ export default function Library() {
     catch (e) { toast.error(apiErrorMessage(e, "Delete failed.")); setUploads(prev); }
   };
 
+  // The "+" opens the same picker as every "Add media" moment elsewhere in
+  // the app — search Stock or upload a file — but here the result needs to
+  // land IN the library rather than attach to a post. A direct upload has
+  // already done that by the time onSelect fires (MediaPicker posts to
+  // /api/upload itself); a Stock pick is still just a live Pexels URL, so
+  // it's downloaded into the user's own storage here — "add to your
+  // library" should mean a durable copy, not a link that outlives Pexels
+  // only by luck.
+  const addPicked = async (item) => {
+    setTab("uploads");
+    if (item.source === "upload") {
+      // The picker's own "Your files" tab lists what's already here (handy
+      // when attaching to a post) — re-picking one from it isn't a new
+      // addition, so it's a no-op rather than a duplicate-looking entry.
+      if (uploads.some((u) => u.id === item.id)) return;
+      setUploads((s) => [{ id: item.id, url: item.url, filename: item.filename, kind: item.type, created_at: new Date().toISOString() }, ...s]);
+      toast.success("Added to your library");
+      return;
+    }
+    setAdding(true);
+    try {
+      const { data } = await api.post("/uploads/from-url", { url: item.url, filename: item.credit ? `${item.credit} - ${item.id}` : undefined });
+      setUploads((s) => [data, ...s]);
+      toast.success("Saved to your library");
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "Couldn't save that."));
+    } finally {
+      setAdding(false);
+    }
+  };
+
   const items = tab === "uploads" ? uploads : media;
 
   return (
@@ -42,7 +76,7 @@ export default function Library() {
       <div className="font-mono text-xs uppercase tracking-[0.25em] text-zinc-500">Media library</div>
       <h1 className="mt-2 font-display text-4xl font-semibold tracking-tight">Everything you can drop into a post</h1>
 
-      <div className="mt-6 flex gap-1.5">
+      <div className="mt-6 flex items-center gap-1.5">
         {TABS.map((t) => {
           const Icon = t.icon;
           return (
@@ -52,6 +86,11 @@ export default function Library() {
             </button>
           );
         })}
+        <Button onClick={() => setPickerOpen(true)} disabled={adding} data-testid="library-add"
+          title="Upload a file or add one from Stock"
+          className="ml-auto flex h-8 w-8 items-center justify-center rounded-full bg-lime p-0 text-[#0A0A0A] hover:bg-lime-hover disabled:opacity-60">
+          {adding ? <Loader2 size={15} className="animate-spin" /> : <Plus size={16} />}
+        </Button>
       </div>
 
       {loading && <div className="mt-10 text-sm text-zinc-600">Loading…</div>}
@@ -65,7 +104,12 @@ export default function Library() {
               Generate in Studio
             </Button>
           ) : (
-            <p className="mt-2 max-w-xs text-xs text-zinc-600">Upload your own photos, video or audio from any "Add media" button in the Composer or Studio — they show up here automatically.</p>
+            <>
+              <p className="mt-2 max-w-xs text-xs text-zinc-600">Uploads from any "Add media" button in the Composer or Studio show up here automatically — or add one straight from here.</p>
+              <Button onClick={() => setPickerOpen(true)} className="mt-4 gap-1.5 rounded-lg bg-lime font-semibold text-[#0A0A0A] hover:bg-lime-hover">
+                <Plus size={14} /> Upload or add from Stock
+              </Button>
+            </>
           )}
         </div>
       )}
@@ -136,6 +180,8 @@ export default function Library() {
           );
         })}
       </div>
+
+      <MediaPicker open={pickerOpen} onOpenChange={setPickerOpen} onSelect={addPicked} />
     </div>
   );
 }

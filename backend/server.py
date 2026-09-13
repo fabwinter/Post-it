@@ -152,7 +152,7 @@ _CREATE_TABLES = [
         source_url TEXT NOT NULL, format TEXT NOT NULL DEFAULT 'carousel',
         theme TEXT NOT NULL DEFAULT 'midnight', colors TEXT NOT NULL DEFAULT '{}',
         slides TEXT NOT NULL DEFAULT '[]', layouts TEXT NOT NULL DEFAULT '{}',
-        bg_colors TEXT NOT NULL DEFAULT '{}',
+        bg_colors TEXT NOT NULL DEFAULT '{}', clips TEXT NOT NULL DEFAULT '{}',
         created_at TEXT NOT NULL)""",
     # A personal palette of reusable elements — uploaded logos/badges/stamps
     # saved once from the Composer's elements library and available on every
@@ -224,6 +224,13 @@ _ADD_COLUMNS = {
     "visual_templates": [
         ("layouts", "ALTER TABLE visual_templates ADD COLUMN layouts TEXT NOT NULL DEFAULT '{}'"),
         ("bg_colors", "ALTER TABLE visual_templates ADD COLUMN bg_colors TEXT NOT NULL DEFAULT '{}'"),
+        # A reel scene's stock/uploaded video clip — trim, speed, grade,
+        # transition — keyed by role exactly like bg_colors. It rides
+        # separately from `layouts` because a scene can carry a clip without
+        # ever entering freeform layout edit (VideoClipEditor renders for
+        # every scene regardless), so gating it on `layouts` the way
+        # bg_colors effectively is would drop it for the common case.
+        ("clips", "ALTER TABLE visual_templates ADD COLUMN clips TEXT NOT NULL DEFAULT '{}'"),
     ],
 }
 
@@ -1043,6 +1050,42 @@ async def delete_upload(upload_id: str):
     except Exception:
         logger.exception("Could not delete blob for upload %s (D1 row already removed)", upload_id)
     return {"ok": True}
+
+
+class UploadFromUrlRequest(BaseModel):
+    url: str
+    filename: Optional[str] = None
+
+
+@api_router.post("/uploads/from-url")
+async def create_upload_from_url(req: UploadFromUrlRequest):
+    """The Library's "+" offers Stock alongside a plain file upload — this is
+    what "downloaded from Stock" means: the picked photo/clip is fetched here
+    and saved into the user's own storage exactly like a direct upload,
+    rather than the library holding a live link to Pexels that could change
+    or disappear out from under it. _fetch_with_cap already keeps this SSRF-
+    safe (redirect-checked, size-capped) the same way proxy-image is."""
+    await ensure_schema()
+    content, content_type = await asyncio.to_thread(_fetch_with_cap, req.url, MAX_UPLOAD_BYTES, 30)
+    if not content:
+        raise HTTPException(status_code=400, detail="That file is empty")
+    kind = _upload_kind(content_type)
+    if kind not in ("image", "video", "audio"):
+        raise HTTPException(status_code=400, detail="That link isn't an image, video or audio file")
+    filename = _safe_filename(req.filename or req.url.rsplit("/", 1)[-1].split("?")[0] or f"stock.{content_type.split('/')[-1]}")
+    blob = await asyncio.to_thread(_blob_put, f"uploads/{filename}", content, content_type)
+    record = {
+        "id": str(uuid.uuid4()), "url": blob.get("url"), "pathname": blob.get("pathname"),
+        "filename": filename, "content_type": content_type, "kind": kind,
+        "size": len(content), "created_at": now_iso(),
+    }
+    await d1_query(
+        "INSERT INTO uploads (id, url, pathname, filename, content_type, kind, size, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [record["id"], record["url"], record["pathname"], record["filename"], record["content_type"],
+         record["kind"], record["size"], record["created_at"]],
+    )
+    return _row_to_upload(record)
 
 
 # ---------------- Custom fonts ----------------
@@ -2250,7 +2293,8 @@ def _row_to_visual_template(row: dict):
         "colors": _maybe_json(row.get("colors"), "{}"),
         "slides": _maybe_json(row.get("slides"), "[]"),
         "layouts": _maybe_json(row.get("layouts"), "{}"),
-        "bg_colors": _maybe_json(row.get("bg_colors"), "{}"), "created_at": row["created_at"],
+        "bg_colors": _maybe_json(row.get("bg_colors"), "{}"),
+        "clips": _maybe_json(row.get("clips"), "{}"), "created_at": row["created_at"],
     }
 
 
@@ -2495,17 +2539,25 @@ def _fill_layout(layout: List[Dict[str, Any]], spec: dict, index: int) -> List[D
 def _apply_template_layouts(assets: List[Dict[str, Any]], template: dict) -> List[Dict[str, Any]]:
     """Gives every generated slide the template's layout — the model writes
     the words, the template decides where they sit, and the result is still
-    fully editable in the Composer."""
+    fully editable in the Composer. A reel scene's clip rides along the same
+    way, and independently of layout: a scene can have a saved clip with no
+    customized elements at all (see _layouts_from_composer_slides), so it's
+    applied whether or not this slide has a layout to fill."""
     layouts = (template or {}).get("layouts") or {}
-    if not layouts:
-        return assets
     bg_colors = (template or {}).get("bg_colors") or {}
+    clips = (template or {}).get("clips") or {}
+    if not layouts and not clips:
+        return assets
     last = len(assets) - 1
     for i, asset in enumerate(assets):
         spec = asset["spec"]
-        if i == 0 and spec.get("template") == "cover" and layouts.get("cover"):
+        # Whether this slide plays the cover/outro role depends on whether
+        # the template actually customized THAT role in any way — layout,
+        # background or clip — not layout alone; a reel whose only saved
+        # customization is an outro clip would otherwise never route there.
+        if i == 0 and spec.get("template") == "cover" and (layouts.get("cover") or bg_colors.get("cover") or clips.get("cover")):
             key = "cover"
-        elif i == last and last > 0 and layouts.get("outro"):
+        elif i == last and last > 0 and (layouts.get("outro") or bg_colors.get("outro") or clips.get("outro")):
             key = "outro"
         else:
             key = "slide"
@@ -2518,6 +2570,10 @@ def _apply_template_layouts(assets: List[Dict[str, Any]], template: dict) -> Lis
             bg = bg_colors.get(key) or bg_colors.get("slide") or bg_colors.get("cover")
             if bg:
                 spec["bg_color"] = bg
+        clip = clips.get(key) or clips.get("slide") or clips.get("cover")
+        if clip:
+            spec["clip"] = dict(clip)
+            spec["video_url"] = clip.get("url", "")
     return assets
 
 
@@ -2595,27 +2651,34 @@ def _layout_from_elements(elements: List[Dict[str, Any]], is_cover: bool) -> Lis
     return out
 
 
-def _layouts_from_composer_slides(slides: List[Dict[str, Any]]) -> (Dict[str, Any], Dict[str, str]):
+def _layouts_from_composer_slides(slides: List[Dict[str, Any]]) -> (Dict[str, Any], Dict[str, str], Dict[str, Any]):
     """Picks one representative slide per role (cover/slide/outro) — the same
     three roles _apply_template_layouts fills at generation time — from a
     Composer deck, plus that slide's own background color when it has one
     (e.g. one set directly in the editor, or carried over from a template
-    this deck was originally built from). Slides that never entered
-    freeform layout editing have nothing custom to save and are skipped."""
+    this deck was originally built from), and its video clip when it has
+    one. Layout/background need freeform elements to have been customized at
+    all (there's nothing to save otherwise); a clip doesn't — VideoClipEditor
+    renders for every reel scene regardless of whether it's ever entered
+    layout edit — so it's collected on its own rather than gated behind
+    `els`, or a stock video picked for a plain scene would be silently
+    dropped the moment the deck is saved as a template."""
     layouts: Dict[str, Any] = {}
     bg_colors: Dict[str, str] = {}
+    clips: Dict[str, Any] = {}
     last = len(slides) - 1
     for i, s in enumerate(slides):
-        els = s.get("elements")
-        if not els:
-            continue
         is_cover = i == 0 and s.get("template") == "cover"
         key = "cover" if is_cover else ("outro" if i == last and last > 0 else "slide")
-        if key not in layouts:
+        els = s.get("elements")
+        if els and key not in layouts:
             layouts[key] = _layout_from_elements(els, is_cover)
             if s.get("bg_color"):
                 bg_colors[key] = s["bg_color"]
-    return layouts, bg_colors
+        clip_url = (s.get("clip") or {}).get("url") or s.get("video_url")
+        if clip_url and key not in clips:
+            clips[key] = {**(s.get("clip") or {}), "url": clip_url}
+    return layouts, bg_colors, clips
 
 
 def _layouts_from_design_slides(slides: List[Dict[str, Any]]) -> (Dict[str, Any], Dict[str, str]):
@@ -2793,20 +2856,20 @@ async def create_template_from_composer(req: TemplateFromComposerRequest):
     await ensure_schema()
     model = req.model or CHAT_MODEL
     slides = await _abstract_composer_outline(req.slides, model)
-    layouts, bg_colors = _layouts_from_composer_slides(req.slides)
+    layouts, bg_colors, clips = _layouts_from_composer_slides(req.slides)
 
     record = {
         "id": str(uuid.uuid4()), "name": req.name or "Untitled template",
         "source_kind": "composer", "source_url": "", "format": req.format,
         "theme": req.theme or "midnight", "colors": {}, "slides": slides,
-        "layouts": layouts, "bg_colors": bg_colors, "created_at": now_iso(),
+        "layouts": layouts, "bg_colors": bg_colors, "clips": clips, "created_at": now_iso(),
     }
     await d1_query(
-        "INSERT INTO visual_templates (id, name, source_kind, source_url, format, theme, colors, slides, layouts, bg_colors, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO visual_templates (id, name, source_kind, source_url, format, theme, colors, slides, layouts, bg_colors, clips, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [record["id"], record["name"], record["source_kind"], record["source_url"], record["format"],
          record["theme"], json.dumps(record["colors"]), json.dumps(record["slides"]), json.dumps(record["layouts"]),
-         json.dumps(record["bg_colors"]), record["created_at"]],
+         json.dumps(record["bg_colors"]), json.dumps(record["clips"]), record["created_at"]],
     )
     return _row_to_visual_template(record)
 
@@ -2827,12 +2890,13 @@ async def update_template_from_composer(template_id: str, req: TemplateFromCompo
 
     model = req.model or CHAT_MODEL
     slides = await _abstract_composer_outline(req.slides, model)
-    layouts, bg_colors = _layouts_from_composer_slides(req.slides)
+    layouts, bg_colors, clips = _layouts_from_composer_slides(req.slides)
     name = (req.name or "").strip() or rows[0]["name"]
 
     await d1_query(
-        "UPDATE visual_templates SET name = ?, format = ?, theme = ?, slides = ?, layouts = ?, bg_colors = ? WHERE id = ?",
-        [name, req.format, req.theme or "midnight", json.dumps(slides), json.dumps(layouts), json.dumps(bg_colors), template_id],
+        "UPDATE visual_templates SET name = ?, format = ?, theme = ?, slides = ?, layouts = ?, bg_colors = ?, clips = ? WHERE id = ?",
+        [name, req.format, req.theme or "midnight", json.dumps(slides), json.dumps(layouts), json.dumps(bg_colors),
+         json.dumps(clips), template_id],
     )
     updated, _ = await d1_query("SELECT * FROM visual_templates WHERE id = ?", [template_id])
     return _row_to_visual_template(updated[0])

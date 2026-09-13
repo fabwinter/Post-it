@@ -517,6 +517,11 @@ export default function Composer() {
       title: a.spec.title,
       body: body !== undefined ? body : a.spec.body,
       elements: els, bg_color: a.spec.bg_color,
+      // A reel scene's stock/uploaded clip — separate from `elements`
+      // because VideoClipEditor renders for every scene whether or not it's
+      // ever entered freeform layout edit, so a clip needs to reach the
+      // template even when there's nothing else customized to send.
+      clip: a.spec.clip, video_url: a.spec.video_url,
     };
   });
 
