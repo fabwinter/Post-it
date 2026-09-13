@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { Play, Pause, SkipBack, Repeat } from "lucide-react";
 import { VisualCard } from "@/components/VisualCard";
 import { useCardScale } from "@/lib/slideElements";
-import { reelTimeline, transitionFrame, frameAt, formatSeconds } from "@/lib/videoClip";
+import { reelTimeline, transitionFrame, frameAt, formatSeconds, wordIndexAt } from "@/lib/videoClip";
 
 // Plays a reel the way it will actually be watched: scenes end to end at
 // their real lengths, each clip graded and trimmed as set, transitions
@@ -25,7 +25,7 @@ const layerCss = (f) => (f ? {
 
 // One scene layer. Holds its own <video> ref so the frame loop can seek it
 // to the right point of the source without re-rendering React on every tick.
-function SceneLayer({ item, brand, scale, style, registerVideo }) {
+function SceneLayer({ item, brand, scale, style, registerVideo, activeWordIndex }) {
   const ref = useRef(null);
   useEffect(() => {
     registerVideo(item.index, ref.current);
@@ -34,7 +34,8 @@ function SceneLayer({ item, brand, scale, style, registerVideo }) {
 
   return (
     <div className="absolute inset-0 overflow-hidden" style={style}>
-      <VisualCard spec={item.asset.spec} brand={brand} scale={scale} videoRef={ref} videoControlled />
+      <VisualCard spec={item.asset.spec} brand={brand} scale={scale} videoRef={ref} videoControlled
+        activeWordIndex={activeWordIndex} />
     </div>
   );
 }
@@ -191,16 +192,20 @@ export function ReelPlayer({ assets, brand, aspectCls, music, activeIndex, onSel
   const { cur, prev, p, inTransition } = frame;
   const tx = transitionFrame(cur.clip.transition.type, p);
   const veil = inTransition ? tx.veil : 0;
+  const curWordIndex = wordIndexAt(cur.asset.spec?.voice?.words, t - cur.start);
+  const prevWordIndex = prev ? wordIndexAt(prev.asset.spec?.voice?.words, t - prev.start) : -1;
 
   return (
     <div data-testid={testid}>
       <div ref={boxRef} className={`relative ${aspectCls} w-full overflow-hidden rounded-xl bg-black`}
         data-testid={`${testid}-stage`}>
         {inTransition && prev && tx.under && (
-          <SceneLayer item={prev} brand={brand} scale={scale} style={layerCss(tx.under)} registerVideo={registerVideo} />
+          <SceneLayer item={prev} brand={brand} scale={scale} style={layerCss(tx.under)} registerVideo={registerVideo}
+            activeWordIndex={prevWordIndex} />
         )}
         <SceneLayer item={cur} brand={brand} scale={scale}
-          style={inTransition ? layerCss(tx.over) : { opacity: 1 }} registerVideo={registerVideo} />
+          style={inTransition ? layerCss(tx.over) : { opacity: 1 }} registerVideo={registerVideo}
+          activeWordIndex={curWordIndex} />
         {veil > 0 && <div className="pointer-events-none absolute inset-0 bg-black" style={{ opacity: veil }} />}
       </div>
       {items.map((it) => <VoiceLayer key={it.index} item={it} registerAudio={registerAudio} />)}

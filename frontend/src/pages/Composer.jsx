@@ -23,7 +23,7 @@ import { elementsFromSpec, newElement, useCardScale, clampPos } from "@/lib/slid
 import { materializeTemplateSlides } from "@/lib/templateEdit";
 import { groupFontsByCategory, fontStack, useAllFontsLoaded, useFontCatalog } from "@/lib/fonts";
 import { FontNotice } from "@/components/CustomFonts";
-import { reelTimeline, normalizeClip, formatSeconds, withLength } from "@/lib/videoClip";
+import { reelTimeline, normalizeClip, formatSeconds, withLength, deriveCaptionWords } from "@/lib/videoClip";
 import { ElementsLibrary } from "@/components/ElementsLibrary";
 import { ComposerFromSource } from "@/components/ComposerFromSource";
 import { ComposerVisualPanel } from "@/components/ComposerVisualPanel";
@@ -288,15 +288,16 @@ export default function Composer() {
         const text = (a.spec?.body || "").trim();
         if (!text) return null;
         try {
-          const { data } = await api.post("/ai/generate", { kind: "voice", prompt: text });
+          const { data } = await api.post("/ai/generate", { kind: "voice", prompt: text, options: { timestamps: true } });
           const result = await pollTask(data.task_id);
           const url = (result.files || []).find((f) => f.file_url)?.file_url;
           if (!url) return false;
           const duration = await probeAudioDuration(url);
+          const words = deriveCaptionWords(text, duration, result.alignment);
           setAssets((s) => s.map((asset, idx) => {
             if (idx !== i) return asset;
             const clip = duration ? withLength(asset.spec.clip, duration + VOICE_PAD_SECONDS) : asset.spec.clip;
-            return { ...asset, spec: { ...asset.spec, voice: { url, duration: duration || null }, clip } };
+            return { ...asset, spec: { ...asset.spec, voice: { url, duration: duration || null, words }, clip } };
           }));
           return true;
         } catch { return false; } // this scene keeps its default timing; the rest still finish

@@ -242,6 +242,64 @@ export function frameAt(items, t) {
   return { cur, prev, inTransition, p: inTransition ? Math.min(1, Math.max(0, into / window)) : 1 };
 }
 
+// Word-level timing for a scene's spoken line, so the on-screen body text
+// can highlight along with the voiceover the way a caption does.
+//
+// When PoYo's TTS returns real alignment data, it's ElevenLabs' own
+// character-timestamp shape: parallel `characters`/`character_start_times_seconds`/
+// `character_end_times_seconds` arrays. A word's start/end is just the span
+// of its own non-whitespace characters in that array. If that shape isn't
+// there — or its character count doesn't add up to the words we asked it to
+// speak, which text normalization (numbers, abbreviations) can cause — this
+// falls back to splitting the clip's duration across words by their length,
+// which reads close enough without needing real timing at all.
+export function deriveCaptionWords(text, duration, alignment) {
+  const words = (text || "").trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  const chars = alignment?.characters;
+  const starts = alignment?.character_start_times_seconds;
+  const ends = alignment?.character_end_times_seconds;
+  if (Array.isArray(chars) && Array.isArray(starts) && Array.isArray(ends)
+    && chars.length === starts.length && chars.length === ends.length && chars.length > 0) {
+    const result = [];
+    let i = 0;
+    for (const w of words) {
+      while (i < chars.length && /\s/.test(chars[i])) i += 1;
+      const wordStart = i < chars.length ? starts[i] : null;
+      let wordEnd = wordStart;
+      let consumed = 0;
+      while (i < chars.length && consumed < w.length) {
+        if (!/\s/.test(chars[i])) { wordEnd = ends[i]; consumed += 1; }
+        i += 1;
+      }
+      if (wordStart != null && wordEnd != null) result.push({ text: w, start: wordStart, end: wordEnd });
+    }
+    if (result.length === words.length) return result;
+  }
+  const dur = Number(duration) > 0 ? Number(duration) : words.length * 0.35;
+  const weights = words.map((w) => Math.max(1, w.length));
+  const totalWeight = weights.reduce((a, b) => a + b, 0);
+  let t = 0;
+  return words.map((w, i) => {
+    const start = t;
+    t += (weights[i] / totalWeight) * dur;
+    return { text: w, start, end: t };
+  });
+}
+
+// Which word a moment in the scene lands on, or -1 before the first word /
+// once every word has been reached (the last word stays "active" through
+// whatever silence trails it, which reads better than snapping off early).
+export function wordIndexAt(words, t) {
+  if (!words || !words.length) return -1;
+  if (t < words[0].start) return -1;
+  let idx = 0;
+  for (let i = 0; i < words.length; i += 1) {
+    if (t >= words[i].start) idx = i; else break;
+  }
+  return idx;
+}
+
 export function formatSeconds(s) {
   const v = Math.max(0, Number(s) || 0);
   const m = Math.floor(v / 60);

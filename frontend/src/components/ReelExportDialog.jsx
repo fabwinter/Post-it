@@ -36,6 +36,9 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
+  // Which word the off-screen stage should highlight for a given scene while
+  // capturing that scene's per-word caption frames — see `run()`.
+  const [stageWordIndex, setStageWordIndex] = useState({});
 
   const bgRefs = useRef({});
   const contentRefs = useRef({});
@@ -48,7 +51,7 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
   const dims = exportDimensions(aspect, height);
 
   useEffect(() => {
-    if (!open) { setPhase("idle"); setProgress(0); setError(""); setResult(null); cancelled.current = false; }
+    if (!open) { setPhase("idle"); setProgress(0); setError(""); setResult(null); cancelled.current = false; setStageWordIndex({}); }
   }, [open]);
 
   const run = useCallback(async () => {
@@ -60,25 +63,41 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
       if (document.fonts?.ready) await document.fonts.ready;
       await new Promise((r) => setTimeout(r, 120));
 
+      // Drop the clip from the clone rather than just hiding it. html-to-image
+      // inlines every source it walks, so a hidden backdrop still meant
+      // base64-ing the whole video into the overlay PNG once per scene — slow
+      // enough to look like a hang. The real frames are composited underneath
+      // this layer at record time anyway.
+      const dropBackdrop = (node) => !(node instanceof Element && node.hasAttribute("data-export-backdrop"));
+      const contentOpts = (opts) => ({ ...opts, backgroundColor: undefined, filter: dropBackdrop });
+
       const layers = {};
       for (const it of items) {
         const opts = { pixelRatio: 1, cacheBust: true, width: dims.width, height: dims.height };
-        layers[it.index] = {
-          bg: bgRefs.current[it.index] ? await toPng(bgRefs.current[it.index], opts) : null,
-          content: contentRefs.current[it.index]
-            ? await toPng(contentRefs.current[it.index], {
-              ...opts,
-              backgroundColor: undefined,
-              // Drop the clip from the clone rather than just hiding it.
-              // html-to-image inlines every source it walks, so a hidden
-              // backdrop still meant base64-ing the whole video into the
-              // overlay PNG once per scene — slow enough to look like a
-              // hang. The real frames are composited underneath this layer
-              // at record time anyway.
-              filter: (node) => !(node instanceof Element && node.hasAttribute("data-export-backdrop")),
-            })
-            : null,
-        };
+        const bg = bgRefs.current[it.index] ? await toPng(bgRefs.current[it.index], opts) : null;
+        const words = it.asset?.spec?.voice?.words;
+        // A captioned scene highlights a different word over its own
+        // lifetime, and that highlight is baked into the DOM screenshot
+        // (same renderer as the preview) rather than drawn separately — so
+        // it needs one overlay frame per word instead of one for the whole
+        // scene. Scenes are short and word counts small, so this stays a
+        // handful of extra screenshots, not hundreds.
+        if (words?.length && contentRefs.current[it.index]) {
+          const frames = [];
+          for (let w = 0; w < words.length; w += 1) {
+            setStageWordIndex((s) => ({ ...s, [it.index]: w }));
+            // eslint-disable-next-line no-await-in-loop
+            await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+            // eslint-disable-next-line no-await-in-loop
+            const image = await toPng(contentRefs.current[it.index], contentOpts(opts));
+            frames.push({ image, start: words[w].start, end: words[w].end });
+            if (cancelled.current) { setPhase("idle"); return; }
+          }
+          layers[it.index] = { bg, contentFrames: frames };
+        } else {
+          const content = contentRefs.current[it.index] ? await toPng(contentRefs.current[it.index], contentOpts(opts)) : null;
+          layers[it.index] = { bg, content };
+        }
         if (cancelled.current) { setPhase("idle"); return; }
       }
 
@@ -222,7 +241,8 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
                 style={{ width: dims.width, height: dims.height, background: bg }} />
               <div ref={(el) => { contentRefs.current[it.index] = el; }} className="reel-export-content"
                 style={{ width: dims.width, height: dims.height }}>
-                <VisualCard spec={spec} brand={brand} scale={dims.width / CARD_REF_WIDTH} />
+                <VisualCard spec={spec} brand={brand} scale={dims.width / CARD_REF_WIDTH}
+                  activeWordIndex={stageWordIndex[it.index] ?? -1} />
               </div>
             </div>
           );

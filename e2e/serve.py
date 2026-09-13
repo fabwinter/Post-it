@@ -53,6 +53,13 @@ def _wav_bytes(seconds, rate=8000):
 # the one static /e2e-asset.png every other kind is happy to share.
 TASK_FILES = {}
 
+# task_id -> a fake ElevenLabs-shaped character alignment, for a voice
+# generation that asked for timestamps=true. Structurally the real API's
+# shape (parallel characters/start/end arrays) so the frontend's real
+# alignment-parsing path gets exercised, even though the timing itself is
+# just spread evenly across characters rather than phoneme-accurate.
+TASK_ALIGNMENT = {}
+
 class Resp:
     def __init__(s, b, c=200, content_type=None, headers=None):
         s.status_code = c
@@ -106,7 +113,8 @@ def fake_post(url, headers=None, json=None, timeout=None, **kw):
         task_id = f"task-{next(COUNTER)}"
         model = b.get("model") or ""
         if "elevenlabs" in model or "tts" in model:
-            text = (b.get("input") or {}).get("text") or ""
+            input_payload = b.get("input") or {}
+            text = input_payload.get("text") or ""
             # ~2.5 spoken words/sec, the same rough rate the plan's own
             # timing math uses — different lines really do come back as
             # different lengths, not one fixed "voice clip" duration.
@@ -114,6 +122,15 @@ def fake_post(url, headers=None, json=None, timeout=None, **kw):
             file_url = f"/e2e-voice-{task_id}.wav"
             BLOB_STORE[f"http://127.0.0.1:8123{file_url}"] = _wav_bytes(seconds)
             TASK_FILES[task_id] = file_url
+            if input_payload.get("timestamps") and text:
+                chars = list(text)
+                n = len(chars)
+                per = seconds / n
+                TASK_ALIGNMENT[task_id] = {
+                    "characters": chars,
+                    "character_start_times_seconds": [round(i * per, 4) for i in range(n)],
+                    "character_end_times_seconds": [round((i + 1) * per, 4) for i in range(n)],
+                }
         elif "generate-music" in model or "generate-mashup" in model:
             file_url = f"/e2e-music-{task_id}.wav"
             BLOB_STORE[f"http://127.0.0.1:8123{file_url}"] = _wav_bytes(8.0)
@@ -137,8 +154,10 @@ def fake_get(url, headers=None, timeout=None, params=None, **kw):
     if "/api/generate/status/" in url:
         task_id = url.rstrip("/").rsplit("/", 1)[-1]
         file_url = TASK_FILES.get(task_id, "/e2e-asset.png")
-        return Resp({"data": {"status": "finished", "progress": 100,
-                              "files": [{"file_url": file_url}]}})
+        data = {"status": "finished", "progress": 100, "files": [{"file_url": file_url}]}
+        if task_id in TASK_ALIGNMENT:
+            data["normalized_alignment"] = TASK_ALIGNMENT[task_id]
+        return Resp({"data": data})
     if "/v1/models" in url: return Resp({"data": []})
     if "api.pexels.com/v1/search" in url:
         page = int((params or {}).get("page") or 1)

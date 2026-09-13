@@ -3040,6 +3040,11 @@ async def ai_task(task_id: str):
         "progress": data.get("progress", 0),
         "files": files,
         "error_message": data.get("error_message"),
+        # A voice generation requested with timestamps=true carries ElevenLabs'
+        # own character-alignment object here (shape: parallel `characters`/
+        # `character_start_times_seconds`/`character_end_times_seconds` arrays).
+        # Passed through verbatim — the frontend derives word timing from it.
+        "alignment": data.get("normalized_alignment") or data.get("alignment"),
     }
 
 
