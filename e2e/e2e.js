@@ -165,6 +165,28 @@ async function tap(page, testid) {
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 10000 });
   ok('history "use" restores a full plan', (await page.getByTestId('composer-content').inputValue()).includes('kept showing up'));
 
+  // "Use", clicked while the Composer this "Use" targets is already open.
+  // This exact case used to be a silent no-op for 5 of History's 8 kinds
+  // (write/restyle/repurpose/batch/coach, plus any media result): they all
+  // resolve to `content`/`mediaUrl`, which were mount-only useState
+  // initializers — a same-path navigate("/composer", ...) never remounts
+  // the page, so a click here did nothing, with no error to notice it by.
+  // Reproduced before fixing (a throwaway probe, this exact click from
+  // this exact page) and now covered so it can't come back silently.
+  await page.request.post(B + '/api/ai/write', { data: { brief: 'a sentinel about shipping weekly no matter what', platform: 'twitter' } });
+  await page.waitForTimeout(300);
+  const priorContent = await page.getByTestId('composer-content').inputValue();
+  await tap(page, 'composer-history');
+  await page.getByTestId('history-filter-text').click();
+  await page.waitForTimeout(800);
+  const freshWriteId = (await page.locator('[data-testid^="history-item-"]').first().getAttribute('data-testid')).replace('history-item-', '');
+  await page.getByTestId(`history-use-${freshWriteId}`).click();
+  await page.waitForTimeout(500);
+  const afterUse = await page.getByTestId('composer-content').inputValue();
+  ok('History "Use" applies even from inside the Composer it targets (same-path navigation)',
+     afterUse.length > 0 && afterUse !== priorContent,
+     `before: "${priorContent.slice(0, 30)}" after: "${afterUse.slice(0, 30)}"`);
+
   // ---------- 3. Brand kit ----------
   await page.goto(B + '/brand', { waitUntil: 'domcontentloaded' });
   await page.getByTestId('brand-name').waitFor({ timeout: 8000 });

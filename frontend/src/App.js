@@ -95,7 +95,7 @@ function RedirectToLibraryTab({ tab }) {
 // Old links land on the matching mode instead of a 404.
 function RedirectToComposerMode({ tab }) {
   const navigate = useNavigate();
-  useEffect(() => { navigate("/composer", { replace: true, state: { startTab: tab } }); }, [navigate, tab]);
+  useEffect(() => { navigate("/composer", { replace: true, state: { start: { from: tab } } }); }, [navigate, tab]);
   return null;
 }
 

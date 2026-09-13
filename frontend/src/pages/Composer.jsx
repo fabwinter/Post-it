@@ -61,31 +61,58 @@ const emptySlide = (index, total, theme = "midnight") => ({
   spec: { template: index === 0 ? "cover" : "slide", theme, index, total, title: "", heading: "", body: "" },
 });
 
+// Reads the one starting platform from wherever it might arrive — the new
+// `start` intent, or a stale pre-refactor `state.platforms` array a caller
+// hasn't been updated to send yet. Needed synchronously at mount (to pick
+// the platform's native format before first paint), before the
+// location.key effect below gets a chance to run.
+const initialPlatform = (state) => state.start?.platform || state.platforms?.[0] || "instagram";
+
+// One-release compatibility: a browser-history entry created before this
+// deploy (a back button mid-session) still carries the old flat keys
+// instead of a single `start` intent. Translates them into the new shape
+// so a stale entry isn't silently dropped — delete this, and the flat
+// `state.*` reads it covers, once nothing in the wild can still produce
+// them (this deploy plus one).
+function normalizeLegacyStart(state) {
+  if (state.postId) return { from: "post", value: state.postId };
+  if (state.plan) return { from: "plan", value: state.plan };
+  if (state.editTemplateId) return { from: "design", value: state.editTemplateId, mode: "edit" };
+  if (state.applyCustomTemplateId) return { from: "design", value: state.applyCustomTemplateId };
+  if (state.visual) return { from: "visual", value: state.visual };
+  if (state.brief) return { from: "brief", value: state.brief };
+  if (state.content) return { from: "draft", value: { content: state.content, platform: state.platforms?.[0] } };
+  if (state.mediaUrl) return { from: "media", value: { url: state.mediaUrl, type: state.mediaType } };
+  if (["topic", "source", "visual", "batch"].includes(state.startTab)) return { from: state.startTab };
+  if (state.presetDate || state.brandKitId) return { from: "topic", presetDate: state.presetDate, brandKitId: state.brandKitId };
+  return null;
+}
+
 export default function Composer() {
   const location = useLocation();
   const navigate = useNavigate();
   const state = location.state || {};
   const specs = usePlatformSpecs();
-  const [brandKitId, setBrandKitId] = useState(state.brandKitId || null);
+  const [brandKitId, setBrandKitId] = useState(null);
   const { brand } = useBrandKit(brandKitId);
   const { kits: brandKits } = useBrandKits();
 
-  const [postId, setPostId] = useState(state.postId || null);
+  const [postId, setPostId] = useState(null);
   const [title, setTitle] = useState("Untitled post");
-  const [content, setContent] = useState(state.content || "");
-  const [platforms, setPlatforms] = useState(state.platforms || ["instagram"]);
+  const [content, setContent] = useState("");
+  const [platforms, setPlatforms] = useState(() => [initialPlatform(state)]);
   // Start on the platform's native format — opening the Composer for Instagram
   // should offer a carousel, not a single graphic you then have to switch.
   const [format, setFormat] = useState(
-    () => FALLBACK_SPECS[(state.platforms || ["instagram"])[0]]?.default_format || "single"
+    () => FALLBACK_SPECS[initialPlatform(state)]?.default_format || "single"
   );
   const [assets, setAssets] = useState([]);
   const [hashtags, setHashtags] = useState([]);
   const [altText, setAltText] = useState("");
   const [contentByPlatform, setContentByPlatform] = useState({});
   const [platformTab, setPlatformTab] = useState(null);
-  const [mediaUrl, setMediaUrl] = useState(state.mediaUrl || "");
-  const [mediaType, setMediaType] = useState(state.mediaType || "");
+  const [mediaUrl, setMediaUrl] = useState("");
+  const [mediaType, setMediaType] = useState("");
   const [scheduleAt, setScheduleAt] = useState("");
   const [saving, setSaving] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
@@ -94,18 +121,16 @@ export default function Composer() {
   // for that idea, so only that one card shows a spinner — `building`
   // above stays reserved for "Build whole post" acting on the brief.
   const [buildingIdeaIndex, setBuildingIdeaIndex] = useState(null);
-  const [brief, setBrief] = useState(state.brief || "");
+  const [brief, setBrief] = useState("");
   // Folded in from the old Write page's own tone picker — "Caption only"
   // used to always write as "engaging" with no way to change it.
   const [briefTone, setBriefTone] = useState("engaging");
   // How this post is starting: a topic (the default — brief + AI write/
   // build), a source to repurpose, a generated visual, or one pick from a
   // batch of drafts. Folded in from three standalone pages that each did
-  // one of these and then handed off to the Composer; a deep link from one
-  // of their old routes opens straight on that mode.
-  const [startMode, setStartMode] = useState(
-    ["topic", "source", "visual", "batch"].includes(state.startTab) ? state.startTab : "topic"
-  );
+  // one of these and then handed off to the Composer; startFrom below
+  // switches this the moment an intent names one of these modes.
+  const [startMode, setStartMode] = useState("topic");
   const { models, default: defaultModel } = useTextModels("gemini-3-flash-preview");
   const [model, setModel] = useState("");
   const [coach, setCoach] = useState(null);
@@ -128,8 +153,11 @@ export default function Composer() {
   const [styleTemplate, setStyleTemplate] = useState("hooks");
   const [restyling, setRestyling] = useState(false);
   const templates = useTemplateStyles();
-  const [customTemplateId, setCustomTemplateId] = useState(state.applyCustomTemplateId || null);
-  const pendingTemplateSync = useRef(!!state.applyCustomTemplateId);
+  const [customTemplateId, setCustomTemplateId] = useState(null);
+  // Set to true only when a "design" intent applies a design (never a
+  // manual dropdown pick) — the one-time signal for the sync effect below
+  // to adopt that design's native format, once.
+  const pendingTemplateSync = useRef(false);
   const { templates: customTemplates, loading: customTemplatesLoading, reload: reloadCustomTemplates } = useCustomTemplates();
   const [templateUploadType, setTemplateUploadType] = useState("pptx");
   const [templateUploading, setTemplateUploading] = useState(false);
@@ -152,7 +180,7 @@ export default function Composer() {
   // template's own layout materialized into real editable slides, and
   // "Save changes" overwrites that same template instead of creating a
   // new post or a new template.
-  const [editingTemplateId, setEditingTemplateId] = useState(state.editTemplateId || null);
+  const [editingTemplateId, setEditingTemplateId] = useState(null);
   const [editingTemplateName, setEditingTemplateName] = useState("");
   const [savingTemplateEdit, setSavingTemplateEdit] = useState(false);
   const templateEditLoaded = useRef(false);
@@ -193,45 +221,110 @@ export default function Composer() {
     if (plan.platform) setPlatforms([plan.platform]);
   };
 
+  // The one door in: everywhere that used to hand the Composer its own
+  // loose location.state key (postId, plan, brief, content, visual,
+  // mediaUrl, startTab, applyCustomTemplateId, editTemplateId, presetDate…
+  // 12 keys, any combination) now sends a single `start` intent instead —
+  // one shape for every caller to construct, one reader here instead of a
+  // dozen scattered checks. Keyed on location.key, not just mount: several
+  // flows navigate here from Composer itself (a redirect from a retired
+  // page, History's "Use" while already composing) — a same-path
+  // navigation doesn't remount the component, so without this its own new
+  // intent would silently never be picked up. That exact gap was live: an
+  // intent arriving this way used to only reach the handful of keys read
+  // inside this effect, while the rest (content, mediaUrl, startTab, the
+  // template pickers…) were mount-only useState initializers that a
+  // same-path navigation never re-ran — so History's "Use" silently did
+  // nothing for 5 of its 8 kinds when clicked from inside an open Composer.
   useEffect(() => {
-    // Clicking an empty day on the calendar arrives carrying that date —
-    // without this it was silently dropped and you landed on a composer
-    // with no date set at all, having just told it which day you meant.
-    // An existing post loaded below overwrites it with its own time.
-    if (state.presetDate) setScheduleAt(toLocalInput(state.presetDate));
-    if (state.postId) {
-      api.get(`/posts/${state.postId}`).then(({ data }) => {
-        setPostId(data.id); setTitle(data.title); setContent(data.content);
-        setPlatforms(data.platforms.length ? data.platforms : ["instagram"]);
-        setFormat(data.format || "single");
-        setAssets(data.assets || []);
-        setHashtags(data.hashtags || []);
-        setAltText(data.alt_text || "");
-        setContentByPlatform(data.content_by_platform || {});
-        setMediaUrl((data.media_urls || [])[0] || ""); setMediaType(data.media_type || "");
-        if (data.brand_kit_id) setBrandKitId(data.brand_kit_id);
-        if (data.scheduled_time) setScheduleAt(toLocalInput(data.scheduled_time));
-      }).catch((e) => toast.error(apiErrorMessage(e, "Couldn't load that post.")));
-      return;
-    }
-    if (state.plan) { applyPlan(state.plan); return; }
-    // A deck arriving from the Visual panel (or, before that, a deep link
-    // from the old standalone Visual Studio page) comes as specs, not a
-    // flattened PNG.
-    if (state.visual) applyVisual(state.visual, state.content, state.platforms);
-    if (state.brief && !state.content) generate(state.brief);
-    // Keyed on location.key, not just mount: several flows now navigate
-    // here from Composer itself (a redirect from a retired page, History's
-    // "Use" while already composing) — a same-path navigation doesn't
-    // remount the component, so without this its own new state (a fresh
-    // plan, a different post) would silently never be picked up.
+    const start = state.start || normalizeLegacyStart(state);
+    if (start) startFrom(start);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.key]);
 
+  const startFrom = (start) => {
+    const { from, value, platform, brandKitId: startBrandKitId, presetDate, mode } = start;
+    if (startBrandKitId) setBrandKitId(startBrandKitId);
+    if (presetDate) setScheduleAt(toLocalInput(presetDate));
+    if (platform) setPlatforms([platform]);
+
+    switch (from) {
+      case "post":
+        setStartMode("topic");
+        api.get(`/posts/${value}`).then(({ data }) => {
+          setPostId(data.id); setTitle(data.title); setContent(data.content);
+          setPlatforms(data.platforms.length ? data.platforms : ["instagram"]);
+          setFormat(data.format || "single");
+          setAssets(data.assets || []);
+          setHashtags(data.hashtags || []);
+          setAltText(data.alt_text || "");
+          setContentByPlatform(data.content_by_platform || {});
+          setMediaUrl((data.media_urls || [])[0] || ""); setMediaType(data.media_type || "");
+          if (data.brand_kit_id) setBrandKitId(data.brand_kit_id);
+          if (data.scheduled_time) setScheduleAt(toLocalInput(data.scheduled_time));
+        }).catch((e) => toast.error(apiErrorMessage(e, "Couldn't load that post.")));
+        break;
+      // The idea→post shortcut: copy, hashtags, format and every slide
+      // arrive together, already on-brand.
+      case "plan":
+        applyPlan(value);
+        setStartMode("topic");
+        break;
+      // A topic to auto-write from — unlike "draft" below, this triggers
+      // the AI call rather than dropping in literal text.
+      case "brief":
+        setBrief(value);
+        generate(value);
+        setStartMode("topic");
+        break;
+      // Literal text ready to use as-is: History's write/restyle/repurpose/
+      // batch/coach kinds all resolve to exactly this shape, the same one
+      // the Source and Batch panels apply from while composing.
+      case "draft":
+        applyDraft(value);
+        break;
+      // A deck arriving from the Visual panel (or a deep link with one
+      // already generated) comes as specs, not a flattened PNG. With no
+      // value, this just opens the Visual tab so a new one can be made.
+      case "visual":
+        setStartMode("visual");
+        if (value) { applyVisual(value); setStartMode("topic"); }
+        break;
+      case "media":
+        setMediaUrl(value.url); setMediaType(value.type || "");
+        setStartMode("topic");
+        break;
+      // A saved design: `mode: "edit"` opens it for in-place editing
+      // (Save overwrites the design); the default applies it once to the
+      // post being composed, same as picking it from the dropdown below —
+      // pendingTemplateSync is the signal that lets that one application
+      // adopt the design's native format, which a manual dropdown pick
+      // deliberately doesn't (see the sync effect below).
+      case "design":
+        if (mode === "edit") {
+          setEditingTemplateId(value);
+        } else {
+          pendingTemplateSync.current = true;
+          setCustomTemplateId(value);
+        }
+        setStartMode("topic");
+        break;
+      case "source":
+        setStartMode("source");
+        break;
+      case "batch":
+        setStartMode("batch");
+        break;
+      default:
+        setStartMode("topic");
+    }
+  };
+
   // Turns a generated card/deck (from the Visual panel) into editable
-  // slides on the post currently open here — used both for a deep link
-  // arriving with state.visual already set, and for the panel's own live
-  // "Use in post" while composing.
+  // slides on the post currently open here — used both by a "visual"
+  // intent arriving with a value already set, and by the panel's own live
+  // "Use in post" while composing (the only caller that also passes a
+  // content/platforms override, from its own generated summary).
   const applyVisual = ({ data, template, theme = "midnight" }, content, platformsArg) => {
     setAssets(visualToAssets(data, template, theme));
     setFormat(data?.slides ? "carousel" : "single");
@@ -317,9 +410,9 @@ export default function Composer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Arriving from Designs.jsx with a design already picked (a deep link,
-  // not a dropdown pick made here) adopts that design's native format
-  // once, so it opens looking the way it was built. After that the format
+  // A "design" intent's own apply (from the Library's Designs tab, not a
+  // dropdown pick made here) adopts that design's native format once, so
+  // it opens looking the way it was built. After that the format
   // and the design selection are independent — a design's layout is
   // percentages, so switching format just reflows it onto a different
   // aspect ratio instead of un-selecting it. Only an outright deletion of
