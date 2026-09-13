@@ -181,7 +181,9 @@ async function tap(page, testid) {
   // Connections folded into Brand Kit as a tab — no nav entry of its own,
   // and a stale /connections link lands here instead of a 404.
   await tap(page, 'brand-tab-connections');
-  await page.getByTestId('connections-page').waitFor({ timeout: 5000 });
+  // The panel's wrapper renders before its /connections fetch resolves, so
+  // waiting on the wrapper races the grid — wait for a platform card itself.
+  await page.getByTestId('connection-instagram').waitFor({ timeout: 8000 });
   ok('connections tab lists every platform', await page.getByTestId('connection-instagram').isVisible());
   await page.goto(B + '/connections', { waitUntil: 'domcontentloaded' });
   await page.getByTestId('connections-page').waitFor({ timeout: 8000 });
@@ -1039,6 +1041,20 @@ async function tap(page, testid) {
   await page.waitForTimeout(300);
   ok('applying a Batch result fills the post and returns to Topic',
      (await page.getByTestId('composer-content').inputValue()).length > 0 && await page.getByTestId('composer-brief').isVisible());
+
+  // ---- clicking a day on the Plan calendar carries that date into Create ----
+  // The calendar had no coverage at all, which is how it went unnoticed that
+  // it sent a presetDate the Composer never read: you picked a day, and the
+  // composer opened with no date set, having just been told which one.
+  await page.goto(B + '/calendar', { waitUntil: 'domcontentloaded' });
+  await page.getByTestId('cal-new-post').waitFor({ timeout: 8000 });
+  const dayCell = await page.locator('[data-testid^="cal-day-"]').nth(14);
+  const clickedDay = (await dayCell.getAttribute('data-testid')).replace('cal-day-', '');
+  await dayCell.click({ force: true });
+  await page.getByTestId('composer-page').waitFor({ timeout: 8000 });
+  const preset = await page.getByTestId('composer-schedule-time').inputValue();
+  ok('clicking a calendar day pre-fills the schedule with that day',
+     preset.length > 0 && Number(preset.slice(8, 10)) === Number(clickedDay), `clicked ${clickedDay}, got "${preset}"`);
 
   // html-to-image reaches for the Google Fonts stylesheet while rasterising
   // the overlay layer; this harness blocks every off-origin request, so those
