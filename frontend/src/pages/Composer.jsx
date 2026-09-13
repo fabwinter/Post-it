@@ -1188,7 +1188,7 @@ export default function Composer() {
                             onUpload={uploadClipMedia}
                             onPickStock={() => setStockTarget("clip-video")}
                             onPickLibrary={() => { setLibraryTarget("clip"); setLibraryOpen(true); }}
-                            onGenerate={() => navigate("/studio", { state: { kind: "video", prompt: activeAsset.spec.video_prompt || activeAsset.spec.heading } })}
+                            onGenerate={() => navigate("/library", { state: { tab: "video", prompt: activeAsset.spec.video_prompt || activeAsset.spec.heading } })}
                             onClear={clearClip}
                           />
                         )}
