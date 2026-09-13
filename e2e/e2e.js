@@ -549,15 +549,14 @@ async function tap(page, testid) {
   await tap(page, 'composer-autobuild');
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
 
-  // Voice synthesis runs in the background and can finish before this next
-  // line even executes in this fake (instant local responses) — so this
-  // doesn't assert the flat default is ever observed, only what it holds
-  // once settled, against a fixed timeout rather than a race on the fake's
-  // own speed.
-  await page.waitForFunction(() => {
-    const el = document.querySelector('[data-testid="composer-reel-duration"]');
-    return el && !el.textContent.startsWith('0:09.0');
-  }, { timeout: 15000 });
+  // Voice recording and footage search both run in the background, side by
+  // side, and can each finish before this next line even executes in this
+  // fake (instant local responses) — so this waits for both of their own
+  // "still working" badges to clear rather than polling the total, which
+  // can pass through several intermediate values as scenes finish one at a
+  // time (only some done is still "not the flat default").
+  await page.waitForSelector('[data-testid="composer-voice-synthesizing"]', { state: 'hidden', timeout: 15000 });
+  await page.waitForSelector('[data-testid="composer-visual-filling"]', { state: 'hidden', timeout: 15000 });
   const votedLabel = await page.getByTestId('composer-reel-duration').innerText();
   const votedTotal = toSeconds(votedLabel);
   // Fixture scenes read "You publish. Nobody claps." (4 words), "Three
@@ -566,6 +565,16 @@ async function tap(page, testid) {
   // and above the floor three near-silent takes plus padding would give.
   ok('recording a take per scene sets a real, non-flat length',
      votedTotal > 2 && votedTotal < 8, votedLabel);
+
+  // Footage search ran alongside it — every scene should have picked up
+  // real footage instead of sitting on its themed background. The
+  // timeline's own per-scene thumbnails only render a <video> when that
+  // scene's clip has a url, so switching to Play reel and counting them is
+  // a direct read of the same state the reel will actually export from.
+  await tap(page, 'composer-reel-view-play');
+  await page.waitForTimeout(300);
+  const clipsFound = await page.evaluate(() => document.querySelectorAll('[data-testid^="reel-player-seg-"] video').length);
+  ok('footage search filled every scene while voice was recording', clipsFound === 3, String(clipsFound));
 
   // ---- fonts ----
   // Three of the catalogue's faces we serve ourselves (two from Google, one
