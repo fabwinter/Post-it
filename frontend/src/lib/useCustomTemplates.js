@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 
-// Templates converted from an uploaded PPTX/PDF/image (see Templates.jsx).
-// Shared between the Templates page (list/convert/delete) and the Composer
+// Designs converted from an uploaded PPTX/PDF/image (see Designs.jsx).
+// Shared between the Designs page (list/convert/delete) and the Composer
 // (pick one to drive "Build whole post").
 export function useCustomTemplates() {
   const [templates, setTemplates] = useState([]);
