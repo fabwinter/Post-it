@@ -131,7 +131,7 @@ export default function Composer() {
   useEffect(() => {
     if (!editingTemplateId || templateEditLoaded.current || customTemplatesLoading) return;
     const tpl = customTemplates.find((t) => t.id === editingTemplateId);
-    if (!tpl) { templateEditLoaded.current = true; setEditingTemplateId(null); toast.error("That template no longer exists."); return; }
+    if (!tpl) { templateEditLoaded.current = true; setEditingTemplateId(null); toast.error("That design no longer exists."); return; }
     templateEditLoaded.current = true;
     setFormat(tpl.format);
     setEditingTemplateName(tpl.name);
@@ -261,13 +261,13 @@ export default function Composer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Arriving from Templates.jsx with a template already picked (a deep
-  // link, not a dropdown pick made here) adopts that template's native
-  // format once, so it opens looking the way it was built. After that the
-  // format and the template selection are independent — a template's
-  // layout is percentages, so switching format just reflows it onto a
-  // different aspect ratio instead of un-selecting it. Only an outright
-  // deletion of the selected template clears the picker.
+  // Arriving from Designs.jsx with a design already picked (a deep link,
+  // not a dropdown pick made here) adopts that design's native format
+  // once, so it opens looking the way it was built. After that the format
+  // and the design selection are independent — a design's layout is
+  // percentages, so switching format just reflows it onto a different
+  // aspect ratio instead of un-selecting it. Only an outright deletion of
+  // the selected design clears the picker.
   useEffect(() => {
     if (customTemplatesLoading || !customTemplateId) return;
     const t = customTemplates.find((x) => x.id === customTemplateId);
@@ -314,8 +314,8 @@ export default function Composer() {
     } catch (e) { toast.error(apiErrorMessage(e, "Coach feedback failed.")); } finally { setCoachLoading(false); }
   };
 
-  // Rewrites the draft already in the box into a template's voice — distinct
-  // from the Viral Templates page, which writes N fresh posts from a topic.
+  // Rewrites the draft already in the box into a chosen tone of voice —
+  // distinct from the Batch page, which writes N fresh posts from a topic.
   const applyStyle = async () => {
     if (!content.trim()) { toast.error("Write something first, then apply a style to it."); return; }
     setRestyling(true);
@@ -331,8 +331,8 @@ export default function Composer() {
   };
 
   // Upload a PPTX/PDF/image straight from the Composer and turn it into a
-  // saved template for the format currently selected, then select it —
-  // mirrors Templates.jsx's converter without leaving this page.
+  // saved design for the format currently selected, then select it —
+  // mirrors Designs.jsx's converter without leaving this page.
   const convertFileToTemplate = async (file) => {
     if (!file) return;
     setTemplateUploading(true);
@@ -343,7 +343,7 @@ export default function Composer() {
       const { data: tpl } = await api.post("/templates/from-file", { source_type: templateUploadType, source_url: up.url });
       await reloadCustomTemplates();
       if (tpl.format === format) setCustomTemplateId(tpl.id);
-      toast.success(`Template saved${tpl.format === format ? " and selected" : ` (built for ${FORMAT_LABEL[tpl.format] || tpl.format} — switch format to use it)`}.`);
+      toast.success(`Design saved${tpl.format === format ? " and selected" : ` (built for ${FORMAT_LABEL[tpl.format] || tpl.format} — switch format to use it)`}.`);
     } catch (e) { toast.error(apiErrorMessage(e, "Couldn't convert that file.")); }
     finally { setTemplateUploading(false); if (templateFileRef.current) templateFileRef.current.value = ""; }
   };
@@ -527,7 +527,7 @@ export default function Composer() {
 
   const saveAsTemplate = async () => {
     if (assets.length === 0) { toast.error("Nothing to save yet — add a slide first."); return; }
-    const name = window.prompt("Name this template", editingTemplateName || (title !== "Untitled post" ? title : ""));
+    const name = window.prompt("Name this design", editingTemplateName || (title !== "Untitled post" ? title : ""));
     if (!name || !name.trim()) return;
     setSavingTemplate(true);
     try {
@@ -535,8 +535,8 @@ export default function Composer() {
         name: name.trim(), format, theme: activeAsset?.spec?.theme || "midnight", slides: templateSlidesPayload(),
       });
       await reloadCustomTemplates();
-      toast.success(`Saved "${name.trim()}" as a template`);
-    } catch (e) { toast.error(apiErrorMessage(e, "Couldn't save template.")); } finally { setSavingTemplate(false); }
+      toast.success(`Saved "${name.trim()}" as a design`);
+    } catch (e) { toast.error(apiErrorMessage(e, "Couldn't save design.")); } finally { setSavingTemplate(false); }
   };
 
   // Overwrites the template currently being edited in place — the edit
@@ -544,7 +544,7 @@ export default function Composer() {
   // count are all whatever the deck below currently looks like.
   const saveTemplateChanges = async () => {
     if (!editingTemplateId) return;
-    if (assets.length === 0) { toast.error("A template needs at least one slide."); return; }
+    if (assets.length === 0) { toast.error("A design needs at least one slide."); return; }
     setSavingTemplateEdit(true);
     try {
       await api.put(`/templates/custom/${editingTemplateId}`, {
@@ -552,7 +552,7 @@ export default function Composer() {
         theme: activeAsset?.spec?.theme || "midnight", slides: templateSlidesPayload(),
       });
       await reloadCustomTemplates();
-      toast.success("Template updated");
+      toast.success("Design updated");
     } catch (e) { toast.error(apiErrorMessage(e, "Couldn't save changes.")); } finally { setSavingTemplateEdit(false); }
   };
 
@@ -781,7 +781,7 @@ export default function Composer() {
         <div className="mt-5 flex flex-wrap items-center gap-3 rounded-xl border border-lime/30 bg-lime/5 p-4" data-testid="composer-editing-template-banner">
           <LayoutTemplate size={16} className="flex-none text-lime" />
           <div className="flex-1">
-            <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-lime">Editing template</div>
+            <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-lime">Editing design</div>
             <input value={editingTemplateName} onChange={(e) => setEditingTemplateName(e.target.value)}
               data-testid="composer-editing-template-name"
               className="mt-1 w-full max-w-xs rounded-lg border border-white/10 bg-[#0A0A0A] px-2.5 py-1.5 text-sm text-white outline-none focus:border-lime" />
@@ -953,7 +953,7 @@ export default function Composer() {
             </div>
 
             <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-3">
-              <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Restyle as</span>
+              <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Tone</span>
               <select value={styleTemplate} onChange={(e) => setStyleTemplate(e.target.value)} data-testid="composer-style-select"
                 className="rounded-lg border border-white/10 bg-[#0A0A0A] px-2.5 py-1.5 text-xs text-white outline-none focus:border-iris [color-scheme:dark]">
                 {templates.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
@@ -962,15 +962,15 @@ export default function Composer() {
                 className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 text-xs text-white hover:bg-white/10">
                 {restyling ? <Loader2 size={13} className="animate-spin" /> : <Wand size={13} />} Apply style
               </Button>
-              <span className="text-xs text-zinc-600">rewrites the draft above in that template's voice</span>
+              <span className="text-xs text-zinc-600">rewrites the draft above in that tone of voice</span>
             </div>
 
             <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-3">
-              <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Build from</span>
+              <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Design</span>
               <select value={customTemplateId || ""} onChange={(e) => setCustomTemplateId(e.target.value || null)}
                 data-testid="composer-custom-template-select"
                 className="rounded-lg border border-white/10 bg-[#0A0A0A] px-2.5 py-1.5 text-xs text-white outline-none focus:border-iris [color-scheme:dark]">
-                <option value="">No template — AI picks the format</option>
+                <option value="">No design — AI picks the format</option>
                 {sortedCustomTemplates.map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.name}{t.format !== format ? ` (${FORMAT_LABEL[t.format] || t.format} — will resize)` : ""}
@@ -978,7 +978,7 @@ export default function Composer() {
                 ))}
               </select>
               {customTemplates.length === 0 && (
-                <span className="text-xs text-zinc-600">No saved templates yet —</span>
+                <span className="text-xs text-zinc-600">No saved designs yet —</span>
               )}
               <input ref={templateFileRef} type="file"
                 accept={templateUploadType === "pptx" ? ".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation" : templateUploadType === "pdf" ? ".pdf,application/pdf" : "image/*"}
@@ -993,7 +993,7 @@ export default function Composer() {
               </div>
               <Button variant="secondary" onClick={() => templateFileRef.current?.click()} disabled={templateUploading} data-testid="composer-template-upload"
                 className="h-7 gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 text-xs text-white hover:bg-white/10">
-                {templateUploading ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />} Upload template
+                {templateUploading ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />} Upload design
               </Button>
             </div>
 
@@ -1014,7 +1014,7 @@ export default function Composer() {
                 {assets.length > 0 && !editingTemplateId && (
                   <Button variant="ghost" onClick={saveAsTemplate} disabled={savingTemplate} data-testid="composer-save-template"
                     className="h-7 gap-1.5 px-2 text-xs text-zinc-400 hover:text-white">
-                    {savingTemplate ? <Loader2 size={12} className="animate-spin" /> : <BookmarkPlus size={12} />} Save as template
+                    {savingTemplate ? <Loader2 size={12} className="animate-spin" /> : <BookmarkPlus size={12} />} Save as design
                   </Button>
                 )}
                 <div className="flex items-center gap-1.5">
@@ -1251,7 +1251,7 @@ export default function Composer() {
                           {activeAsset.spec.elements ? (
                             <Button variant="ghost" onClick={() => resetSlideLayout(active)} data-testid="composer-slide-reset-layout"
                               className="h-8 gap-1.5 px-2.5 text-xs text-zinc-500 hover:text-white">
-                              <Undo2 size={13} /> Reset to template
+                              <Undo2 size={13} /> Reset to design
                             </Button>
                           ) : (
                             <Button variant="secondary" onClick={() => enterLayoutEdit(active)} data-testid="composer-slide-edit-layout"

@@ -281,22 +281,40 @@ async function tap(page, testid) {
   await page.waitForTimeout(400);
   ok('brand kit is in the mobile menu', await page.getByTestId('mobile-nav-brand').isVisible());
 
+  // Batch (the topic->N-posts generator) and Designs (the saved-layout
+  // gallery) used to be one page sharing the word "template" for two
+  // different things — confirm the nav actually reaches both split pages,
+  // and that the nav label itself says so (read before navigating away,
+  // since the menu closes on click and may not stay queryable after).
+  ok('Designs has its own nav entry', await page.getByTestId('mobile-nav-designs').isVisible());
+  ok('Batch is relabeled in the nav, not still "Viral Templates"',
+     (await page.getByTestId('mobile-nav-templates').innerText()).includes('Batch'));
+  await tap(page, 'mobile-nav-designs');
+  await page.getByTestId('designs-page').waitFor({ timeout: 8000 });
+  ok('Designs opens at its own route', new URL(page.url()).pathname === '/designs', page.url());
+  await page.waitForTimeout(600);
+  await tap(page, 'mobile-menu-open');
+  await page.waitForTimeout(400);
+  await tap(page, 'mobile-nav-templates');
+  await page.getByTestId('templates-page').waitFor({ timeout: 8000 });
+  ok('Batch kept the old /templates route', new URL(page.url()).pathname === '/templates', page.url());
+
   // ---------- 9. every route is usable on a phone ----------
-  // The template library's cards are grid items, which default to
+  // The design library's cards are grid items, which default to
   // min-width:auto and so can't shrink below the min-content width that
   // `truncate` (white-space:nowrap) gives them — that scrolled the whole
   // page sideways and squeezed each name down to a few characters.
-  await page.goto(B + '/templates', { waitUntil: 'domcontentloaded' });
+  await page.goto(B + '/designs', { waitUntil: 'domcontentloaded' });
   await page.getByTestId('templates-custom').waitFor({ timeout: 8000 });
   await page.waitForTimeout(600);
   const tplScroll = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-  ok('template library does not scroll sideways on a phone', tplScroll <= 1, 'overflow px: ' + tplScroll);
+  ok('design library does not scroll sideways on a phone', tplScroll <= 1, 'overflow px: ' + tplScroll);
   const nameRoom = await page.evaluate(() => {
     const card = document.querySelector('[data-testid^="templates-custom-item-"]');
     const name = card.querySelector('span.truncate');
     return { card: Math.round(card.getBoundingClientRect().width), name: Math.round(name.getBoundingClientRect().width) };
   });
-  ok('a template name still gets room to read', nameRoom.name >= 90, JSON.stringify(nameRoom));
+  ok('a design name still gets room to read', nameRoom.name >= 90, JSON.stringify(nameRoom));
 
   // An unknown path used to render nothing at all — a blank screen on a
   // phone, where there's no sidebar to navigate back from.
@@ -736,7 +754,7 @@ async function tap(page, testid) {
   await tap(page, 'composer-save-template');
   await page.waitForTimeout(2000);
 
-  await page.goto(B + '/templates', { waitUntil: 'domcontentloaded' });
+  await page.goto(B + '/designs', { waitUntil: 'domcontentloaded' });
   await page.getByTestId('templates-custom').waitFor({ timeout: 10000 });
   await page.waitForTimeout(600);
   await page.locator('[data-testid^="templates-custom-edit-"]').first().click({ force: true });
@@ -788,7 +806,7 @@ async function tap(page, testid) {
   await tap(page, 'composer-save-template');
   await page.waitForTimeout(2000);
 
-  await page.goto(B + '/templates', { waitUntil: 'domcontentloaded' });
+  await page.goto(B + '/designs', { waitUntil: 'domcontentloaded' });
   await page.getByTestId('templates-custom').waitFor({ timeout: 10000 });
   await page.waitForTimeout(600);
   await page.locator('[data-testid^="templates-custom-edit-"]').first().click({ force: true });
@@ -801,7 +819,7 @@ async function tap(page, testid) {
   await tap(page, 'composer-save-template-changes');
   await page.waitForTimeout(2000);
 
-  await page.goto(B + '/templates', { waitUntil: 'domcontentloaded' });
+  await page.goto(B + '/designs', { waitUntil: 'domcontentloaded' });
   await page.getByTestId('templates-custom').waitFor({ timeout: 10000 });
   await page.waitForTimeout(600);
   await page.locator('[data-testid^="templates-custom-edit-"]').first().click({ force: true });
@@ -816,7 +834,7 @@ async function tap(page, testid) {
   // template), then reopen again — the text must not drift a second time.
   await tap(page, 'composer-save-template-changes');
   await page.waitForTimeout(1500);
-  await page.goto(B + '/templates', { waitUntil: 'domcontentloaded' });
+  await page.goto(B + '/designs', { waitUntil: 'domcontentloaded' });
   await page.getByTestId('templates-custom').waitFor({ timeout: 10000 });
   await page.waitForTimeout(600);
   await page.locator('[data-testid^="templates-custom-edit-"]').first().click({ force: true });
@@ -895,7 +913,7 @@ async function tap(page, testid) {
      !!singleResp && singleResp.status() === 200, singleResp && singleResp.status());
   await page.waitForTimeout(1000);
   ok('...with the success toast, not the "nothing to save" one',
-     await page.evaluate(() => document.body.innerText.includes('as a template')));
+     await page.evaluate(() => document.body.innerText.includes('as a design')));
 
   // html-to-image reaches for the Google Fonts stylesheet while rasterising
   // the overlay layer; this harness blocks every off-origin request, so those

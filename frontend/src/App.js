@@ -11,6 +11,7 @@ import Studio from "@/pages/Studio";
 import Visuals from "@/pages/Visuals";
 import Repurpose from "@/pages/Repurpose";
 import Templates from "@/pages/Templates";
+import Designs from "@/pages/Designs";
 import Composer from "@/pages/Composer";
 import CalendarPage from "@/pages/CalendarPage";
 import Library from "@/pages/Library";
@@ -100,6 +101,7 @@ function App() {
                   <Route path="/visuals" element={<Visuals />} />
                   <Route path="/repurpose" element={<Repurpose />} />
                   <Route path="/templates" element={<Templates />} />
+                  <Route path="/designs" element={<Designs />} />
                   <Route path="/composer" element={<Composer />} />
                   <Route path="/calendar" element={<CalendarPage />} />
                   <Route path="/library" element={<Library />} />
