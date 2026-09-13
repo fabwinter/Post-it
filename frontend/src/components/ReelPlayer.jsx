@@ -39,6 +39,22 @@ function SceneLayer({ item, brand, scale, style, registerVideo }) {
   );
 }
 
+// A scene's recorded voiceover, if it has one — no visual of its own, just
+// registered the same way a scene's background video is, so the frame loop
+// can play it in lockstep. Kept mounted for every scene at once (there's
+// only ever a handful) rather than only the current one, so scrubbing back
+// to an earlier scene doesn't have to reload its audio first.
+function VoiceLayer({ item, registerAudio }) {
+  const ref = useRef(null);
+  const url = item.asset.spec?.voice?.url;
+  useEffect(() => {
+    registerAudio(item.index, ref.current);
+    return () => registerAudio(item.index, null);
+  }, [item.index, registerAudio, url]);
+  if (!url) return null;
+  return <audio ref={ref} src={url} preload="auto" />;
+}
+
 export function ReelPlayer({ assets, brand, aspectCls, activeIndex, onSelectScene, testid = "reel-player" }) {
   const boxRef = useRef(null);
   const scale = useCardScale(boxRef, 0.45);
@@ -52,6 +68,12 @@ export function ReelPlayer({ assets, brand, aspectCls, activeIndex, onSelectScen
   const registerVideo = useCallback((i, el) => {
     if (el) videos.current.set(i, el);
     else videos.current.delete(i);
+  }, []);
+
+  const audios = useRef(new Map());
+  const registerAudio = useCallback((i, el) => {
+    if (el) audios.current.set(i, el);
+    else audios.current.delete(i);
   }, []);
 
   const frame = useMemo(() => frameAt(items, t), [items, t]);
@@ -83,6 +105,27 @@ export function ReelPlayer({ assets, brand, aspectCls, activeIndex, onSelectScen
     });
   }, [items]);
 
+  // A voiceover plays straight through from its own start, once per scene —
+  // no trim window or speed to honor like a background clip has, just "is
+  // this scene on screen right now."
+  const syncAudios = useCallback((time, isPlaying) => {
+    items.forEach((it) => {
+      const el = audios.current.get(it.index);
+      if (!el) return;
+      const onScreen = time >= it.start - 0.001 && time < it.end;
+      if (!onScreen) {
+        if (!el.paused) el.pause();
+        return;
+      }
+      const target = Math.max(0, time - it.start);
+      if (Number.isFinite(target) && Math.abs(el.currentTime - target) > 0.25) {
+        try { el.currentTime = target; } catch { /* not seekable yet */ }
+      }
+      if (isPlaying && el.paused) el.play().catch(() => { /* autoplay refused; the frame loop still advances */ });
+      if (!isPlaying && !el.paused) el.pause();
+    });
+  }, [items]);
+
   // The clock. rAF rather than an interval so playback tracks the display's
   // real cadence, and the elapsed delta comes from timestamps so a dropped
   // frame doesn't slow the reel down.
@@ -109,7 +152,7 @@ export function ReelPlayer({ assets, brand, aspectCls, activeIndex, onSelectScen
     return () => cancelAnimationFrame(raf.current);
   }, [playing, total, loop]);
 
-  useLayoutEffect(() => { syncVideos(t, playing); }, [t, playing, syncVideos]);
+  useLayoutEffect(() => { syncVideos(t, playing); syncAudios(t, playing); }, [t, playing, syncVideos, syncAudios]);
 
   // Editing a clip while parked on it should show the change, so a length or
   // trim edit that moves the playhead past the end pulls it back in range.
@@ -140,6 +183,7 @@ export function ReelPlayer({ assets, brand, aspectCls, activeIndex, onSelectScen
           style={inTransition ? layerCss(tx.over) : { opacity: 1 }} registerVideo={registerVideo} />
         {veil > 0 && <div className="pointer-events-none absolute inset-0 bg-black" style={{ opacity: veil }} />}
       </div>
+      {items.map((it) => <VoiceLayer key={it.index} item={it} registerAudio={registerAudio} />)}
 
       {/* Transport */}
       <div className="mt-2 flex items-center gap-2">
@@ -148,7 +192,7 @@ export function ReelPlayer({ assets, brand, aspectCls, activeIndex, onSelectScen
           className="flex h-9 w-9 flex-none items-center justify-center rounded-lg bg-lime text-[#0A0A0A] hover:bg-lime-hover">
           {playing ? <Pause size={16} /> : <Play size={16} />}
         </button>
-        <button onClick={() => { setT(0); syncVideos(0, false); }} data-testid={`${testid}-restart`} title="Back to start"
+        <button onClick={() => { setT(0); syncVideos(0, false); syncAudios(0, false); }} data-testid={`${testid}-restart`} title="Back to start"
           className="flex h-9 w-9 flex-none items-center justify-center rounded-lg border border-white/10 text-zinc-400 hover:text-white">
           <SkipBack size={15} />
         </button>

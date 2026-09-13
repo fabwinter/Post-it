@@ -23,7 +23,7 @@ import { elementsFromSpec, newElement, useCardScale, clampPos } from "@/lib/slid
 import { materializeTemplateSlides } from "@/lib/templateEdit";
 import { groupFontsByCategory, fontStack, useAllFontsLoaded, useFontCatalog } from "@/lib/fonts";
 import { FontNotice } from "@/components/CustomFonts";
-import { reelTimeline, normalizeClip, formatSeconds } from "@/lib/videoClip";
+import { reelTimeline, normalizeClip, formatSeconds, withLength } from "@/lib/videoClip";
 import { ElementsLibrary } from "@/components/ElementsLibrary";
 import { ComposerFromSource } from "@/components/ComposerFromSource";
 import { ComposerVisualPanel } from "@/components/ComposerVisualPanel";
@@ -55,6 +55,10 @@ const orientationFor = (aspect) => {
   if (aspect === "16:9" || aspect === "1.91:1") return "landscape";
   return aspect === "4:5" ? "portrait" : "square";
 };
+
+// A beat of silence after the line finishes reading, before the cut — a
+// scene that ends the instant the voice stops feels clipped.
+const VOICE_PAD_SECONDS = 0.5;
 
 const emptySlide = (index, total, theme = "midnight") => ({
   type: "visual", caption: "",
@@ -121,6 +125,10 @@ export default function Composer() {
   // for that idea, so only that one card shows a spinner — `building`
   // above stays reserved for "Build whole post" acting on the brief.
   const [buildingIdeaIndex, setBuildingIdeaIndex] = useState(null);
+  // True while a fresh reel's scenes are each getting a real spoken take —
+  // runs in the background after the script itself has already landed, so
+  // it never blocks seeing/editing the scenes, only how long they hold.
+  const [voiceSynthesizing, setVoiceSynthesizing] = useState(false);
   const [brief, setBrief] = useState("");
   // Folded in from the old Write page's own tone picker — "Caption only"
   // used to always write as "engaging" with no way to change it.
@@ -219,6 +227,64 @@ export default function Composer() {
     setAssets(plan.assets || []);
     setActive(0);
     if (plan.platform) setPlatforms([plan.platform]);
+    // A fresh reel script has a line for every scene and no way to say it
+    // yet — give it one automatically, the same click that wrote the script.
+    if (plan.format === "reel" && (plan.assets || []).some((a) => a.type === "scene")) {
+      synthesizeReelVoices(plan.assets);
+    }
+  };
+
+  // Loads a URL into a throwaway <audio> element just long enough to read
+  // its real duration — the only way to know how long a spoken line
+  // actually runs. Resolves null (never rejects) so one bad take can't sink
+  // the rest of the reel; the scene just keeps its previous/default hold.
+  const probeAudioDuration = (url) => new Promise((resolve) => {
+    const el = document.createElement("audio");
+    el.preload = "metadata";
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    el.addEventListener("loadedmetadata", () => done(Number.isFinite(el.duration) && el.duration > 0 ? el.duration : null), { once: true });
+    el.addEventListener("error", () => done(null), { once: true });
+    setTimeout(() => done(null), 15000);
+    el.src = url;
+  });
+
+  // The one thing that makes a reel feel produced instead of guessed: every
+  // scene gets a real recorded take of its own line, and the scene holds
+  // the screen for exactly as long as that take runs (plus a short pad) —
+  // not a flat default that's wrong for a four-word line and a forty-word
+  // one alike. Runs in the background so the script is usable immediately;
+  // each scene's card just gets longer (or shorter) as its take comes in.
+  // One bad line only costs that scene its custom timing, never the reel.
+  const synthesizeReelVoices = async (sceneAssets) => {
+    const lines = sceneAssets.filter((a) => (a.spec?.body || "").trim());
+    if (!lines.length) return;
+    setVoiceSynthesizing(true);
+    try {
+      const results = await Promise.all(sceneAssets.map(async (a, i) => {
+        const text = (a.spec?.body || "").trim();
+        if (!text) return null;
+        try {
+          const { data } = await api.post("/ai/generate", { kind: "voice", prompt: text });
+          const result = await pollTask(data.task_id);
+          const url = (result.files || []).find((f) => f.file_url)?.file_url;
+          if (!url) return false;
+          const duration = await probeAudioDuration(url);
+          setAssets((s) => s.map((asset, idx) => {
+            if (idx !== i) return asset;
+            const clip = duration ? withLength(asset.spec.clip, duration + VOICE_PAD_SECONDS) : asset.spec.clip;
+            return { ...asset, spec: { ...asset.spec, voice: { url, duration: duration || null }, clip } };
+          }));
+          return true;
+        } catch { return false; } // this scene keeps its default timing; the rest still finish
+      }));
+      const done = results.filter(Boolean).length;
+      if (done === lines.length) toast.success("Voiceover recorded for every scene");
+      else if (done > 0) toast.error(`Voiceover recorded for ${done} of ${lines.length} scenes`);
+      else toast.error("Couldn't record the voiceover — scenes kept their default timing.");
+    } finally {
+      setVoiceSynthesizing(false);
+    }
   };
 
   // The one door in: everywhere that used to hand the Composer its own
@@ -1232,6 +1298,12 @@ export default function Composer() {
                 </div>
               </div>
             </div>
+
+            {isReel && voiceSynthesizing && (
+              <div className="mt-3 flex items-center gap-2 rounded-lg border border-iris/30 bg-iris/10 px-3 py-2 text-xs text-iris" data-testid="composer-voice-synthesizing">
+                <Loader2 size={13} className="animate-spin" /> Recording a voiceover for every scene — timing updates as each one finishes.
+              </div>
+            )}
 
             {isReel && assets.length > 0 && (
               <div className="mt-3 flex flex-wrap items-center gap-1.5">

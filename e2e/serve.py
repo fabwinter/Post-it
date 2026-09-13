@@ -1,6 +1,6 @@
 """Local end-to-end stack: real backend + real built frontend, with D1 backed by
 sqlite and PoYo faked so no network or keys are needed."""
-import json, os, sqlite3, sys, threading, time, itertools, tempfile
+import json, os, sqlite3, struct, sys, threading, time, itertools, tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 sys.path.insert(0, os.path.join(ROOT, "backend"))
@@ -32,6 +32,26 @@ SINGLE = {"format": "single", "title": "Coffee at dawn", "hook": "The first cup 
           "visual": {"style": "photo", "theme": "midnight", "title": "Coffee at dawn",
                      "cover_image_prompt": "a warm coffee shop at dawn, steam rising from a cup"}}
 IDEAS = "1. Why consistency beats virality\n2. The 20-week compounding curve\n3. What nobody tells you about week 6"
+
+# A real, decodable WAV — silent, but a browser plays and probes it exactly
+# like a real recorded take, which is the point: the reel-voice feature is
+# supposed to size each scene from the ACTUAL duration of its take, and a
+# fake that always returned the same file couldn't tell that logic apart
+# from one that just kept the old flat default.
+def _wav_bytes(seconds, rate=8000):
+    n = max(1, int(rate * seconds))
+    data = b"\x00\x00" * n
+    block_align = 2
+    return struct.pack(
+        "<4sI4s4sIHHIIHH4sI", b"RIFF", 36 + len(data), b"WAVE",
+        b"fmt ", 16, 1, 1, rate, rate * block_align, block_align, 16,
+        b"data", len(data),
+    ) + data
+
+# task_id -> the file_url its /api/generate/status poll should answer with,
+# for jobs where that has to vary per submission (voice, so far) rather than
+# the one static /e2e-asset.png every other kind is happy to share.
+TASK_FILES = {}
 
 class Resp:
     def __init__(s, b, c=200, content_type=None, headers=None):
@@ -83,7 +103,18 @@ def fake_post(url, headers=None, json=None, timeout=None, **kw):
             return Resp({"data": {"output": [{"content": [{"type": "output_text", "text": txt}]}]}})
         return Resp({"data": {"choices": [{"message": {"content": txt}}]}})
     if "/api/generate/submit" in url:
-        return Resp({"data": {"task_id": f"task-{next(COUNTER)}", "status": "running"}})
+        task_id = f"task-{next(COUNTER)}"
+        model = b.get("model") or ""
+        if "elevenlabs" in model or "tts" in model:
+            text = (b.get("input") or {}).get("text") or ""
+            # ~2.5 spoken words/sec, the same rough rate the plan's own
+            # timing math uses — different lines really do come back as
+            # different lengths, not one fixed "voice clip" duration.
+            seconds = max(0.5, min(14.0, len(text.split()) / 2.5))
+            file_url = f"/e2e-voice-{task_id}.wav"
+            BLOB_STORE[f"http://127.0.0.1:8123{file_url}"] = _wav_bytes(seconds)
+            TASK_FILES[task_id] = file_url
+        return Resp({"data": {"task_id": task_id, "status": "running"}})
     return Resp({"error": "unhandled"}, 500)
 
 COUNTER = itertools.count(1)
@@ -100,8 +131,10 @@ def fake_get(url, headers=None, timeout=None, params=None, **kw):
     if url == "http://127.0.0.1:8123/e2e-video.mp4":
         return Resp(open(os.path.join(FIXTURES, "clip.mp4"), "rb").read(), content_type="video/mp4")
     if "/api/generate/status/" in url:
+        task_id = url.rstrip("/").rsplit("/", 1)[-1]
+        file_url = TASK_FILES.get(task_id, "/e2e-asset.png")
         return Resp({"data": {"status": "finished", "progress": 100,
-                              "files": [{"file_url": "/e2e-asset.png"}]}})
+                              "files": [{"file_url": file_url}]}})
     if "/v1/models" in url: return Resp({"data": []})
     if "api.pexels.com/v1/search" in url:
         page = int((params or {}).get("page") or 1)
@@ -154,7 +187,7 @@ BUILD = os.path.join(ROOT, "frontend", "build")
 server.app.mount("/static", StaticFiles(directory=f"{BUILD}/static"), name="static")
 
 MIME = {".woff2": "font/woff2", ".woff": "font/woff", ".ttf": "font/ttf", ".otf": "font/otf",
-        ".mp4": "video/mp4", ".png": "image/png", ".jpg": "image/jpeg"}
+        ".mp4": "video/mp4", ".png": "image/png", ".jpg": "image/jpeg", ".wav": "audio/wav"}
 
 @server.app.get("/{full_path:path}")
 async def spa(full_path: str):
