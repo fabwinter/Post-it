@@ -28,6 +28,7 @@ import { ElementsLibrary } from "@/components/ElementsLibrary";
 import { ComposerFromSource } from "@/components/ComposerFromSource";
 import { ComposerVisualPanel } from "@/components/ComposerVisualPanel";
 import { ComposerBatchPanel } from "@/components/ComposerBatchPanel";
+import { ComposerIdeaPanel } from "@/components/ComposerIdeaPanel";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
@@ -89,6 +90,10 @@ export default function Composer() {
   const [saving, setSaving] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [building, setBuilding] = useState(false);
+  // Set to the idea's index while the Idea panel's own "Build" is running
+  // for that idea, so only that one card shows a spinner — `building`
+  // above stays reserved for "Build whole post" acting on the brief.
+  const [buildingIdeaIndex, setBuildingIdeaIndex] = useState(null);
   const [brief, setBrief] = useState(state.brief || "");
   // Folded in from the old Write page's own tone picker — "Caption only"
   // used to always write as "engaging" with no way to change it.
@@ -337,10 +342,12 @@ export default function Composer() {
     } catch (e) { toast.error(apiErrorMessage(e, "AI write failed.")); } finally { setAiLoading(false); }
   };
 
-  const autoBuild = async () => {
-    const topic = brief || content || title;
+  // Shared by "Build whole post" (the brief in the box) and the Idea
+  // panel's per-idea Build (a topic that never touches the brief field) —
+  // ideaIndex distinguishes which button shows the loading spinner.
+  const buildFromTopic = async (topic, ideaIndex = null) => {
     if (!topic.trim()) { toast.error("Give it a topic or a brief first."); return; }
-    setBuilding(true);
+    if (ideaIndex !== null) setBuildingIdeaIndex(ideaIndex); else setBuilding(true);
     try {
       const { data } = await api.post("/ai/build-post", {
         topic, platform: primary, format, slides: pspec.slides?.default, model: model || defaultModel,
@@ -348,8 +355,10 @@ export default function Composer() {
       });
       applyPlan({ ...data, platform: primary });
       toast.success(`Built a ${FORMAT_LABEL[data.format] || data.format} for ${pspec.label}.`);
-    } catch (e) { toast.error(apiErrorMessage(e, "Couldn't build the post.")); } finally { setBuilding(false); }
+    } catch (e) { toast.error(apiErrorMessage(e, "Couldn't build the post.")); }
+    finally { if (ideaIndex !== null) setBuildingIdeaIndex(null); else setBuilding(false); }
   };
+  const autoBuild = () => buildFromTopic(brief || content || title);
 
   const runCoach = async () => {
     if (!content.trim()) { toast.error("Write something first."); return; }
@@ -997,7 +1006,9 @@ export default function Composer() {
 
             {startMode === "topic" && (
               <div className="mt-3">
-                <div className="flex flex-wrap items-center gap-2">
+                <ComposerIdeaPanel model={model || defaultModel} buildingIndex={buildingIdeaIndex}
+                  onUseIdea={(idea) => setBrief(idea)} onBuildIdea={(idea, i) => buildFromTopic(idea, i)} />
+                <div className="mt-3 flex flex-wrap items-center gap-2">
                   <input value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="Topic or brief…"
                     data-testid="composer-brief"
                     className="min-w-[180px] flex-1 rounded-lg border border-white/10 bg-[#0A0A0A] px-3 py-2 text-sm outline-none focus:border-iris" />

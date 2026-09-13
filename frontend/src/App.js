@@ -10,7 +10,6 @@ import Dashboard from "@/pages/Dashboard";
 import Composer from "@/pages/Composer";
 import CalendarPage from "@/pages/CalendarPage";
 import Library from "@/pages/Library";
-import Connections from "@/pages/Connections";
 import BrandKit from "@/pages/BrandKit";
 
 // Gates the whole app behind the shared access code — but only if the
@@ -100,6 +99,14 @@ function RedirectToComposerMode({ tab }) {
   return null;
 }
 
+// Connections folded into Brand Kit as a tab — publishing setup is brand/
+// account setup, not a destination of its own. Old links land on that tab.
+function RedirectToBrandTab({ tab }) {
+  const navigate = useNavigate();
+  useEffect(() => { navigate("/brand", { replace: true, state: { tab } }); }, [navigate, tab]);
+  return null;
+}
+
 function App() {
   return (
     <div className="App">
@@ -116,11 +123,11 @@ function App() {
                   <Route path="/repurpose" element={<RedirectToComposerMode tab="source" />} />
                   <Route path="/templates" element={<RedirectToComposerMode tab="batch" />} />
                   <Route path="/designs" element={<RedirectToLibraryTab tab="designs" />} />
+                  <Route path="/connections" element={<RedirectToBrandTab tab="connections" />} />
                   <Route path="/composer" element={<Composer />} />
                   <Route path="/calendar" element={<CalendarPage />} />
                   <Route path="/library" element={<Library />} />
                   <Route path="/brand" element={<BrandKit />} />
-                  <Route path="/connections" element={<Connections />} />
                   <Route path="*" element={<NotFound />} />
                 </Routes>
               </RouteErrorBoundary>

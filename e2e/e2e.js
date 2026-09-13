@@ -41,17 +41,18 @@ async function tap(page, testid) {
   page.on('console', m => { if (m.type() === 'error') errs.push(m.text()); });
 
   // ---------- 1. Idea engine -> full post ----------
-  await page.goto(B + '/', { waitUntil: 'domcontentloaded' });
-  await page.getByTestId('dashboard-topic-input').fill('shipping weekly');
-  await page.getByTestId('dashboard-ideate-button').click();
+  // Folded into the Composer's Topic mode (from the old Dashboard card) —
+  // building from an idea now happens right here instead of navigating in.
+  await page.goto(B + '/composer', { waitUntil: 'domcontentloaded' });
+  await page.getByTestId('composer-page').waitFor({ timeout: 10000 });
+  await page.getByTestId('composer-idea-topic').fill('shipping weekly');
+  await page.getByTestId('composer-idea-generate').click();
   await page.getByTestId('idea-item-0').waitFor({ timeout: 15000 });
   ok('ideate renders ideas', await page.getByTestId('idea-item-0').isVisible());
   ok('build button per idea', await page.getByTestId('idea-build-0').isVisible());
-  ok('platform picker present', await page.getByTestId('dashboard-platform-instagram').isVisible());
 
   await page.getByTestId('idea-build-0').click();
-  await page.getByTestId('composer-page').waitFor({ timeout: 20000 });
-  await page.getByTestId('composer-slide-strip').waitFor({ timeout: 10000 });
+  await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   ok('build lands in composer', page.url().includes('/composer'));
   const caption = await page.getByTestId('composer-content').inputValue();
   ok('caption filled from plan', caption.includes('kept showing up'), caption.slice(0, 60));
@@ -177,6 +178,17 @@ async function tap(page, testid) {
   ok('brand kit saves', kit.name === 'Winterfab' && kit.hashtags.includes('#winterfab'), JSON.stringify(kit).slice(0, 140));
   ok('brand guideline preview renders', (await page.getByTestId('brand-guideline-preview').innerText()).includes('Winterfab'));
 
+  // Connections folded into Brand Kit as a tab — no nav entry of its own,
+  // and a stale /connections link lands here instead of a 404.
+  await tap(page, 'brand-tab-connections');
+  await page.getByTestId('connections-page').waitFor({ timeout: 5000 });
+  ok('connections tab lists every platform', await page.getByTestId('connection-instagram').isVisible());
+  await page.goto(B + '/connections', { waitUntil: 'domcontentloaded' });
+  await page.getByTestId('connections-page').waitFor({ timeout: 8000 });
+  ok('/connections redirects into the Brand tab', page.url().includes('/brand'));
+  await tap(page, 'brand-tab-brand');
+  await page.getByTestId('brand-name').waitFor({ timeout: 5000 });
+
   // brand hashtags now ride along on a built post
   const built = await (await page.request.post(B + '/api/ai/build-post', { data: { topic: 't', platform: 'instagram' } })).json();
   ok('brand hashtag merged into new posts', built.hashtags.includes('#winterfab'), JSON.stringify(built.hashtags));
@@ -282,10 +294,12 @@ async function tap(page, testid) {
   ok('brand kit is in the mobile menu', await page.getByTestId('mobile-nav-brand').isVisible());
 
   // Batch, Content Studio, Visual Studio and Repurpose all folded into the
-  // Composer as modes (see the Composer-modes section below) — none of them
-  // has its own nav entry left to check.
-  ok('the nav no longer lists the four folded-in pages',
-     (await page.locator('[data-testid^="mobile-nav-"]').count()) === 6,
+  // Composer as modes (see the Composer-modes section below), and
+  // Connections folded into Brand Kit as a tab — none of them has its own
+  // nav entry left to check. Five screens now: Home, Create, Plan,
+  // Library, Brand.
+  ok('the nav lists exactly the five collapsed screens',
+     (await page.locator('[data-testid^="mobile-nav-"]').count()) === 5,
      await page.locator('[data-testid^="mobile-nav-"]').allTextContents());
 
   // ---------- 9. every route is usable on a phone ----------

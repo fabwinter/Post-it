@@ -1,28 +1,19 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, apiErrorMessage } from "@/lib/api";
-import { useTextModels } from "@/lib/useTextModels";
-import { PLATFORM_LIST, platformOf } from "@/lib/platforms";
-import { ModelPicker } from "@/components/ModelPicker";
-import { Sparkles, ArrowRight, Loader2, FileText, CalendarClock, Images, Send, Wand2, Zap } from "lucide-react";
-import { usePlatformSpecs, specFor, FORMAT_LABEL } from "@/lib/platformSpecs";
-import { PLATFORMS } from "@/lib/platforms";
+import { api } from "@/lib/api";
+import { platformOf } from "@/lib/platforms";
+import { Plus, ArrowRight, FileText, CalendarClock, Images, Wand2, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { toast } from "sonner";
 
+// Every post now starts in the Composer — its Topic mode has its own Idea
+// panel (folded in from what used to live here), plus Source/Visual/Batch
+// for the other three ways to start. Home just answers "where do things
+// stand": counts, drafts, what's queued, and one way in.
 export default function Dashboard() {
   const navigate = useNavigate();
-  const [topic, setTopic] = useState("");
-  const [ideas, setIdeas] = useState([]);
-  const [loading, setLoading] = useState(false);
   const [stats, setStats] = useState({ total: 0, drafts: 0, scheduled: 0, published: 0, media: 0 });
   const [drafts, setDrafts] = useState([]);
   const [scheduled, setScheduled] = useState([]);
-  const { models, default: defaultModel } = useTextModels("gemini-3-flash-preview");
-  const [model, setModel] = useState("");
-  const specs = usePlatformSpecs();
-  const [platform, setPlatform] = useState("instagram");
-  const [building, setBuilding] = useState(null);
 
   const loadData = async () => {
     try {
@@ -39,38 +30,6 @@ export default function Dashboard() {
 
   useEffect(() => { loadData(); }, []);
 
-  const ideate = async () => {
-    if (!topic.trim()) return;
-    setLoading(true);
-    setIdeas([]);
-    try {
-      const { data } = await api.post("/ai/ideate", { topic, count: 6, model: model || defaultModel });
-      setIdeas(data.ideas);
-    } catch (e) {
-      toast.error(apiErrorMessage(e, "Couldn't generate ideas."));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const openIdea = (idea) => {
-    navigate("/composer", { state: { brief: idea } });
-  };
-
-  // The one-click path: idea straight to a finished post — caption, hashtags
-  // and every slide — instead of six manual hops through the other screens.
-  const buildIdea = async (idea, i) => {
-    setBuilding(i);
-    try {
-      const { data } = await api.post("/ai/build-post", {
-        topic: idea, platform, format: "auto", model: model || defaultModel,
-      });
-      navigate("/composer", { state: { plan: { ...data, platform } } });
-    } catch (e) {
-      toast.error(apiErrorMessage(e, "Couldn't build that post."));
-    } finally { setBuilding(null); }
-  };
-
   const statCards = [
     { label: "Total posts", value: stats.total, icon: FileText },
     { label: "Drafts", value: stats.drafts, icon: Wand2 },
@@ -80,91 +39,15 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-8" data-testid="dashboard-page">
-      <div>
-        <div className="font-mono text-xs uppercase tracking-[0.25em] text-zinc-500">Welcome back</div>
-        <h1 className="mt-2 font-display text-4xl font-semibold tracking-tight sm:text-5xl">
-          What are we creating <span className="text-lime">today?</span>
-        </h1>
-      </div>
-
-      {/* Hero AI ideation */}
-      <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-[#121212] p-6 sm:p-8">
-        <div className="pointer-events-none absolute -right-10 -top-10 h-52 w-52 rounded-full bg-gradient-to-br from-magic/30 to-lime/20 blur-3xl float-blur" />
-        <div className="relative">
-          <div className="flex items-center gap-2 text-zinc-400">
-            <Sparkles size={16} className="text-lime" />
-            <span className="font-mono text-xs uppercase tracking-[0.2em]">Idea engine</span>
-          </div>
-          <div className="mt-4 flex flex-col gap-3 sm:flex-row">
-            <input
-              data-testid="dashboard-topic-input"
-              value={topic}
-              onChange={(e) => setTopic(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && ideate()}
-              placeholder="Drop a topic — e.g. how solopreneurs build distribution in 2026"
-              className="flex-1 rounded-xl border border-white/10 bg-[#0A0A0A] px-4 py-3.5 text-[15px] text-white outline-none transition-colors placeholder:text-zinc-600 focus:border-lime"
-            />
-            <Button
-              data-testid="dashboard-ideate-button"
-              onClick={ideate}
-              disabled={loading}
-              className="h-[52px] gap-2 rounded-xl bg-lime px-6 font-semibold text-[#0A0A0A] hover:bg-lime-hover"
-            >
-              {loading ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />}
-              Ideate
-            </Button>
-          </div>
-
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Model</span>
-            <ModelPicker value={model || defaultModel} onChange={setModel} models={models} testid="dashboard-model"
-              className="w-auto min-w-[180px] flex-none" />
-            <span className="ml-1 font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Build for</span>
-            <div className="flex flex-wrap gap-1">
-              {Object.keys(specs).map((k) => {
-                const P = PLATFORMS[k]; if (!P) return null;
-                const I = P.icon; const on = platform === k;
-                return (
-                  <button key={k} onClick={() => setPlatform(k)} data-testid={`dashboard-platform-${k}`}
-                    title={specFor(specs, k).label}
-                    className={`flex h-7 w-7 items-center justify-center rounded-lg border transition-colors ${on ? "border-lime bg-lime/10 text-lime" : "border-white/10 text-zinc-500 hover:text-white"}`}>
-                    <I size={13} />
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {ideas.length > 0 && (
-            <p className="mt-6 font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">
-              Tap an idea to draft the caption · Build makes the whole {FORMAT_LABEL[specFor(specs, platform).default_format] || "post"} — copy, hashtags and slides
-            </p>
-          )}
-          {ideas.length > 0 && (
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              {ideas.map((idea, i) => (
-                <div
-                  key={i}
-                  data-testid={`idea-item-${i}`}
-                  className="group flex items-center gap-3 rounded-xl border border-white/10 bg-[#0A0A0A] p-4 transition-colors hover:border-lime/40 hover:bg-white/[0.04]"
-                >
-                  <span className="font-mono text-xs text-zinc-600">{String(i + 1).padStart(2, "0")}</span>
-                  <button onClick={() => openIdea(idea)} data-testid={`idea-open-${i}`}
-                    className="flex-1 text-left text-sm text-zinc-200">
-                    {idea}
-                  </button>
-                  <button onClick={() => buildIdea(idea, i)} disabled={building !== null} data-testid={`idea-build-${i}`}
-                    title={`Build a full ${specFor(specs, platform).label} post`}
-                    className="flex flex-shrink-0 items-center gap-1.5 rounded-lg border border-lime/30 bg-lime/10 px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-lime transition-colors hover:bg-lime/20 disabled:opacity-40">
-                    {building === i ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />}
-                    Build
-                  </button>
-                  <ArrowRight size={16} className="hidden text-zinc-600 transition-transform group-hover:translate-x-0.5 group-hover:text-lime sm:block" />
-                </div>
-              ))}
-            </div>
-          )}
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <div className="font-mono text-xs uppercase tracking-[0.25em] text-zinc-500">Welcome back</div>
+          <h1 className="mt-2 font-display text-4xl font-semibold tracking-tight sm:text-5xl">Home</h1>
         </div>
+        <Button onClick={() => navigate("/composer")} data-testid="dashboard-new-post"
+          className="h-11 gap-2 rounded-xl bg-lime px-5 font-semibold text-[#0A0A0A] hover:bg-lime-hover">
+          <Plus size={18} /> New post
+        </Button>
       </div>
 
       {/* Stats */}
