@@ -176,6 +176,23 @@ function loadVideo(url, { muted }) {
   });
 }
 
+// A scene's recorded voiceover, loaded the same tolerant way loadVideo is —
+// resolves null on failure so one bad take can't sink the export.
+function loadVoice(url) {
+  return new Promise((resolve) => {
+    const el = document.createElement("audio");
+    el.crossOrigin = "anonymous";
+    el.preload = "auto";
+    el.src = proxied(url);
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    el.addEventListener("loadeddata", () => done(el), { once: true });
+    el.addEventListener("error", () => done(null), { once: true });
+    setTimeout(() => done(el.readyState >= 2 ? el : null), 15000);
+    el.load();
+  });
+}
+
 export async function prepareScenes(items, layers, { onProgress } = {}) {
   const scenes = [];
   for (let i = 0; i < items.length; i += 1) {
@@ -188,7 +205,9 @@ export async function prepareScenes(items, layers, { onProgress } = {}) {
     const isStill = clip.url && clip.kind === "image";
     const video = clip.url && !isStill ? await loadVideo(clip.url, { muted: clip.volume === 0 }) : null;
     const clipImage = isStill ? await loadClipImage(clip.url) : null;
-    scenes[it.index] = { bgImage, contentImage, video, clipImage, clip, item: it };
+    const voiceUrl = it.asset?.spec?.voice?.url || "";
+    const voice = voiceUrl ? await loadVoice(voiceUrl) : null;
+    scenes[it.index] = { bgImage, contentImage, video, clipImage, clip, voice, item: it };
     onProgress?.((i + 1) / items.length);
   }
   return scenes;
@@ -200,38 +219,63 @@ export async function prepareScenes(items, layers, { onProgress } = {}) {
 function syncScenes(scenes, items, t, playing) {
   items.forEach((it) => {
     const s = scenes[it.index];
-    if (!s?.video) return;
+    if (!s) return;
     const onScreen = t >= it.start - 0.001 && t < it.end;
-    if (!onScreen) { if (!s.video.paused) s.video.pause(); return; }
-    const c = s.clip;
-    const want = c.start + Math.max(0, t - it.start) * c.speed;
-    const cap = c.end ?? (s.video.duration || Infinity);
-    const target = Math.min(want, cap - 0.05);
-    if (Number.isFinite(target) && Math.abs(s.video.currentTime - target) > 0.3) {
-      try { s.video.currentTime = Math.max(0, target); } catch { /* not seekable yet */ }
+    if (s.video) {
+      if (!onScreen) { if (!s.video.paused) s.video.pause(); }
+      else {
+        const c = s.clip;
+        const want = c.start + Math.max(0, t - it.start) * c.speed;
+        const cap = c.end ?? (s.video.duration || Infinity);
+        const target = Math.min(want, cap - 0.05);
+        if (Number.isFinite(target) && Math.abs(s.video.currentTime - target) > 0.3) {
+          try { s.video.currentTime = Math.max(0, target); } catch { /* not seekable yet */ }
+        }
+        s.video.playbackRate = c.speed;
+        if (playing && s.video.paused) s.video.play().catch(() => {});
+        if (!playing && !s.video.paused) s.video.pause();
+      }
     }
-    s.video.playbackRate = c.speed;
-    if (playing && s.video.paused) s.video.play().catch(() => {});
-    if (!playing && !s.video.paused) s.video.pause();
+    // A voiceover plays straight through from its own start, once per
+    // scene — no trim window or speed to honor, just "is this on screen."
+    if (s.voice) {
+      if (!onScreen) { if (!s.voice.paused) s.voice.pause(); }
+      else {
+        const target = Math.max(0, t - it.start);
+        if (Number.isFinite(target) && Math.abs(s.voice.currentTime - target) > 0.3) {
+          try { s.voice.currentTime = target; } catch { /* not seekable yet */ }
+        }
+        if (playing && s.voice.paused) s.voice.play().catch(() => {});
+        if (!playing && !s.voice.paused) s.voice.pause();
+      }
+    }
   });
 }
 
-// Any clip with its volume up gets mixed into the recording. Wrapped in its
-// own try/catch because a browser refusing the audio graph should cost the
-// soundtrack, not the export.
+// Every source of sound a reel can have, mixed into one recording: a
+// background clip with its volume turned up, and every scene's own
+// voiceover (always audible — there's no mute control for it, it's the
+// point of the scene). Wrapped in its own try/catch because a browser
+// refusing the audio graph should cost the soundtrack, not the export.
 function buildAudioTrack(scenes) {
-  const withSound = scenes.filter((s) => s?.video && s.clip.volume > 0);
-  if (!withSound.length) return { track: null, ctx: null };
+  const withClipSound = scenes.filter((s) => s?.video && s.clip.volume > 0);
+  const withVoice = scenes.filter((s) => s?.voice);
+  if (!withClipSound.length && !withVoice.length) return { track: null, ctx: null };
   try {
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     const actx = new AudioCtx();
     const dest = actx.createMediaStreamDestination();
-    withSound.forEach((s) => {
+    withClipSound.forEach((s) => {
       const src = actx.createMediaElementSource(s.video);
       const gain = actx.createGain();
       gain.gain.value = s.clip.volume;
       src.connect(gain).connect(dest);
       s.video.muted = false;
+    });
+    withVoice.forEach((s) => {
+      const src = actx.createMediaElementSource(s.voice);
+      src.connect(dest);
+      s.voice.muted = false;
     });
     return { track: dest.stream.getAudioTracks()[0] || null, ctx: actx };
   } catch {
@@ -266,7 +310,10 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
     let raf = 0;
     const cleanup = () => {
       cancelAnimationFrame(raf);
-      scenes.forEach((s) => { if (s?.video && !s.video.paused) s.video.pause(); });
+      scenes.forEach((s) => {
+        if (s?.video && !s.video.paused) s.video.pause();
+        if (s?.voice && !s.voice.paused) s.voice.pause();
+      });
       stream.getTracks().forEach((tr) => tr.stop());
       if (audioCtx) audioCtx.close().catch(() => {});
     };

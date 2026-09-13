@@ -531,6 +531,42 @@ async function tap(page, testid) {
   await tap(page, 'reel-export-close');
   await page.waitForTimeout(300);
 
+  // ---------- 11a. Auto Reel — a scene holds as long as its own take runs ----------
+  // Every reel scene used to hold the screen for a flat DEFAULT_CLIP_SECONDS
+  // regardless of what it said. Build whole post now records a real take of
+  // each scene's line in the background and sets that scene's length from
+  // the take's own measured duration — a four-word line and a forty-word
+  // one no longer get the same amount of screen time.
+  // The label reads "M:SS.S total" — parse just the timecode.
+  const toSeconds = (label) => {
+    const m = label.match(/(\d+):(\d+(?:\.\d+)?)/);
+    return m ? Number(m[1]) * 60 + Number(m[2]) : NaN;
+  };
+  await page.goto(B + '/composer', { waitUntil: 'domcontentloaded' });
+  await page.getByTestId('composer-page').waitFor({ timeout: 10000 });
+  await tap(page, 'composer-format-reel');
+  await page.getByTestId('composer-brief').fill('shipping weekly no matter what');
+  await tap(page, 'composer-autobuild');
+  await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
+
+  // Voice synthesis runs in the background and can finish before this next
+  // line even executes in this fake (instant local responses) — so this
+  // doesn't assert the flat default is ever observed, only what it holds
+  // once settled, against a fixed timeout rather than a race on the fake's
+  // own speed.
+  await page.waitForFunction(() => {
+    const el = document.querySelector('[data-testid="composer-reel-duration"]');
+    return el && !el.textContent.startsWith('0:09.0');
+  }, { timeout: 15000 });
+  const votedLabel = await page.getByTestId('composer-reel-duration').innerText();
+  const votedTotal = toSeconds(votedLabel);
+  // Fixture scenes read "You publish. Nobody claps." (4 words), "Three
+  // people reply." (3) and "It compounds." (2) — real, different-length
+  // takes, so the total should land well under the old flat 9.0s (3 x 3.0)
+  // and above the floor three near-silent takes plus padding would give.
+  ok('recording a take per scene sets a real, non-flat length',
+     votedTotal > 2 && votedTotal < 8, votedLabel);
+
   // ---- fonts ----
   // Three of the catalogue's faces we serve ourselves (two from Google, one
   // bundled); the rest of the new ones are licensed elsewhere and only real
