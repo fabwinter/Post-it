@@ -567,7 +567,7 @@ export function MediaGenerator({ kind, initialPrompt = "" }) {
             <a href={fileUrl} target="_blank" rel="noreferrer">
               <Button variant="secondary" className="gap-2 rounded-lg border border-white/10 bg-white/5 text-white hover:bg-white/10"><Download size={16} /> Open</Button>
             </a>
-            <Button onClick={() => navigate("/composer", { state: { mediaUrl: fileUrl, mediaType: kind } })}
+            <Button onClick={() => navigate("/composer", { state: { start: { from: "media", value: { url: fileUrl, type: kind } } } })}
               className="gap-2 rounded-lg bg-lime font-semibold text-[#0A0A0A] hover:bg-lime-hover" data-testid={`studio-use-${kind}`}>
               <Send size={16} /> Use in post
             </Button>

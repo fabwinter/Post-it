@@ -85,30 +85,33 @@ export function HistoryDrawer() {
     toast.success("Saved");
   };
 
-  // Every kind knows how to become a post — that is the whole point of keeping
-  // the history around.
+  // Every kind knows how to become a post — that is the whole point of
+  // keeping the history around. Each one resolves to a single `start`
+  // intent for the Composer to read (see startFrom in Composer.jsx) —
+  // one shape whether this fires from another page or from inside an
+  // already-open Composer.
   const sendToComposer = (g) => {
     const out = parse(g.output);
     setOpen(false);
     if (g.kind === "post_plan" && out) {
-      navigate("/composer", { state: { plan: out } });
+      navigate("/composer", { state: { start: { from: "plan", value: out } } });
     } else if (g.kind === "write" || g.kind === "restyle") {
-      navigate("/composer", { state: { content: g.output || "" } });
+      navigate("/composer", { state: { start: { from: "draft", value: { content: g.output || "" } } } });
     } else if (g.kind === "ideate" && out?.ideas?.length) {
-      navigate("/composer", { state: { brief: out.ideas[0] } });
+      navigate("/composer", { state: { start: { from: "brief", value: out.ideas[0] } } });
     } else if (g.kind === "repurpose" && out) {
       const [platform, text] = Object.entries(out)[0] || [];
-      navigate("/composer", { state: { content: text || "", platforms: platform ? [platform] : undefined } });
+      navigate("/composer", { state: { start: { from: "draft", value: { content: text || "", platform: platform || undefined } } } });
     } else if (g.kind === "templates" && out?.posts?.length) {
-      navigate("/composer", { state: { content: out.posts[0].content } });
+      navigate("/composer", { state: { start: { from: "draft", value: { content: out.posts[0].content } } } });
     } else if (g.kind === "visual" && out) {
-      navigate("/composer", { state: { visual: { data: out, template: g.meta?.template || "carousel" } } });
+      navigate("/composer", { state: { start: { from: "visual", value: { data: out, template: g.meta?.template || "carousel" } } } });
     } else if (g.kind === "coach") {
-      navigate("/composer", { state: { content: parse(g.output)?.hook_rewrite || "" } });
+      navigate("/composer", { state: { start: { from: "draft", value: { content: parse(g.output)?.hook_rewrite || "" } } } });
     } else {
       const url = fileUrl(g);
       if (!url) { toast.error("This one hasn't finished rendering yet."); return; }
-      navigate("/composer", { state: { mediaUrl: url, mediaType: g.kind } });
+      navigate("/composer", { state: { start: { from: "media", value: { url, type: g.kind } } } });
     }
   };
 

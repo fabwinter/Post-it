@@ -188,7 +188,7 @@ export default function Library() {
                       <a href={file.file_url} target="_blank" rel="noreferrer" className="flex-1">
                         <Button variant="secondary" className="h-8 w-full gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10"><Download size={13} /> Open</Button>
                       </a>
-                      <Button onClick={() => navigate("/composer", { state: { mediaUrl: file.file_url, mediaType: m.kind } })}
+                      <Button onClick={() => navigate("/composer", { state: { start: { from: "media", value: { url: file.file_url, type: m.kind } } } })}
                         className="h-8 flex-1 gap-1.5 rounded-lg bg-lime text-xs font-semibold text-[#0A0A0A] hover:bg-lime-hover" data-testid={`library-use-${m.id}`}><Send size={13} /> Use</Button>
                     </div>
                   </div>
@@ -217,7 +217,7 @@ export default function Library() {
                     <p className="mt-2 line-clamp-2 text-sm text-zinc-300">{u.filename}</p>
                     {u.kind === "audio" && <audio src={u.url} controls className="mt-3 w-full" />}
                     <div className="mt-3 flex gap-2">
-                      <Button onClick={() => navigate("/composer", { state: { mediaUrl: u.url, mediaType: u.kind } })}
+                      <Button onClick={() => navigate("/composer", { state: { start: { from: "media", value: { url: u.url, type: u.kind } } } })}
                         className="h-8 flex-1 gap-1.5 rounded-lg bg-lime text-xs font-semibold text-[#0A0A0A] hover:bg-lime-hover" data-testid={`library-use-${u.id}`}><Send size={13} /> Use</Button>
                       <Button variant="ghost" onClick={() => removeUpload(u)} data-testid={`library-delete-${u.id}`}
                         className="h-8 px-2.5 text-zinc-500 hover:text-magic"><Trash2 size={14} /></Button>
@@ -268,8 +268,8 @@ function DesignsPanel() {
     } catch (e) { toast.error(apiErrorMessage(e, "Couldn't delete that design.")); }
   };
 
-  const openInComposer = (tpl) => navigate("/composer", { state: { applyCustomTemplateId: tpl.id } });
-  const editTemplate = (tpl) => navigate("/composer", { state: { editTemplateId: tpl.id } });
+  const openInComposer = (tpl) => navigate("/composer", { state: { start: { from: "design", value: tpl.id } } });
+  const editTemplate = (tpl) => navigate("/composer", { state: { start: { from: "design", value: tpl.id, mode: "edit" } } });
 
   return (
     <div data-testid="library-designs-panel">

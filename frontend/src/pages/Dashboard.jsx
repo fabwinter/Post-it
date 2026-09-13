@@ -74,7 +74,7 @@ export default function Dashboard() {
           <div className="mt-4 space-y-2">
             {drafts.length === 0 && <EmptyRow label="No drafts yet — start in the Composer." />}
             {drafts.map((d) => (
-              <button key={d.id} onClick={() => navigate("/composer", { state: { postId: d.id } })}
+              <button key={d.id} onClick={() => navigate("/composer", { state: { start: { from: "post", value: d.id } } })}
                 className="flex w-full min-w-0 items-center gap-3 rounded-lg border border-white/10 bg-[#0A0A0A] p-3 text-left transition-colors hover:border-white/20"
                 data-testid={`draft-row-${d.id}`}>
                 <div className="min-w-0 flex-1">
@@ -98,7 +98,7 @@ export default function Dashboard() {
           <div className="mt-4 space-y-2">
             {scheduled.length === 0 && <EmptyRow label="Nothing queued — schedule from the Composer." />}
             {scheduled.map((d) => (
-              <button key={d.id} onClick={() => navigate("/composer", { state: { postId: d.id } })}
+              <button key={d.id} onClick={() => navigate("/composer", { state: { start: { from: "post", value: d.id } } })}
                 className="flex w-full min-w-0 items-center gap-3 rounded-lg border border-white/10 bg-[#0A0A0A] p-3 text-left transition-colors hover:border-white/20"
                 data-testid={`scheduled-row-${d.id}`}>
                 <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-white/5">

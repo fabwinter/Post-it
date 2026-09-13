@@ -95,7 +95,7 @@ export default function CalendarPage() {
           {grid.map((date, i) => {
             const dayPosts = postsFor(date);
             return (
-              <div key={i} onClick={() => date && navigate("/composer", { state: { presetDate: date.toISOString() } })}
+              <div key={i} onClick={() => date && navigate("/composer", { state: { start: { from: "topic", presetDate: date.toISOString() } } })}
                 className={`min-h-[116px] border-b border-r border-white/[0.06] p-2 transition-colors ${date ? "cursor-pointer hover:bg-white/[0.03]" : "bg-[#0d0d0d]"}`}
                 data-testid={date ? `cal-day-${date.getDate()}` : undefined}>
                 {date && (
@@ -105,7 +105,7 @@ export default function CalendarPage() {
                       {dayPosts.slice(0, 3).map((p) => {
                         const pk = p.platforms[0] || "twitter"; const P = platformOf(pk); const I = P.icon;
                         return (
-                          <button key={p.id} onClick={(e) => { e.stopPropagation(); navigate("/composer", { state: { postId: p.id } }); }}
+                          <button key={p.id} onClick={(e) => { e.stopPropagation(); navigate("/composer", { state: { start: { from: "post", value: p.id } } }); }}
                             data-testid={`cal-post-${p.id}`}
                             className="flex w-full items-center gap-1.5 rounded-md border border-white/10 bg-[#0A0A0A] px-1.5 py-1 text-left hover:border-lime/40">
                             <I size={11} style={{ color: P.color }} className="flex-shrink-0" />
@@ -154,7 +154,7 @@ export default function CalendarPage() {
                     {on ? <CheckSquare size={16} className="text-lime" /> : <Square size={16} />}
                   </button>
                   <I size={13} style={{ color: P.color }} className="flex-shrink-0" />
-                  <button onClick={() => navigate("/composer", { state: { postId: p.id } })} className="min-w-0 flex-1 truncate text-left text-sm text-zinc-300 hover:text-white">
+                  <button onClick={() => navigate("/composer", { state: { start: { from: "post", value: p.id } } })} className="min-w-0 flex-1 truncate text-left text-sm text-zinc-300 hover:text-white">
                     {p.content || p.title}
                   </button>
                   <span className="flex-shrink-0 font-mono text-[11px] text-zinc-500">
