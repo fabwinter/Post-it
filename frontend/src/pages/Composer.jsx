@@ -37,8 +37,20 @@ import {
   Search, Wand, Palette, Upload, FileText, Image as ImageIcon, Presentation,
   Type, Square, LayoutTemplate, Undo2, Redo2, Copy, ChevronsUp, ChevronsDown, AlignLeft, AlignCenter, AlignRight,
   Shapes, CopyPlus, BookmarkPlus, Maximize2, PlayCircle, SquarePen, Lightbulb, Repeat, LayoutGrid,
-  Music, Volume2, VolumeX,
+  Music, Volume2, VolumeX, RefreshCw,
 } from "lucide-react";
+
+// A small, named set rather than every voice PoYo's TTS model happens to
+// support — these four are the ones its own schema documents as examples,
+// so they're real voices, not invented ones. Picking one only steers what
+// a scene records next (a fresh build, or a per-scene retake); it never
+// silently re-records takes already sitting on the reel.
+const VOICE_PRESETS = [
+  { key: "Rachel", label: "Rachel", desc: "Warm, professional — the default" },
+  { key: "Aria", label: "Aria", desc: "Bright, expressive" },
+  { key: "Sarah", label: "Sarah", desc: "Calm, measured" },
+  { key: "Laura", label: "Laura", desc: "Confident, upbeat" },
+];
 
 // The four ways a post can start here — icons/labels for the mode switcher
 // above the topic/build controls.
@@ -146,6 +158,18 @@ export default function Composer() {
   // True while a fresh reel's background score is generating — the third
   // and last of the three things a script alone doesn't have yet.
   const [musicLoading, setMusicLoading] = useState(false);
+  const [musicError, setMusicError] = useState(false);
+  // Per-scene state for voice/footage, keyed by scene index — lets a single
+  // scene whose take or search failed show its own retry control and its
+  // own spinner, instead of only the reel-wide toast the first pass gave.
+  const [sceneVoiceLoading, setSceneVoiceLoading] = useState({});
+  const [sceneVoiceError, setSceneVoiceError] = useState({});
+  const [sceneVisualLoading, setSceneVisualLoading] = useState({});
+  const [sceneVisualError, setSceneVisualError] = useState({});
+  // Which of the curated voices a scene's take (or retake) records in —
+  // a reel-wide choice rather than per scene, since a reel reads as one
+  // voice throughout.
+  const [voicePreset, setVoicePreset] = useState(VOICE_PRESETS[0].key);
   const [brief, setBrief] = useState("");
   // Folded in from the old Write page's own tone picker — "Caption only"
   // used to always write as "engaging" with no way to change it.
@@ -231,6 +255,8 @@ export default function Composer() {
   const inlineCanvasMaxW = Math.round(Math.min(560, 520 / (ASPECT_RATIO[aspect] || 1)));
   const isDeck = format === "carousel" || format === "reel" || format === "thread";
   const isReel = format === "reel";
+  const anyVoiceError = Object.values(sceneVoiceError).some(Boolean);
+  const anyVisualError = Object.values(sceneVisualError).some(Boolean);
 
   // Applying a plan is the whole idea→post shortcut landing: copy, hashtags,
   // format and every slide arrive together, already on-brand.
@@ -253,7 +279,7 @@ export default function Composer() {
     if (plan.format === "reel" && (plan.assets || []).some((a) => a.type === "scene")) {
       synthesizeReelVoices(plan.assets);
       autoFillReelVisuals(plan.assets);
-      synthesizeReelMusic(plan);
+      synthesizeReelMusic(plan.title || plan.hook || plan.caption || "");
     }
   };
 
@@ -272,36 +298,57 @@ export default function Composer() {
     el.src = url;
   });
 
+  // One scene's take — shared by the reel-wide background fill below and by
+  // a single scene's own "retry"/"re-record" button, so a failure (or a
+  // hand-edited line) never means redoing every other scene's take too.
+  // Resolves true/false rather than throwing: the caller decides what a
+  // failure means (a silent count for the bulk fill, a toast for a retry).
+  const synthesizeSceneVoice = async (index, text) => {
+    const body = (text ?? assets[index]?.spec?.body ?? "").trim();
+    if (!body) return false;
+    setSceneVoiceLoading((s) => ({ ...s, [index]: true }));
+    setSceneVoiceError((s) => ({ ...s, [index]: false }));
+    try {
+      const { data } = await api.post("/ai/generate", { kind: "voice", prompt: body, options: { timestamps: true, voice: voicePreset } });
+      const result = await pollTask(data.task_id);
+      const url = (result.files || []).find((f) => f.file_url)?.file_url;
+      if (!url) throw new Error("No voice file came back");
+      const duration = await probeAudioDuration(url);
+      const words = deriveCaptionWords(body, duration, result.alignment);
+      setAssets((s) => s.map((asset, idx) => {
+        if (idx !== index) return asset;
+        const clip = duration ? withLength(asset.spec.clip, duration + VOICE_PAD_SECONDS) : asset.spec.clip;
+        return { ...asset, spec: { ...asset.spec, voice: { url, duration: duration || null, words }, clip } };
+      }));
+      return true;
+    } catch {
+      setSceneVoiceError((s) => ({ ...s, [index]: true }));
+      return false;
+    } finally {
+      setSceneVoiceLoading((s) => ({ ...s, [index]: false }));
+    }
+  };
+
+  const retrySceneVoice = async (index) => {
+    const ok = await synthesizeSceneVoice(index);
+    if (ok) toast.success(`Scene ${index + 1}'s voiceover updated`);
+    else toast.error(`Couldn't record scene ${index + 1}'s voiceover.`);
+  };
+
   // The one thing that makes a reel feel produced instead of guessed: every
   // scene gets a real recorded take of its own line, and the scene holds
   // the screen for exactly as long as that take runs (plus a short pad) —
   // not a flat default that's wrong for a four-word line and a forty-word
   // one alike. Runs in the background so the script is usable immediately;
   // each scene's card just gets longer (or shorter) as its take comes in.
-  // One bad line only costs that scene its custom timing, never the reel.
+  // One bad line only costs that scene its custom timing (and leaves it a
+  // retry button), never the reel.
   const synthesizeReelVoices = async (sceneAssets) => {
     const lines = sceneAssets.filter((a) => (a.spec?.body || "").trim());
     if (!lines.length) return;
     setVoiceSynthesizing(true);
     try {
-      const results = await Promise.all(sceneAssets.map(async (a, i) => {
-        const text = (a.spec?.body || "").trim();
-        if (!text) return null;
-        try {
-          const { data } = await api.post("/ai/generate", { kind: "voice", prompt: text, options: { timestamps: true } });
-          const result = await pollTask(data.task_id);
-          const url = (result.files || []).find((f) => f.file_url)?.file_url;
-          if (!url) return false;
-          const duration = await probeAudioDuration(url);
-          const words = deriveCaptionWords(text, duration, result.alignment);
-          setAssets((s) => s.map((asset, idx) => {
-            if (idx !== i) return asset;
-            const clip = duration ? withLength(asset.spec.clip, duration + VOICE_PAD_SECONDS) : asset.spec.clip;
-            return { ...asset, spec: { ...asset.spec, voice: { url, duration: duration || null, words }, clip } };
-          }));
-          return true;
-        } catch { return false; } // this scene keeps its default timing; the rest still finish
-      }));
+      const results = await Promise.all(sceneAssets.map((a, i) => synthesizeSceneVoice(i, a.spec?.body)));
       const done = results.filter(Boolean).length;
       if (done === lines.length) toast.success("Voiceover recorded for every scene");
       else if (done > 0) toast.error(`Voiceover recorded for ${done} of ${lines.length} scenes`);
@@ -309,6 +356,43 @@ export default function Composer() {
     } finally {
       setVoiceSynthesizing(false);
     }
+  };
+
+  // One scene's footage search — shared the same way synthesizeSceneVoice is,
+  // so a scene whose search came up empty gets its own retry instead of
+  // waiting on the whole reel to be rebuilt.
+  const fillSceneVisual = async (index, query) => {
+    const asset = assets[index];
+    const q = (query ?? asset?.spec?.video_prompt ?? asset?.spec?.heading ?? "").trim();
+    if (!q) return false;
+    setSceneVisualLoading((s) => ({ ...s, [index]: true }));
+    setSceneVisualError((s) => ({ ...s, [index]: false }));
+    try {
+      const orientation = orientationFor(aspectFor(specs, primary, "reel"));
+      const { data } = await api.get("/stock/search", { params: { q, type: "video", per_page: 1, orientation } });
+      const pick = (data.results || []).find((r) => r.url);
+      if (!pick) throw new Error("No footage found");
+      setAssets((s) => s.map((a, idx) => {
+        if (idx !== index) return a;
+        const clip = normalizeClip({
+          ...a.spec.clip, url: pick.url, credit: pick.credit || "", kind: "video",
+          natural: null, start: 0, end: null,
+        });
+        return { ...a, spec: { ...a.spec, video_url: pick.url, video_credit: pick.credit || "", clip } };
+      }));
+      return true;
+    } catch {
+      setSceneVisualError((s) => ({ ...s, [index]: true }));
+      return false;
+    } finally {
+      setSceneVisualLoading((s) => ({ ...s, [index]: false }));
+    }
+  };
+
+  const retrySceneVisual = async (index) => {
+    const ok = await fillSceneVisual(index);
+    if (ok) toast.success(`Scene ${index + 1}'s footage updated`);
+    else toast.error(`Couldn't find footage for scene ${index + 1}.`);
   };
 
   // Every scene ships with a shot idea and no shot. The fast, default take:
@@ -323,25 +407,7 @@ export default function Composer() {
     if (!withPrompt.length) return;
     setVisualFilling(true);
     try {
-      const orientation = orientationFor(aspectFor(specs, primary, "reel"));
-      const results = await Promise.all(sceneAssets.map(async (a, i) => {
-        const query = (a.spec?.video_prompt || a.spec?.heading || "").trim();
-        if (!query) return null;
-        try {
-          const { data } = await api.get("/stock/search", { params: { q: query, type: "video", per_page: 1, orientation } });
-          const pick = (data.results || []).find((r) => r.url);
-          if (!pick) return false;
-          setAssets((s) => s.map((asset, idx) => {
-            if (idx !== i) return asset;
-            const clip = normalizeClip({
-              ...asset.spec.clip, url: pick.url, credit: pick.credit || "", kind: "video",
-              natural: null, start: 0, end: null,
-            });
-            return { ...asset, spec: { ...asset.spec, video_url: pick.url, video_credit: pick.credit || "", clip } };
-          }));
-          return true;
-        } catch { return false; } // this scene keeps its themed background; the rest still finish
-      }));
+      const results = await Promise.all(sceneAssets.map((a, i) => fillSceneVisual(i, a.spec?.video_prompt || a.spec?.heading)));
       const done = results.filter(Boolean).length;
       if (done === withPrompt.length) toast.success("Footage found for every scene");
       else if (done > 0) toast.error(`Footage found for ${done} of ${withPrompt.length} scenes`);
@@ -354,19 +420,24 @@ export default function Composer() {
   // A background score for the whole reel — one track, not per scene,
   // generated from what the post is actually about so it isn't generic
   // stock elevator music. Instrumental by default: a second voice under
-  // the one already reading the script would only compete with it.
-  const synthesizeReelMusic = async (plan) => {
-    const seed = (plan.title || plan.hook || plan.caption || "").slice(0, 80).trim();
+  // the one already reading the script would only compete with it. Takes a
+  // plain seed string rather than a plan object so it can be re-triggered
+  // — a failed generation's retry, or "give me a different one" — from
+  // whatever the post is titled/captioned right now, not just at build time.
+  const synthesizeReelMusic = async (seedText) => {
+    const seed = (seedText || "").slice(0, 80).trim();
     const prompt = `Upbeat, unobtrusive instrumental background music for a short vertical video${seed ? ` about: ${seed}` : ""}.`;
     setMusicLoading(true);
+    setMusicError(false);
     try {
       const { data } = await api.post("/ai/generate", { kind: "music", prompt, options: { instrumental: true } });
       const result = await pollTask(data.task_id);
       const url = (result.files || []).find((f) => f.file_url)?.file_url;
-      if (!url) { toast.error("Couldn't generate background music."); return; }
+      if (!url) throw new Error("No music file came back");
       setMusic({ url, volume: DEFAULT_MUSIC_VOLUME, credit: "" });
       toast.success("Background music ready");
     } catch (e) {
+      setMusicError(true);
       toast.error(apiErrorMessage(e, "Couldn't generate background music."));
     } finally {
       setMusicLoading(false);
@@ -1390,21 +1461,40 @@ export default function Composer() {
               </div>
             </div>
 
-            {isReel && voiceSynthesizing && (
-              <div className="mt-3 flex items-center gap-2 rounded-lg border border-iris/30 bg-iris/10 px-3 py-2 text-xs text-iris" data-testid="composer-voice-synthesizing">
-                <Loader2 size={13} className="animate-spin" /> Recording a voiceover for every scene — timing updates as each one finishes.
-              </div>
-            )}
-
-            {isReel && visualFilling && (
-              <div className="mt-3 flex items-center gap-2 rounded-lg border border-lime/30 bg-lime/10 px-3 py-2 text-xs text-lime" data-testid="composer-visual-filling">
-                <Loader2 size={13} className="animate-spin" /> Finding footage for every scene — the storyboard fills in as it lands.
-              </div>
-            )}
-
-            {isReel && musicLoading && (
-              <div className="mt-3 flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-zinc-300" data-testid="composer-music-generating">
-                <Loader2 size={13} className="animate-spin" /> Writing a background score for this reel…
+            {/* One combined strip for the three things that build in the
+                background after a reel's script lands, instead of three
+                separate alert boxes stacking up — each still keeps its own
+                testid/spinner so a caller can watch just the one it cares
+                about, but a glance here now shows the whole build at once,
+                errors included instead of only a toast that's already gone. */}
+            {isReel && (voiceSynthesizing || visualFilling || musicLoading || anyVoiceError || anyVisualError || (musicError && !music.url)) && (
+              <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-zinc-300"
+                data-testid="composer-autofill-status">
+                <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">Building the reel</span>
+                {voiceSynthesizing ? (
+                  <span className="flex items-center gap-1.5 text-iris" data-testid="composer-voice-synthesizing">
+                    <Loader2 size={13} className="animate-spin" /> Voice
+                  </span>
+                ) : anyVoiceError ? (
+                  <span className="flex items-center gap-1.5 text-magic"><RefreshCw size={12} /> Voice — a scene's take failed, retry it below</span>
+                ) : null}
+                {visualFilling ? (
+                  <span className="flex items-center gap-1.5 text-lime" data-testid="composer-visual-filling">
+                    <Loader2 size={13} className="animate-spin" /> Footage
+                  </span>
+                ) : anyVisualError ? (
+                  <span className="flex items-center gap-1.5 text-magic"><RefreshCw size={12} /> Footage — a scene's search failed, retry it below</span>
+                ) : null}
+                {musicLoading ? (
+                  <span className="flex items-center gap-1.5" data-testid="composer-music-generating">
+                    <Loader2 size={13} className="animate-spin" /> Score
+                  </span>
+                ) : (musicError && !music.url) ? (
+                  <button onClick={() => synthesizeReelMusic(title || content)} data-testid="composer-music-retry"
+                    className="flex items-center gap-1.5 text-magic hover:text-white">
+                    <RefreshCw size={12} /> Score failed — retry
+                  </button>
+                ) : null}
               </div>
             )}
 
@@ -1420,8 +1510,25 @@ export default function Composer() {
                   onChange={(e) => setMusicVolume(Number(e.target.value))} data-testid="composer-music-volume"
                   className="h-1.5 w-24 flex-none accent-lime" />
                 <audio src={music.url} controls className="h-8 flex-1 min-w-[160px]" />
+                <button onClick={() => synthesizeReelMusic(title || content)} data-testid="composer-music-regenerate"
+                  title="Generate a different score" className="flex-none text-zinc-500 hover:text-white"><RefreshCw size={13} /></button>
                 <Button variant="ghost" onClick={removeMusic} data-testid="composer-music-remove"
                   className="h-7 flex-none px-2 text-zinc-500 hover:text-magic"><Trash2 size={13} /></Button>
+              </div>
+            )}
+
+            {isReel && assets.length > 0 && (
+              <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Voice</span>
+                {VOICE_PRESETS.map((v) => (
+                  <button key={v.key} onClick={() => setVoicePreset(v.key)} title={v.desc}
+                    data-testid={`composer-voice-preset-${v.key.toLowerCase()}`}
+                    className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                      voicePreset === v.key ? "border-lime bg-lime/10 text-lime" : "border-white/10 text-zinc-400 hover:text-white"
+                    }`}>
+                    {v.label}
+                  </button>
+                ))}
               </div>
             )}
 
@@ -1573,21 +1680,46 @@ export default function Composer() {
                               testid="composer-slide-heading" onChange={(v) => patchSlide(active, { heading: v })} />
                             <SlideField label={activeAsset.type === "scene" ? "Voiceover" : "Body"} value={activeAsset.spec.body} rows={3}
                               testid="composer-slide-body" onChange={(v) => patchSlide(active, { body: v })} />
+                            {activeAsset.type === "scene" && !!activeAsset.spec.body?.trim() && (
+                              <div className="-mt-2 flex items-center gap-1.5 text-[11px] text-zinc-500">
+                                {sceneVoiceLoading[active] ? (
+                                  <span className="flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> Recording take…</span>
+                                ) : sceneVoiceError[active] ? (
+                                  <button onClick={() => retrySceneVoice(active)} data-testid="composer-scene-voice-retry"
+                                    className="flex items-center gap-1 text-magic hover:text-white"><RefreshCw size={11} /> Take failed — retry</button>
+                                ) : activeAsset.spec.voice?.url ? (
+                                  <button onClick={() => retrySceneVoice(active)} data-testid="composer-scene-voice-retry"
+                                    className="flex items-center gap-1 hover:text-white"><RefreshCw size={11} /> Re-record this line</button>
+                                ) : null}
+                              </div>
+                            )}
                           </>
                         )}
 
                         {activeAsset.type === "scene" && (
-                          <VideoClipEditor
-                            clip={{ ...activeAsset.spec.clip, url: activeAsset.spec.video_url || activeAsset.spec.clip?.url || "" }}
-                            onChange={patchClip}
-                            isFirst={active === 0}
-                            uploading={clipUploading}
-                            onUpload={uploadClipMedia}
-                            onPickStock={() => setStockTarget("clip-video")}
-                            onPickLibrary={() => { setLibraryTarget("clip"); setLibraryOpen(true); }}
-                            onGenerate={() => navigate("/library", { state: { tab: "video", prompt: activeAsset.spec.video_prompt || activeAsset.spec.heading } })}
-                            onClear={clearClip}
-                          />
+                          <>
+                            <VideoClipEditor
+                              clip={{ ...activeAsset.spec.clip, url: activeAsset.spec.video_url || activeAsset.spec.clip?.url || "" }}
+                              onChange={patchClip}
+                              isFirst={active === 0}
+                              uploading={clipUploading}
+                              onUpload={uploadClipMedia}
+                              onPickStock={() => setStockTarget("clip-video")}
+                              onPickLibrary={() => { setLibraryTarget("clip"); setLibraryOpen(true); }}
+                              onGenerate={() => navigate("/library", { state: { tab: "video", prompt: activeAsset.spec.video_prompt || activeAsset.spec.heading } })}
+                              onClear={clearClip}
+                            />
+                            {(sceneVisualLoading[active] || sceneVisualError[active]) && (
+                              <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-zinc-500">
+                                {sceneVisualLoading[active] ? (
+                                  <span className="flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> Finding footage…</span>
+                                ) : (
+                                  <button onClick={() => retrySceneVisual(active)} data-testid="composer-scene-visual-retry"
+                                    className="flex items-center gap-1 text-magic hover:text-white"><RefreshCw size={11} /> Footage search failed — retry</button>
+                                )}
+                              </div>
+                            )}
+                          </>
                         )}
 
                         <SlideField label={activeAsset.type === "scene" ? "Video prompt" : "Image prompt"}

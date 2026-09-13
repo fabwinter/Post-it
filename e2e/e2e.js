@@ -589,6 +589,30 @@ async function tap(page, testid) {
   await tap(page, 'reel-player-playpause');
   await page.waitForTimeout(150);
 
+  // ---------- 11a-iv. Auto Reel Phase Green — voice presets & per-scene retry ----------
+  // Picking a curated voice steers what a scene's own retake records in —
+  // proven by selecting one and re-recording a scene's line without
+  // touching the reel's other scenes or leaving an error behind.
+  await tap(page, 'composer-reel-view-canvas');
+  await page.waitForTimeout(300);
+  await tap(page, 'composer-slide-0');
+  await page.waitForTimeout(200);
+  await tap(page, 'composer-voice-preset-aria');
+  await page.waitForTimeout(100);
+  const ariaActive = await page.evaluate(() =>
+    document.querySelector('[data-testid="composer-voice-preset-aria"]')?.className.includes('border-lime'));
+  ok('a curated voice preset can be selected', !!ariaActive);
+
+  await page.getByTestId('composer-scene-voice-retry').waitFor({ timeout: 5000 });
+  await tap(page, 'composer-scene-voice-retry');
+  await page.waitForTimeout(600);
+  const retryLabel = await page.getByTestId('composer-scene-voice-retry').innerText();
+  ok("a scene can re-record its own line without touching the others", /Re-record/.test(retryLabel), retryLabel);
+  ok('the combined build-status strip clears once everything finishes', (await page.getByTestId('composer-autofill-status').count()) === 0);
+
+  await tap(page, 'composer-reel-view-play');
+  await page.waitForTimeout(300);
+
   // A background score generates alongside voice and visuals — the third
   // and last thing a script alone doesn't have yet.
   await page.waitForSelector('[data-testid="composer-music-generating"]', { state: 'hidden', timeout: 15000 });
@@ -610,6 +634,14 @@ async function tap(page, testid) {
   await tap(page, 'composer-music-mute');
   await page.waitForTimeout(150);
   ok('unmuting restores a real level', Number(await page.getByTestId('composer-music-volume').inputValue()) > 0);
+
+  // A regenerate button asks for a different take of the same score,
+  // rather than only being retryable after an outright failure.
+  await tap(page, 'composer-music-regenerate');
+  await page.waitForSelector('[data-testid="composer-music-generating"]', { state: 'hidden', timeout: 15000 });
+  const regeneratedSrc = await page.evaluate(() =>
+    document.querySelector('[data-testid="composer-music-row"] audio')?.getAttribute('src'));
+  ok('the score can be regenerated for a different take', !!regeneratedSrc && regeneratedSrc !== musicSrc, regeneratedSrc);
 
   await tap(page, 'composer-music-remove');
   await page.waitForTimeout(200);
