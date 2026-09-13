@@ -125,7 +125,7 @@ export default function Composer() {
   // just another element to drop on the canvas.
   const [libraryTarget, setLibraryTarget] = useState(null);
   const [savingTemplate, setSavingTemplate] = useState(false);
-  const [styleTemplate, setStyleTemplate] = useState(state.applyTemplate || "hooks");
+  const [styleTemplate, setStyleTemplate] = useState("hooks");
   const [restyling, setRestyling] = useState(false);
   const templates = useTemplateStyles();
   const [customTemplateId, setCustomTemplateId] = useState(state.applyCustomTemplateId || null);
@@ -194,6 +194,11 @@ export default function Composer() {
   };
 
   useEffect(() => {
+    // Clicking an empty day on the calendar arrives carrying that date —
+    // without this it was silently dropped and you landed on a composer
+    // with no date set at all, having just told it which day you meant.
+    // An existing post loaded below overwrites it with its own time.
+    if (state.presetDate) setScheduleAt(toLocalInput(state.presetDate));
     if (state.postId) {
       api.get(`/posts/${state.postId}`).then(({ data }) => {
         setPostId(data.id); setTitle(data.title); setContent(data.content);
@@ -1054,7 +1059,13 @@ export default function Composer() {
             )}
 
             <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-3">
-              <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Tone</span>
+              {/* "Style", not "Tone": these are copy structures (hook stack,
+                  story, listicle, contrarian, how-to), and the actual tone
+                  picker — engaging/professional/witty — sits in Topic mode
+                  40 lines above, visible at the same time. Two controls
+                  can't both be called Tone. Matches this row's own "Apply
+                  style" button and testids. */}
+              <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Style</span>
               <select value={styleTemplate} onChange={(e) => setStyleTemplate(e.target.value)} data-testid="composer-style-select"
                 className="rounded-lg border border-white/10 bg-[#0A0A0A] px-2.5 py-1.5 text-xs text-white outline-none focus:border-iris [color-scheme:dark]">
                 {templates.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
@@ -1063,7 +1074,7 @@ export default function Composer() {
                 className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 text-xs text-white hover:bg-white/10">
                 {restyling ? <Loader2 size={13} className="animate-spin" /> : <Wand size={13} />} Apply style
               </Button>
-              <span className="text-xs text-zinc-600">rewrites the draft above in that tone of voice</span>
+              <span className="text-xs text-zinc-600">rewrites the draft above in that structure</span>
             </div>
 
             <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-3">
