@@ -5,6 +5,18 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Every page's content column is centered with mx-auto against the
+   viewport's available width — so a page whose content is tall enough to
+   scroll gets a narrower layout viewport than one that isn't (the
+   scrollbar's own width), and the whole centered column visibly shifts a
+   few pixels sideways depending on which page you're on. Reserving the
+   gutter unconditionally means that width never changes between pages, so
+   nothing shifts when you navigate. (Ignored by browsers that don't
+   support it; overlay-scrollbar platforms already don't have the problem.) */
+html {
+    scrollbar-gutter: stable;
+}
+
 body {
     margin: 0;
     font-family: "Satoshi", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
