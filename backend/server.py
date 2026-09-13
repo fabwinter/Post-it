@@ -1142,9 +1142,37 @@ def _assert_public_http_url(url: str):
             raise HTTPException(status_code=400, detail="That host isn't reachable from here")
 
 
+# Enough hops for the http->https and bare->www shuffles a real host does,
+# few enough that a redirect loop ends as an error rather than a hang.
+_MAX_REDIRECTS = 5
+
+
+def _safe_get(url: str, *, timeout: int, stream: bool = False, headers: Optional[Dict[str, str]] = None):
+    """requests.get with the private-address guard applied to every hop.
+
+    _assert_public_http_url only ever sees the URL handed to it, and requests
+    follows redirects by itself — so a public host answering 302 with a
+    Location of http://169.254.169.254/ (cloud metadata) or a service on
+    localhost got fetched anyway, straight past a check that would have
+    rejected that address outright had it been passed in directly. The guard
+    has to run against the URL actually being connected to, which means
+    following the chain here rather than letting requests do it silently."""
+    current = url
+    for _ in range(_MAX_REDIRECTS + 1):
+        _assert_public_http_url(current)
+        r = requests.get(current, timeout=timeout, stream=stream, headers=headers, allow_redirects=False)
+        if not r.is_redirect and not r.is_permanent_redirect:
+            return r
+        location = r.headers.get("location")
+        r.close()
+        if not location:
+            raise HTTPException(status_code=502, detail=f"Could not fetch {url} (redirect with no target)")
+        current = urljoin(current, location)
+    raise HTTPException(status_code=502, detail=f"Could not fetch {url} (too many redirects)")
+
+
 def _fetch_with_cap(url: str, max_bytes: int, timeout: int = 30) -> tuple:
-    _assert_public_http_url(url)
-    r = requests.get(url, timeout=timeout, stream=True)
+    r = _safe_get(url, timeout=timeout, stream=True)
     if r.status_code != 200:
         r.close()
         raise HTTPException(status_code=502, detail=f"Could not fetch {url} ({r.status_code})")
@@ -1932,8 +1960,7 @@ _TAG_RE = re.compile(r"<[^>]+>")
 
 
 def _url_analysis(url: str) -> Dict[str, Any]:
-    _assert_public_http_url(url)
-    r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 (compatible; CreateOSBot/1.0)"})
+    r = _safe_get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 (compatible; CreateOSBot/1.0)"})
     if r.status_code != 200:
         raise HTTPException(status_code=502, detail=f"Could not fetch that page ({r.status_code})")
     html = r.text[:400000]
@@ -2845,9 +2872,8 @@ class RssImportRequest(BaseModel):
 @api_router.post("/rss/import")
 async def rss_import(req: RssImportRequest):
     limit = max(1, min(int(req.limit or 10), 30))
-    await asyncio.to_thread(_assert_public_http_url, req.url)
     resp = await asyncio.to_thread(
-        lambda: requests.get(req.url, timeout=30, headers={"User-Agent": "CreateOS/1.0"})
+        lambda: _safe_get(req.url, timeout=30, headers={"User-Agent": "CreateOS/1.0"})
     )
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail=f"Could not fetch that feed (HTTP {resp.status_code})")

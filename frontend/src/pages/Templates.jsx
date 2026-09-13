@@ -211,10 +211,18 @@ export default function Templates() {
           </Button>
         </div>
 
+        {/* Each card carries min-w-0 because a grid item defaults to
+            min-width:auto and so can't shrink below its own min-content —
+            which `truncate` (white-space:nowrap) makes the full untruncated
+            width of the description. Below sm there's no grid-cols-* class,
+            so the implicit track is `auto` and had nothing else holding it
+            back: the cards sat at ~592px in a 390px viewport and scrolled
+            the whole page sideways. sm:grid-cols-2 was never affected —
+            Tailwind's grid-cols-* already expand to minmax(0, 1fr). */}
         {!loadingCustom && customTemplates.length > 0 && (
           <div className="mt-4 grid gap-2 sm:grid-cols-2">
             {customTemplates.map((tpl) => (
-              <div key={tpl.id} className="flex items-center gap-3 rounded-lg border border-white/10 bg-[#0A0A0A] p-3" data-testid={`templates-custom-item-${tpl.id}`}>
+              <div key={tpl.id} className="flex min-w-0 flex-wrap items-center gap-3 rounded-lg border border-white/10 bg-[#0A0A0A] p-3" data-testid={`templates-custom-item-${tpl.id}`}>
                 <div className={`relative w-[84px] flex-none overflow-hidden rounded-md border border-white/10 bg-[#050505] ${tpl.format === "reel" ? ASPECT_CLASS["9:16"] : ASPECT_CLASS["4:5"]}`}
                   data-testid={`templates-custom-thumb-${tpl.id}`}>
                   {tpl.preview ? (
@@ -229,8 +237,8 @@ export default function Templates() {
                     <div className="flex h-full items-center justify-center text-zinc-700"><LayoutTemplate size={18} /></div>
                   )}
                 </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
+                <div className="min-w-[9rem] flex-1">
+                  <div className="flex min-w-0 items-center gap-1.5">
                     <span className="truncate text-sm font-medium text-white">{tpl.name}</span>
                     {tpl.builtin && <span className="flex-none rounded-full border border-lime/40 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-lime">Starter</span>}
                   </div>
@@ -240,7 +248,11 @@ export default function Templates() {
                     <span>{!tpl.builtin && "· "}{tpl.slides.length} slide{tpl.slides.length === 1 ? "" : "s"} · {tpl.format}</span>
                   </div>
                 </div>
-                <div className="flex flex-none flex-col items-stretch gap-1.5">
+                {/* Once wrapped onto its own line the actions read better
+                    across than stacked in a narrow column, so they only
+                    become a column again at the width that fits them beside
+                    the text. */}
+                <div className="flex w-full flex-none flex-row items-stretch gap-1.5 sm:w-auto sm:flex-col">
                   <Button onClick={() => openInComposer(tpl)} data-testid={`templates-custom-use-${tpl.id}`}
                     className="h-7 gap-1 rounded-lg bg-lime px-2.5 text-[11px] font-semibold text-[#0A0A0A] hover:bg-lime-hover">
                     <Wand size={12} /> Use

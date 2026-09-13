@@ -12,7 +12,7 @@ CHAT_REPLY = {"value": "hello"}
 RAISE_TIMEOUT = {"value": False}
 
 class Resp:
-    def __init__(self, body, code=200):
+    def __init__(self, body, code=200, headers=None):
         self._b, self.status_code = body, code
         if isinstance(body, bytes):
             self.content, self.text = body, ""
@@ -21,7 +21,17 @@ class Resp:
         else:
             self.text = json.dumps(body)
             self.content = self.text.encode()
-        self.headers = {"content-type": "application/json"}
+        self.headers = headers or {"content-type": "application/json"}
+    # Mirrors requests.Response: a redirect is a redirect status WITH a
+    # Location to follow. _safe_get reads these to walk the chain itself
+    # (see its docstring), so a fake that lacks them isn't testing the
+    # same code path the real client takes.
+    @property
+    def is_redirect(self):
+        return "location" in {k.lower() for k in self.headers} and self.status_code in (301, 302, 303, 307, 308)
+    @property
+    def is_permanent_redirect(self):
+        return "location" in {k.lower() for k in self.headers} and self.status_code in (301, 308)
     def json(self): return self._b
     def close(self): pass
     def iter_content(self, chunk_size=65536):
@@ -75,6 +85,8 @@ def fake_get(url, headers=None, timeout=None, params=None, **kw):
                 {"file_type": "video/mp4", "width": 1920, "link": "https://videos.pexels.com/222-hd.mp4"},
             ],
         }]})
+    if url in REDIRECTS:
+        return Resp(b"", 302, {"location": REDIRECTS[url]})
     if url in BLOBS:
         r = Resp(BLOBS[url])
         if url in BLOB_CONTENT_TYPES:
@@ -97,6 +109,7 @@ made by people who care about where it comes from and who it reaches.</p>
 
 BLOBS = {}
 BLOB_CONTENT_TYPES = {}  # url -> content-type, for tests that care what proxy-image sees
+REDIRECTS = {}  # url -> Location it 302s to, for the SSRF redirect-chain tests
 def fake_put(url, headers=None, data=None, timeout=None, **kw):
     assert "blob.vercel-storage.com" in url
     pathname = url.split("blob.vercel-storage.com/")[-1] + "-rand"
@@ -1237,6 +1250,38 @@ try:
     check("SSRF guard doesn't block an unresolvable host (can't be an SSRF target)", True)
 except Exception as e:
     check("SSRF guard doesn't block an unresolvable host (can't be an SSRF target)", False, str(e))
+
+# --- the guard has to survive a redirect, not just the URL handed in ---
+# requests follows redirects on its own, so a public host answering 302 with
+# a private Location used to be fetched anyway — past a check that rejects
+# that same address outright when passed in directly (asserted above).
+REDIRECTS["https://redirector.test/to-metadata"] = "http://169.254.169.254/latest/meta-data/"
+try:
+    server._fetch_with_cap("https://redirector.test/to-metadata", 1 << 20, 5)
+    check("SSRF guard rejects a private address reached via redirect", False, "fetch completed")
+except Exception as e:
+    check("SSRF guard rejects a private address reached via redirect",
+          isinstance(e, server.HTTPException) and e.status_code == 400, f"{type(e).__name__}: {e}")
+
+# ...while an ordinary redirect to a public target still resolves normally.
+BLOBS["https://cdn.test/real.png"] = b"redirected-png-bytes"
+BLOB_CONTENT_TYPES["https://cdn.test/real.png"] = "image/png"
+REDIRECTS["https://redirector.test/to-image"] = "https://cdn.test/real.png"
+try:
+    body, ctype = server._fetch_with_cap("https://redirector.test/to-image", 1 << 20, 5)
+    check("a redirect to a public target is still followed",
+          body == b"redirected-png-bytes" and ctype == "image/png", (body[:40], ctype))
+except Exception as e:
+    check("a redirect to a public target is still followed", False, f"{type(e).__name__}: {e}")
+
+# A loop ends as an error rather than spinning until the request times out.
+REDIRECTS["https://redirector.test/loop"] = "https://redirector.test/loop"
+try:
+    server._fetch_with_cap("https://redirector.test/loop", 1 << 20, 5)
+    check("a redirect loop is cut off", False, "fetch completed")
+except Exception as e:
+    check("a redirect loop is cut off",
+          isinstance(e, server.HTTPException) and "too many redirects" in str(e.detail), str(e))
 
 # --- proxy-image: same guard, plus a content-type allowlist ---
 r = c.get("/api/proxy-image", params={"url": "http://169.254.169.254/"})
