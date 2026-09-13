@@ -129,6 +129,10 @@ export default function Composer() {
   // runs in the background after the script itself has already landed, so
   // it never blocks seeing/editing the scenes, only how long they hold.
   const [voiceSynthesizing, setVoiceSynthesizing] = useState(false);
+  // True while a fresh reel's scenes are each getting real footage from a
+  // stock search — same background-fill shape as voice, running alongside
+  // it rather than after it, since the two touch different fields.
+  const [visualFilling, setVisualFilling] = useState(false);
   const [brief, setBrief] = useState("");
   // Folded in from the old Write page's own tone picker — "Caption only"
   // used to always write as "engaging" with no way to change it.
@@ -228,9 +232,13 @@ export default function Composer() {
     setActive(0);
     if (plan.platform) setPlatforms([plan.platform]);
     // A fresh reel script has a line for every scene and no way to say it
-    // yet — give it one automatically, the same click that wrote the script.
+    // yet, and a shot idea with no shot — give it both automatically, the
+    // same click that wrote the script. The two run side by side (voice
+    // sets clip.hold and spec.voice; visuals sets clip.url) rather than one
+    // after the other, since they touch different fields on the same scene.
     if (plan.format === "reel" && (plan.assets || []).some((a) => a.type === "scene")) {
       synthesizeReelVoices(plan.assets);
+      autoFillReelVisuals(plan.assets);
     }
   };
 
@@ -284,6 +292,46 @@ export default function Composer() {
       else toast.error("Couldn't record the voiceover — scenes kept their default timing.");
     } finally {
       setVoiceSynthesizing(false);
+    }
+  };
+
+  // Every scene ships with a shot idea and no shot. The fast, default take:
+  // search free stock footage for it and drop the first usable clip
+  // straight in, the same shape a manual "Stock video" pick already
+  // produces — a search is a fetch, not a generation, so a whole reel's
+  // worth of footage lands about as fast as its voice recordings do.
+  // Preserves whatever hold synthesizeReelVoices has already set (or will
+  // set moments later): only the footage changes here, never the timing.
+  const autoFillReelVisuals = async (sceneAssets) => {
+    const withPrompt = sceneAssets.filter((a) => (a.spec?.video_prompt || a.spec?.heading || "").trim());
+    if (!withPrompt.length) return;
+    setVisualFilling(true);
+    try {
+      const orientation = orientationFor(aspectFor(specs, primary, "reel"));
+      const results = await Promise.all(sceneAssets.map(async (a, i) => {
+        const query = (a.spec?.video_prompt || a.spec?.heading || "").trim();
+        if (!query) return null;
+        try {
+          const { data } = await api.get("/stock/search", { params: { q: query, type: "video", per_page: 1, orientation } });
+          const pick = (data.results || []).find((r) => r.url);
+          if (!pick) return false;
+          setAssets((s) => s.map((asset, idx) => {
+            if (idx !== i) return asset;
+            const clip = normalizeClip({
+              ...asset.spec.clip, url: pick.url, credit: pick.credit || "", kind: "video",
+              natural: null, start: 0, end: null,
+            });
+            return { ...asset, spec: { ...asset.spec, video_url: pick.url, video_credit: pick.credit || "", clip } };
+          }));
+          return true;
+        } catch { return false; } // this scene keeps its themed background; the rest still finish
+      }));
+      const done = results.filter(Boolean).length;
+      if (done === withPrompt.length) toast.success("Footage found for every scene");
+      else if (done > 0) toast.error(`Footage found for ${done} of ${withPrompt.length} scenes`);
+      else toast.error("Couldn't find footage — scenes kept their themed background.");
+    } finally {
+      setVisualFilling(false);
     }
   };
 
@@ -1302,6 +1350,12 @@ export default function Composer() {
             {isReel && voiceSynthesizing && (
               <div className="mt-3 flex items-center gap-2 rounded-lg border border-iris/30 bg-iris/10 px-3 py-2 text-xs text-iris" data-testid="composer-voice-synthesizing">
                 <Loader2 size={13} className="animate-spin" /> Recording a voiceover for every scene — timing updates as each one finishes.
+              </div>
+            )}
+
+            {isReel && visualFilling && (
+              <div className="mt-3 flex items-center gap-2 rounded-lg border border-lime/30 bg-lime/10 px-3 py-2 text-xs text-lime" data-testid="composer-visual-filling">
+                <Loader2 size={13} className="animate-spin" /> Finding footage for every scene — the storyboard fills in as it lands.
               </div>
             )}
 
