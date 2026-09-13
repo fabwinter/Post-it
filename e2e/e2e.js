@@ -576,6 +576,19 @@ async function tap(page, testid) {
   const clipsFound = await page.evaluate(() => document.querySelectorAll('[data-testid^="reel-player-seg-"] video').length);
   ok('footage search filled every scene while voice was recording', clipsFound === 3, String(clipsFound));
 
+  // ---------- 11a-i. Auto Reel — captions highlight in sync with the voice ----------
+  // Every scene's spoken line asks its take for word-level timestamps; the
+  // fake TTS hands back a real ElevenLabs-shaped character alignment (see
+  // e2e/serve.py), which deriveCaptionWords turns into per-word timing —
+  // proven by the on-screen line actually highlighting a word while the
+  // reel plays, not just the data existing somewhere in state.
+  await tap(page, 'reel-player-playpause');
+  await page.waitForTimeout(700);
+  const captionSeen = await page.evaluate(() => !!document.querySelector('[data-testid="visual-card-caption-active"]'));
+  ok('the spoken line highlights a word while the reel plays', captionSeen);
+  await tap(page, 'reel-player-playpause');
+  await page.waitForTimeout(150);
+
   // A background score generates alongside voice and visuals — the third
   // and last thing a script alone doesn't have yet.
   await page.waitForSelector('[data-testid="composer-music-generating"]', { state: 'hidden', timeout: 15000 });
@@ -601,6 +614,24 @@ async function tap(page, testid) {
   await tap(page, 'composer-music-remove');
   await page.waitForTimeout(200);
   ok('removing the score clears the row', (await page.getByTestId('composer-music-row').count()) === 0);
+
+  // ---------- 11a-ii. Auto Reel — captions survive the export pipeline ----------
+  // Every scene here has real per-word timing by now, so this exercises the
+  // per-word overlay-frame capture in ReelExportDialog (one screenshot per
+  // word instead of one per scene) rather than the single-frame path every
+  // other export test in this suite takes.
+  await tap(page, 'composer-reel-export');
+  await page.getByTestId('reel-export').waitFor({ timeout: 6000 });
+  await page.waitForTimeout(300);
+  if ((await page.getByTestId('reel-export-unsupported').count()) === 0) {
+    await tap(page, 'reel-export-preset-480');
+    await page.waitForTimeout(200);
+    await tap(page, 'reel-export-start');
+    await page.getByTestId('reel-export-done').waitFor({ timeout: 60000 });
+    ok('a captioned reel still exports to a real file', true);
+  }
+  await tap(page, 'reel-export-close');
+  await page.waitForTimeout(300);
 
   // ---- fonts ----
   // Three of the catalogue's faces we serve ourselves (two from Google, one

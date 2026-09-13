@@ -90,8 +90,26 @@ export const ASPECT_RATIO = {
 
 const wordmark = (brand) => (brand?.handle || brand?.name || "CREATEOS").toUpperCase();
 
+// A scene's spoken line, rendered with whichever word is playing right now
+// picked out — the karaoke-style highlight is what makes a reel's on-screen
+// text read as captions instead of a static subtitle. `activeWordIndex` is
+// -1/undefined outside playback, in which case this is just plain text.
+function CaptionBody({ text, activeWordIndex, style, accent }) {
+  if (activeWordIndex == null || activeWordIndex < 0) return <p style={style}>{text}</p>;
+  const words = (text || "").trim().split(/\s+/).filter(Boolean);
+  return (
+    <p style={style}>
+      {words.map((w, i) => (
+        <span key={i} style={i === activeWordIndex ? { color: accent, fontWeight: 700 } : undefined}>
+          {w}{i < words.length - 1 ? " " : ""}
+        </span>
+      ))}
+    </p>
+  );
+}
+
 export const VisualCard = forwardRef(function VisualCard(
-  { spec, brand, loading = false, scale = 1, className = "", videoRef, videoControlled = false }, ref
+  { spec, brand, loading = false, scale = 1, className = "", videoRef, videoControlled = false, activeWordIndex }, ref
 ) {
   const theme = themeFor(spec?.theme, brand);
   const base = { background: theme.bg, color: theme.fg };
@@ -290,7 +308,12 @@ export const VisualCard = forwardRef(function VisualCard(
         ) : (
           <>
             <h3 className="font-display" style={{ fontSize: f(30), fontWeight: 800, lineHeight: 1.1, fontFamily: displayFont }}>{spec.heading}</h3>
-            {spec.body && <p style={{ marginTop: f(16), fontSize: f(18), lineHeight: 1.4, color: theme.sub, fontFamily: bodyFont }}>{spec.body}</p>}
+            {spec.body && (
+              <div data-testid={activeWordIndex != null && activeWordIndex >= 0 ? "visual-card-caption-active" : undefined}>
+                <CaptionBody text={spec.body} activeWordIndex={activeWordIndex} accent={theme.accent}
+                  style={{ marginTop: f(16), fontSize: f(18), lineHeight: 1.4, color: theme.sub, fontFamily: bodyFont }} />
+              </div>
+            )}
           </>
         )}
       </div>

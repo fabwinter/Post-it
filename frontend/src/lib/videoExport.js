@@ -85,10 +85,26 @@ function drawFitted(ctx, source, sw, sh, W, H, fit) {
   ctx.drawImage(source, (W - w) / 2, (H - h) / 2, w, h);
 }
 
+// A scene with word-synced captions has one overlay image per word (the
+// highlight is baked into each, since it's a real DOM screenshot rather
+// than drawn text) instead of the single static one every other scene
+// uses. This picks whichever of those covers the moment being drawn.
+function contentImageAt(scene, sceneTime) {
+  if (scene.contentFrames && scene.contentFrames.length) {
+    let chosen = scene.contentFrames[0];
+    for (const fr of scene.contentFrames) {
+      if (sceneTime >= fr.start) chosen = fr; else break;
+    }
+    return chosen.image;
+  }
+  return scene.contentImage;
+}
+
 // One scene, drawn in the card's own layer order. `f` is that scene's half
 // of the crossover (opacity, slide, zoom, wipe) from transitionFrame.
-function drawScene(ctx, scene, f, W, H) {
-  const { bgImage, contentImage, video, clipImage, clip } = scene;
+function drawScene(ctx, scene, f, W, H, sceneTime) {
+  const { bgImage, video, clipImage, clip } = scene;
+  const contentImage = contentImageAt(scene, sceneTime);
   ctx.save();
   if (f.clipLeft) {
     ctx.beginPath();
@@ -129,8 +145,8 @@ export function drawFrame(ctx, scenes, items, t, W, H) {
   ctx.fillRect(0, 0, W, H);
   if (!at) return;
   const tx = transitionFrame(at.cur.clip.transition.type, at.p);
-  if (at.inTransition && at.prev && tx.under) drawScene(ctx, scenes[at.prev.index], tx.under, W, H);
-  drawScene(ctx, scenes[at.cur.index], at.inTransition ? tx.over : { opacity: 1, tx: 0, scale: 1, clipLeft: 0 }, W, H);
+  if (at.inTransition && at.prev && tx.under) drawScene(ctx, scenes[at.prev.index], tx.under, W, H, t - at.prev.start);
+  drawScene(ctx, scenes[at.cur.index], at.inTransition ? tx.over : { opacity: 1, tx: 0, scale: 1, clipLeft: 0 }, W, H, t - at.cur.start);
   if (at.inTransition && tx.veil > 0) {
     ctx.save();
     ctx.globalAlpha = tx.veil;
@@ -203,21 +219,35 @@ export function loadMusic(url) {
   return url ? loadAudioClip(url) : Promise.resolve(null);
 }
 
+// A captioned scene's per-word overlay screenshots, loaded into real
+// Image elements the same way the single-overlay case is — each keeps the
+// word's own start/end so drawScene can pick the one covering a given
+// moment.
+function loadContentFrames(frames) {
+  if (!frames || !frames.length) return Promise.resolve(null);
+  return Promise.all(frames.map(async (fr) => ({
+    image: fr.image ? await loadImage(fr.image) : null,
+    start: fr.start,
+    end: fr.end,
+  })));
+}
+
 export async function prepareScenes(items, layers, { onProgress } = {}) {
   const scenes = [];
   for (let i = 0; i < items.length; i += 1) {
     const it = items[i];
     const clip = normalizeClip(it.clip);
-    const [bgImage, contentImage] = await Promise.all([
+    const [bgImage, contentImage, contentFrames] = await Promise.all([
       layers[it.index]?.bg ? loadImage(layers[it.index].bg) : null,
       layers[it.index]?.content ? loadImage(layers[it.index].content) : null,
+      loadContentFrames(layers[it.index]?.contentFrames),
     ]);
     const isStill = clip.url && clip.kind === "image";
     const video = clip.url && !isStill ? await loadVideo(clip.url, { muted: clip.volume === 0 }) : null;
     const clipImage = isStill ? await loadClipImage(clip.url) : null;
     const voiceUrl = it.asset?.spec?.voice?.url || "";
     const voice = voiceUrl ? await loadAudioClip(voiceUrl) : null;
-    scenes[it.index] = { bgImage, contentImage, video, clipImage, clip, voice, item: it };
+    scenes[it.index] = { bgImage, contentImage, contentFrames, video, clipImage, clip, voice, item: it };
     onProgress?.((i + 1) / items.length);
   }
   return scenes;
