@@ -3,6 +3,7 @@ import { Twitter, BadgeCheck, Loader2 } from "lucide-react";
 import { activeColors } from "@/lib/useBrand";
 import { fontStack, useBrandFonts, ensureFontLoaded } from "@/lib/fonts";
 import { elementBoxStyle } from "@/lib/slideElements";
+import { normalizeClip, filterCss } from "@/lib/videoClip";
 import { ICON_MAP } from "@/lib/elementLibrary";
 
 // One card = one spec. Keeping the renderer a pure function of a small spec
@@ -90,11 +91,28 @@ export const ASPECT_RATIO = {
 const wordmark = (brand) => (brand?.handle || brand?.name || "CREATEOS").toUpperCase();
 
 export const VisualCard = forwardRef(function VisualCard(
-  { spec, brand, loading = false, scale = 1, className = "" }, ref
+  { spec, brand, loading = false, scale = 1, className = "", videoRef, videoControlled = false }, ref
 ) {
   const theme = themeFor(spec?.theme, brand);
   const base = { background: theme.bg, color: theme.fg };
   const patt = patternStyle(theme);
+  // Whatever sits behind the words. A clip carries its own grade, framing
+  // and how far it sits behind the overlays (lib/videoClip.js); a still
+  // keeps the plain dim it always had. Both render branches below share
+  // this — they used to hold separate copies, and the one every reel scene
+  // actually goes through kept a hardcoded 0.45 that no clip setting could
+  // move. Left looping on its own as a preview; ReelPlayer passes
+  // videoControlled to drive currentTime/playbackRate itself instead.
+  const clip = spec?.video_url ? normalizeClip({ ...spec.clip, url: spec.video_url }) : null;
+  const backdrop = clip ? (
+    <video ref={videoRef} src={spec.video_url} muted playsInline
+      loop={!videoControlled} autoPlay={!videoControlled}
+      className="absolute inset-0 h-full w-full"
+      style={{ opacity: clip.opacity, objectFit: clip.fit, filter: filterCss(clip.effects) }} />
+  ) : spec?.image_url ? (
+    <img src={spec.image_url} alt="" crossOrigin="anonymous"
+      className="absolute inset-0 h-full w-full object-cover" style={{ opacity: 0.45 }} />
+  ) : null;
   // Type sizes are expressed against a 440px-wide reference card so the same
   // spec renders identically in a 120px strip thumbnail and a full preview.
   const f = (n) => `${n * scale}px`;
@@ -137,13 +155,7 @@ export const VisualCard = forwardRef(function VisualCard(
     const bg = spec.bg_color ? { background: spec.bg_color, color: theme.fg } : base;
     return (
       <div ref={ref} className={`relative h-full w-full overflow-hidden ${className}`} style={bg}>
-        {spec.video_url ? (
-          <video src={spec.video_url} muted loop autoPlay playsInline
-            className="absolute inset-0 h-full w-full object-cover" style={{ opacity: 0.45 }} />
-        ) : spec.image_url && (
-          <img src={spec.image_url} alt="" crossOrigin="anonymous"
-            className="absolute inset-0 h-full w-full object-cover" style={{ opacity: 0.45 }} />
-        )}
+        {backdrop}
         {spec.elements.map((el) => {
           const box = elementBoxStyle(el);
           // Starter templates reference the palette and the brand's fonts by
@@ -170,6 +182,14 @@ export const VisualCard = forwardRef(function VisualCard(
             return el.url ? (
               <img key={el.id} src={el.url} alt="" crossOrigin="anonymous"
                 style={{ ...box, objectFit: el.fit || "cover" }} />
+            ) : (
+              <div key={el.id} style={{ ...box, border: "1px dashed rgba(150,150,150,0.4)" }} />
+            );
+          }
+          if (el.type === "video") {
+            return el.url ? (
+              <video key={el.id} src={el.url} muted loop autoPlay playsInline
+                style={{ ...box, objectFit: el.fit || "cover", filter: filterCss(el.effects) }} />
             ) : (
               <div key={el.id} style={{ ...box, border: "1px dashed rgba(150,150,150,0.4)" }} />
             );
@@ -249,13 +269,7 @@ export const VisualCard = forwardRef(function VisualCard(
   const dot = hasCover ? (spec.index || 0) : (spec.index || 1) - 1;
   return (
     <div ref={ref} className={`relative flex h-full w-full flex-col justify-between ${className}`} style={{ ...base, ...pad }}>
-      {spec.video_url ? (
-        <video src={spec.video_url} muted loop autoPlay playsInline
-          className="absolute inset-0 h-full w-full object-cover" style={{ opacity: 0.45 }} />
-      ) : spec.image_url && (
-        <img src={spec.image_url} alt="" crossOrigin="anonymous"
-          className="absolute inset-0 h-full w-full object-cover" style={{ opacity: 0.45 }} />
-      )}
+      {backdrop}
       <div className="absolute inset-0" style={patt} />
       <div className="relative flex items-center justify-between font-mono" style={{ color: theme.accent, fontSize: f(11), letterSpacing: f(2) }}>
         <span>{isCover ? "SWIPE →" : total > 1 ? `${spec.index}/${hasCover ? total - 1 : total}` : ""}</span>

@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { api, apiErrorMessage } from "@/lib/api";
 import { toast } from "sonner";
 import { ICON_MAP, ICON_ELEMENTS, STICKER_ELEMENTS, SHAPE_ELEMENTS } from "@/lib/elementLibrary";
-import { Loader2, Upload, Trash2, Type as TypeIcon, Square as ShapeIcon } from "lucide-react";
+import { Loader2, Upload, Trash2, Type as TypeIcon, Square as ShapeIcon, Film } from "lucide-react";
 
 const TABS = [
   { key: "shapes", label: "Shapes" },
@@ -46,9 +46,17 @@ export function ElementsLibrary({ open, onOpenChange, onPick }) {
       const form = new FormData();
       form.append("file", file);
       const { data: up } = await api.post("/upload", form);
+      // The backend already classifies what came in (_upload_kind), so a
+      // clip lands as a video element and a still as an image one without
+      // the picker having to sniff the file itself. A clip defaults bigger
+      // and to cover: a logo wants to sit inside its box, footage wants to
+      // fill it.
+      const isVideo = up.kind === "video";
       const { data: saved } = await api.post("/library/elements", {
         name: up.filename, kind: "upload",
-        element: { type: "image", url: up.url, fit: "contain", w: 30, h: 30 },
+        element: isVideo
+          ? { type: "video", url: up.url, fit: "cover", w: 50, h: 35, effects: {} }
+          : { type: "image", url: up.url, fit: "contain", w: 30, h: 30 },
       });
       setUploads((s) => [saved, ...s]);
       toast.success("Saved to your library");
@@ -121,11 +129,12 @@ export function ElementsLibrary({ open, onOpenChange, onPick }) {
           )}
           {tab === "uploads" && (
             <>
-              <input ref={fileRef} type="file" accept="image/*" className="hidden" data-testid="library-upload-input"
+              <input ref={fileRef} type="file" accept="image/*,video/mp4,video/quicktime,video/webm"
+                className="hidden" data-testid="library-upload-input"
                 onChange={(e) => uploadNew(e.target.files?.[0])} />
               <Button onClick={() => fileRef.current?.click()} disabled={uploading} data-testid="library-upload-button"
                 className="w-full gap-2 rounded-lg bg-lime font-semibold text-[#0A0A0A] hover:bg-lime-hover">
-                {uploading ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />} Upload a logo, badge or stamp
+                {uploading ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />} Upload a logo, image or video
               </Button>
               {loading && <div className="mt-6 flex justify-center"><Loader2 className="animate-spin text-zinc-600" /></div>}
               {!loading && uploads.length === 0 && (
@@ -138,7 +147,19 @@ export function ElementsLibrary({ open, onOpenChange, onPick }) {
                 {uploads.map((u) => (
                   <button key={u.id} onClick={() => onPick(u.element)} data-testid={`library-upload-${u.id}`} title={u.name}
                     className="group relative aspect-square overflow-hidden rounded-lg border border-white/10 bg-[#121212] hover:border-lime">
-                    {u.element?.type === "image" ? (
+                    {u.element?.type === "video" ? (
+                      u.element.url && (
+                        <>
+                          <video src={u.element.url} muted loop playsInline preload="metadata"
+                            className="h-full w-full object-cover"
+                            onMouseEnter={(e) => e.currentTarget.play().catch(() => {})}
+                            onMouseLeave={(e) => { e.currentTarget.pause(); e.currentTarget.currentTime = 0; }} />
+                          <span className="pointer-events-none absolute bottom-1 left-1 flex items-center gap-1 rounded bg-black/70 px-1 py-0.5 text-[9px] text-white">
+                            <Film size={9} /> clip
+                          </span>
+                        </>
+                      )
+                    ) : u.element?.type === "image" ? (
                       u.element.url && <img src={u.element.url} alt="" className="h-full w-full object-contain p-2" />
                     ) : u.element?.type === "text" ? (
                       <div className="flex h-full w-full flex-col items-center justify-center gap-1 p-1.5">

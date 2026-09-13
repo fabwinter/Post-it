@@ -98,6 +98,10 @@ export function newElement(type, theme, brand) {
   if (type === "text") return { ...base, type: "text", text: "New text", w: 60, h: 15, fontFamily: brand?.fonts?.body || "Inter", fontSize: 20, fontWeight: 600, color: theme?.fg || "#FFFFFF", align: "left", lineHeight: 1.2 };
   if (type === "logo") return { ...base, type: "image", url: brand?.logo_url || "", w: 20, h: 20, fit: "contain" };
   if (type === "image") return { ...base, type: "image", url: "", w: 40, h: 30, fit: "cover" };
+  // A video behaves like an image with a grade: same box, same handles, so a
+  // scene can carry several of them (a cutaway over a background plate, a
+  // picture-in-picture) instead of the one full-bleed clip it used to.
+  if (type === "video") return { ...base, type: "video", url: "", w: 50, h: 35, fit: "cover", effects: {} };
   return { ...base, type: "shape", shape: "rect", w: 30, h: 20, color: theme?.accent || "#E2FF3D" };
 }
 

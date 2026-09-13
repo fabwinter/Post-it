@@ -13,12 +13,15 @@ import { ModelPicker } from "@/components/ModelPicker";
 import { VisualCard, ASPECT_CLASS, ASPECT_RATIO, THEME_LIST, themeFor } from "@/components/VisualCard";
 import { SlideEditor } from "@/components/SlideEditor";
 import { CanvasEditor } from "@/components/CanvasEditor";
+import { ReelPlayer } from "@/components/ReelPlayer";
+import { VideoClipEditor } from "@/components/VideoClipEditor";
 import { MediaPicker } from "@/components/MediaPicker";
 import { useTemplateStyles } from "@/lib/templateStyles";
 import { useCustomTemplates } from "@/lib/useCustomTemplates";
 import { elementsFromSpec, newElement, useCardScale } from "@/lib/slideElements";
 import { materializeTemplateSlides } from "@/lib/templateEdit";
 import { BRAND_FONTS, groupFontsByCategory, fontStack, useAllFontsLoaded } from "@/lib/fonts";
+import { reelTimeline, normalizeClip, formatSeconds } from "@/lib/videoClip";
 import { ElementsLibrary } from "@/components/ElementsLibrary";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -27,7 +30,7 @@ import {
   Plus, ChevronLeft, ChevronRight, Download, ImagePlus, History, Hash, Film, Layers,
   Search, Wand, Palette, Upload, FileText, Image as ImageIcon, Presentation,
   Type, Square, LayoutTemplate, Undo2, Redo2, Copy, ChevronsUp, ChevronsDown, AlignLeft, AlignCenter, AlignRight,
-  Shapes, CopyPlus, BookmarkPlus, Maximize2,
+  Shapes, CopyPlus, BookmarkPlus, Maximize2, PlayCircle, SquarePen,
 } from "lucide-react";
 
 // Pexels only accepts these three; map a platform's aspect onto the closest one
@@ -83,6 +86,13 @@ export default function Composer() {
   const [stockTarget, setStockTarget] = useState(null); // "slide-image" | "slide-video" | "media" | "element-new" | "element-replace"
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [canvasOpen, setCanvasOpen] = useState(false);
+  // Reels get a second way to look at the deck: the canvas edits one scene,
+  // the player watches all of them end to end at their real lengths.
+  const [reelView, setReelView] = useState("canvas");
+  const [clipUploading, setClipUploading] = useState(false);
+  // Which surface asked for the elements library — a scene's footage, or
+  // just another element to drop on the canvas.
+  const [libraryTarget, setLibraryTarget] = useState(null);
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [styleTemplate, setStyleTemplate] = useState(state.applyTemplate || "hooks");
   const [restyling, setRestyling] = useState(false);
@@ -136,6 +146,7 @@ export default function Composer() {
   // a 9:16 card at the full column width would be taller than the screen.
   const inlineCanvasMaxW = Math.round(Math.min(560, 520 / (ASPECT_RATIO[aspect] || 1)));
   const isDeck = format === "carousel" || format === "reel" || format === "thread";
+  const isReel = format === "reel";
 
   // Applying a plan is the whole idea→post shortcut landing: copy, hashtags,
   // format and every slide arrive together, already on-brand.
@@ -463,6 +474,12 @@ export default function Composer() {
   // (everything but id/x/y/rotation/opacity) and just needs to land on the
   // canvas.
   const addLibraryElement = (def) => {
+    if (libraryTarget === "clip" && def?.type === "video" && def.url) {
+      setClipSource(def.url);
+      setLibraryOpen(false);
+      setLibraryTarget(null);
+      return;
+    }
     const el = { id: `el_${Math.random().toString(36).slice(2, 9)}`, x: 25, y: 35, rotation: 0, opacity: 1, ...def };
     patchSlide(active, { elements: [...(activeAsset.spec.elements || []), el] });
     setSelectedElementId(el.id);
@@ -536,10 +553,42 @@ export default function Composer() {
     } catch (e) { toast.error(apiErrorMessage(e, "Image generation failed.")); } finally { setRenderingSlide(null); }
   };
 
+  // ---- reel clip editing ----
+  // A scene's footage and how it's cut. video_url stays the source of truth
+  // for "is there a clip here" (everything else already reads it); `clip`
+  // carries the edit on top of it.
+  const patchClip = (patch) => {
+    const next = normalizeClip({ ...activeAsset.spec.clip, ...patch });
+    patchSlide(active, { clip: next, video_url: next.url });
+  };
+  const setClipSource = (url, credit = "") => {
+    // New footage means the old trim points are meaningless — they referred
+    // to a different film. Length keeps whatever was pinned by hand.
+    const prev = normalizeClip(activeAsset.spec.clip);
+    patchSlide(active, {
+      clip: normalizeClip({ ...prev, url, credit, natural: null, start: 0, end: null }),
+      video_url: url, video_credit: credit, image_url: "",
+    });
+  };
+  const clearClip = () => patchSlide(active, { clip: normalizeClip({ ...activeAsset.spec.clip, url: "" }), video_url: "" });
+  const uploadClipVideo = async (file) => {
+    setClipUploading(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const { data: up } = await api.post("/upload", form);
+      if (up.kind !== "video") { toast.error("That file isn't a video."); return; }
+      setClipSource(up.url);
+      toast.success("Clip added");
+    } catch (e) { toast.error(apiErrorMessage(e, "Couldn't upload that clip.")); }
+    finally { setClipUploading(false); }
+  };
+
   // One handler for every place the stock picker can be opened from — which
   // field it fills depends on which target requested it.
   const onStockPick = (item) => {
-    if (stockTarget === "slide-video") patchSlide(active, { video_url: item.url, video_credit: item.credit, image_url: "" });
+    if (stockTarget === "clip-video") setClipSource(item.url, item.credit);
+    else if (stockTarget === "slide-video") patchSlide(active, { video_url: item.url, video_credit: item.credit, image_url: "" });
     else if (stockTarget === "slide-image") patchSlide(active, { image_url: item.url, image_credit: item.credit, video_url: "" });
     else if (stockTarget === "media") { setMediaUrl(item.url); setMediaType(item.type); }
     else if (stockTarget === "element-new") {
@@ -937,6 +986,23 @@ export default function Composer() {
               </div>
             </div>
 
+            {isReel && assets.length > 0 && (
+              <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">View</span>
+                {[{ k: "canvas", l: "Canvas", I: SquarePen }, { k: "play", l: "Play reel", I: PlayCircle }].map(({ k, l, I }) => (
+                  <button key={k} onClick={() => setReelView(k)} data-testid={`composer-reel-view-${k}`}
+                    className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                      reelView === k ? "border-lime bg-lime/10 text-lime" : "border-white/10 text-zinc-400 hover:text-white"
+                    }`}>
+                    <I size={12} /> {l}
+                  </button>
+                ))}
+                <span className="font-mono text-[10px] text-zinc-600" data-testid="composer-reel-duration">
+                  {formatSeconds(reelTimeline(assets).total)} total
+                </span>
+              </div>
+            )}
+
             {/* Resize — right beside the deck, so fitting whatever's built
                 (or a template pulled in at a different native size) to a
                 different post type/format never means scrolling back up to
@@ -1013,7 +1079,10 @@ export default function Composer() {
                           could, and silently stole clicks meant for the
                           right-hand platform-preview column). */}
                       <div className="mx-auto w-full md:mx-0" style={{ maxWidth: inlineCanvasMaxW }}>
-                        {activeAsset.spec.elements ? (
+                        {isReel && reelView === "play" ? (
+                          <ReelPlayer assets={assets} brand={brand} aspectCls={aspectCls}
+                            activeIndex={active} onSelectScene={(i) => { setActive(i); setSelectedElementId(null); }} />
+                        ) : activeAsset.spec.elements ? (
                           <SlideEditor spec={activeAsset.spec} brand={brand} aspectCls={aspectCls} cardRef={canvasOpen ? null : cardRef}
                             selectedId={selectedElementId} onSelect={setSelectedElementId}
                             onChangeElement={patchElement} />
@@ -1064,29 +1133,27 @@ export default function Composer() {
                           </>
                         )}
 
+                        {activeAsset.type === "scene" && (
+                          <VideoClipEditor
+                            clip={{ ...activeAsset.spec.clip, url: activeAsset.spec.video_url || activeAsset.spec.clip?.url || "" }}
+                            onChange={patchClip}
+                            isFirst={active === 0}
+                            uploading={clipUploading}
+                            onUpload={uploadClipVideo}
+                            onPickStock={() => setStockTarget("clip-video")}
+                            onPickLibrary={() => { setLibraryTarget("clip"); setLibraryOpen(true); }}
+                            onGenerate={() => navigate("/studio", { state: { kind: "video", prompt: activeAsset.spec.video_prompt || activeAsset.spec.heading } })}
+                            onClear={clearClip}
+                          />
+                        )}
+
                         <SlideField label={activeAsset.type === "scene" ? "Video prompt" : "Image prompt"}
                           value={activeAsset.type === "scene" ? activeAsset.spec.video_prompt : activeAsset.spec.image_prompt} rows={2}
                           testid="composer-slide-prompt"
                           onChange={(v) => patchSlide(active, activeAsset.type === "scene" ? { video_prompt: v } : { image_prompt: v })} />
 
                         <div className="mt-3 flex flex-wrap gap-2">
-                          {activeAsset.type === "scene" ? (
-                            <>
-                              <Button variant="secondary" data-testid="composer-scene-to-studio"
-                                onClick={() => navigate("/studio", { state: { kind: "video", prompt: activeAsset.spec.video_prompt || activeAsset.spec.heading } })}
-                                className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
-                                <Film size={13} /> Generate clip in Studio
-                              </Button>
-                              <Button variant="secondary" onClick={() => setStockTarget("slide-video")} data-testid="composer-slide-stock-video"
-                                className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10">
-                                <Search size={13} /> Stock video
-                              </Button>
-                              {activeAsset.spec.video_url && (
-                                <Button variant="ghost" onClick={() => patchSlide(active, { video_url: "" })} data-testid="composer-slide-video-clear"
-                                  className="h-8 px-2.5 text-xs text-zinc-500 hover:text-magic">Remove video</Button>
-                              )}
-                            </>
-                          ) : (
+                          {activeAsset.type === "scene" ? null : (
                             <>
                               <Button variant="secondary" onClick={() => renderSlideImage(active)} disabled={renderingSlide !== null}
                                 data-testid="composer-slide-image"
@@ -1209,11 +1276,11 @@ export default function Composer() {
       <MediaPicker
         open={stockTarget !== null}
         onOpenChange={(open) => !open && setStockTarget(null)}
-        defaultType={stockTarget === "slide-video" ? "video" : "image"}
+        defaultType={stockTarget === "slide-video" || stockTarget === "clip-video" ? "video" : "image"}
         orientation={orientationFor(aspect)}
         onSelect={onStockPick}
       />
-      <ElementsLibrary open={libraryOpen} onOpenChange={setLibraryOpen} onPick={addLibraryElement} />
+      <ElementsLibrary open={libraryOpen} onOpenChange={(o) => { setLibraryOpen(o); if (!o) setLibraryTarget(null); }} onPick={addLibraryElement} />
 
       {/* Full-screen canvas — the same slide, the same element state, but
           the card gets the whole viewport and every control is a thumb-sized
@@ -1283,7 +1350,7 @@ function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, 
         </div>
       )}
       <div className="flex flex-wrap gap-1.5">
-        {[{ t: "text", I: Type, l: "Text" }, { t: "image", I: ImageIcon, l: "Image" }, { t: "logo", I: Upload, l: "Logo" }, { t: "shape", I: Square, l: "Shape" }].map(({ t, I, l }) => (
+        {[{ t: "text", I: Type, l: "Text" }, { t: "image", I: ImageIcon, l: "Image" }, { t: "video", I: Film, l: "Video" }, { t: "logo", I: Upload, l: "Logo" }, { t: "shape", I: Square, l: "Shape" }].map(({ t, I, l }) => (
           <Button key={t} variant="secondary" onClick={() => onAdd(t)} data-testid={`composer-add-element-${t}`}
             className="h-7 gap-1 rounded-lg border border-white/10 bg-white/5 px-2 text-[11px] text-white hover:bg-white/10">
             <I size={11} /> {l}
@@ -1304,7 +1371,8 @@ function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, 
           {elements.map((e, i) => (
             <button key={e.id} onClick={() => onSelect(e.id)} data-testid={`composer-element-chip-${e.id}`}
               className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${e.id === selectedId ? "border-lime bg-lime/10 text-lime" : "border-white/10 text-zinc-400 hover:text-white"}`}>
-              {e.type === "text" ? (e.text || "Text").slice(0, 14) || `Text ${i + 1}` : e.type === "shape" ? "Shape" : "Image"}
+              {e.type === "text" ? (e.text || "Text").slice(0, 14) || `Text ${i + 1}`
+                : e.type === "shape" ? "Shape" : e.type === "video" ? "Clip" : "Image"}
             </button>
           ))}
         </div>
@@ -1347,10 +1415,11 @@ function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, 
               </div>
             </>
           )}
-          {el.type === "image" && (
+          {(el.type === "image" || el.type === "video") && (
             <>
               <div className="flex gap-1.5">
-                <input value={el.url || ""} onChange={(e) => onPatch(el.id, { url: e.target.value })} placeholder="Image URL"
+                <input value={el.url || ""} onChange={(e) => onPatch(el.id, { url: e.target.value })}
+                  placeholder={el.type === "video" ? "Video URL" : "Image URL"}
                   data-testid="composer-element-url" className="min-w-0 flex-1 rounded-lg border border-white/10 bg-[#0A0A0A] px-2.5 py-2 text-xs text-zinc-300 outline-none focus:border-lime" />
                 <Button variant="secondary" onClick={onBrowseStock} data-testid="composer-element-browse-stock"
                   className="h-8 flex-shrink-0 gap-1 rounded-lg border border-white/10 bg-white/5 px-2 text-[11px] text-white hover:bg-white/10">
