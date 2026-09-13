@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { toPng } from "html-to-image";
 import { api, apiErrorMessage } from "@/lib/api";
 import { useBrandKits } from "@/lib/useBrand";
+import { PLATFORM_LIST } from "@/lib/platforms";
 import { groupFontsByCategory, fontStack, useAllFontsLoaded, useFontCatalog } from "@/lib/fonts";
 import { CustomFontsPanel, FontNotice } from "@/components/CustomFonts";
 import { BrandGuidelineDoc } from "@/components/BrandGuidelineDoc";
@@ -11,7 +13,13 @@ import { toast } from "sonner";
 import {
   Save, Loader2, Plus, X, Upload, ImageOff, Sparkles, Image as ImageIcon,
   FileText, Link as LinkIcon, Check, Shapes, Star, Trash2, Moon, Sun, Type, Download, ScrollText,
+  Plug, ExternalLink, Palette,
 } from "lucide-react";
+
+const TABS = [
+  { key: "brand", label: "Brand" },
+  { key: "connections", label: "Connections" },
+];
 
 const emptyGuideline = () => ({
   logos: { color: "", black_on_white: "", white_on_black: "" },
@@ -51,6 +59,9 @@ const emptyKit = () => ({
 });
 
 export default function BrandKit() {
+  const location = useLocation();
+  const state = location.state || {};
+  const [tab, setTab] = useState(state.tab === "connections" ? "connections" : "brand");
   const { kits, loading, reload } = useBrandKits();
   const [selectedId, setSelectedId] = useState(undefined); // undefined = not landed yet, null = new unsaved kit
   const [form, setForm] = useState(null);
@@ -79,8 +90,40 @@ export default function BrandKit() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, kits]);
 
+  // Connections needs none of the brand-kit data above (or its load state) —
+  // publishing setup lives here now because it's part of the brand/account
+  // setup, not because it depends on a kit being selected.
+  const tabsBar = (
+    <div className="mt-6 flex flex-wrap gap-1.5" data-testid="brand-tabs">
+      {TABS.map((t) => (
+        <button key={t.key} onClick={() => setTab(t.key)} data-testid={`brand-tab-${t.key}`}
+          className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${tab === t.key ? "border-lime bg-lime/10 text-lime" : "border-white/10 text-zinc-400 hover:text-white"}`}>
+          {t.key === "brand" ? <Palette size={13} /> : <Plug size={13} />} {t.label}
+        </button>
+      ))}
+    </div>
+  );
+
+  if (tab === "connections") {
+    return (
+      <div data-testid="brand-page">
+        <div className="font-mono text-xs uppercase tracking-[0.25em] text-zinc-500">Brand kit</div>
+        <h1 className="mt-2 font-display text-4xl font-semibold tracking-tight">Where posts actually go</h1>
+        {tabsBar}
+        <ConnectionsPanel />
+      </div>
+    );
+  }
+
   if (!form) {
-    return <div className="flex justify-center py-20"><Loader2 className="animate-spin text-zinc-600" /></div>;
+    return (
+      <div data-testid="brand-page">
+        <div className="font-mono text-xs uppercase tracking-[0.25em] text-zinc-500">Brand kit</div>
+        <h1 className="mt-2 font-display text-4xl font-semibold tracking-tight">Teach it your brand once</h1>
+        {tabsBar}
+        <div className="flex justify-center py-20"><Loader2 className="animate-spin text-zinc-600" /></div>
+      </div>
+    );
   }
 
   const set = (k, v) => setForm((s) => ({ ...s, [k]: v }));
@@ -244,6 +287,7 @@ export default function BrandKit() {
     <div data-testid="brand-page">
       <div className="font-mono text-xs uppercase tracking-[0.25em] text-zinc-500">Brand kit</div>
       <h1 className="mt-2 font-display text-4xl font-semibold tracking-tight">Teach it your brand once</h1>
+      {tabsBar}
       <p className="mt-3 max-w-2xl text-sm leading-relaxed text-zinc-500">
         The kit feeds three things at once: the words (voice, audience, banned words go into every copy prompt),
         the pictures (your palette is injected into image prompts and available as a graphic theme),
@@ -556,7 +600,73 @@ export default function BrandKit() {
   );
 }
 
-const inputCls = "mt-1.5 w-full rounded-lg border border-white/10 bg-[#0A0A0A] px-3 py-2.5 text-sm text-white outline-none transition-colors placeholder:text-zinc-700 focus:border-lime";
+// Folded in from the old standalone Connections page — publishing setup is
+// brand/account setup, not a destination of its own, so it lives as a tab
+// here instead of its own nav entry.
+function ConnectionsPanel() {
+  const [connections, setConnections] = useState([]);
+  const [connLoading, setConnLoading] = useState(true);
+
+  useEffect(() => {
+    api.get("/connections").then(({ data }) => setConnections(data)).finally(() => setConnLoading(false));
+  }, []);
+
+  const statusOf = (key) => (connections.find((c) => c.platform === key) || {}).status || "not_connected";
+
+  return (
+    <div className="mt-6" data-testid="connections-page">
+      <p className="max-w-2xl text-sm leading-relaxed text-zinc-400">
+        Nothing is connected yet, so scheduled posts sit in the calendar until a platform is wired up here.
+        Each one needs its own developer app registered on that platform before CreateOS can publish to it —
+        that's a one-time setup only you can do, since it requires your own accounts and credentials.
+      </p>
+
+      {!connLoading && (
+        <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {PLATFORM_LIST.map((p) => {
+            const status = statusOf(p.key);
+            const connected = status === "connected";
+            const I = p.icon;
+            return (
+              <div key={p.key} className="flex items-center justify-between rounded-xl border border-white/10 bg-[#121212] p-4" data-testid={`connection-${p.key}`}>
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-white/10 bg-[#0A0A0A]">
+                    <I size={18} style={{ color: p.color }} />
+                  </div>
+                  <div>
+                    <div className="text-sm font-semibold text-white">{p.name}</div>
+                    <div className={`mt-0.5 font-mono text-[10px] uppercase tracking-[0.1em] ${connected ? "text-lime" : "text-zinc-600"}`}>
+                      {connected ? "Connected" : "Not connected"}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  disabled
+                  title="Publishing needs a developer app registered on this platform first — ask in chat to set one up."
+                  className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-500 opacity-60"
+                >
+                  <Plug size={13} /> Connect
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="mt-8 flex items-start gap-3 rounded-xl border border-white/10 bg-[#121212] p-5">
+        <ExternalLink size={18} className="mt-0.5 flex-shrink-0 text-zinc-500" />
+        <div className="text-sm leading-relaxed text-zinc-400">
+          <span className="font-semibold text-white">Want to connect one now?</span> Ask to set up publishing for a
+          specific platform — X and LinkedIn are usually the fastest to register. You'll create a developer app on
+          that platform's own site and paste back a client ID and secret, the same way the PoYo and Cloudflare keys
+          were added.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const inputCls ="mt-1.5 w-full rounded-lg border border-white/10 bg-[#0A0A0A] px-3 py-2.5 text-sm text-white outline-none transition-colors placeholder:text-zinc-700 focus:border-lime";
 
 const Field = ({ label, value, onChange, placeholder, testid, className = "" }) => (
   <div className={className}>
