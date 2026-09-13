@@ -7,10 +7,6 @@ import { LockScreen } from "@/components/LockScreen";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { api } from "@/lib/api";
 import Dashboard from "@/pages/Dashboard";
-import Studio from "@/pages/Studio";
-import Visuals from "@/pages/Visuals";
-import Repurpose from "@/pages/Repurpose";
-import Templates from "@/pages/Templates";
 import Composer from "@/pages/Composer";
 import CalendarPage from "@/pages/CalendarPage";
 import Library from "@/pages/Library";
@@ -94,6 +90,16 @@ function RedirectToLibraryTab({ tab }) {
   return null;
 }
 
+// Content Studio (Write), Visual Studio, Repurpose, and Batch (formerly
+// Viral Templates) each generated something and then handed off to the
+// Composer — they're modes inside it now, not destinations of their own.
+// Old links land on the matching mode instead of a 404.
+function RedirectToComposerMode({ tab }) {
+  const navigate = useNavigate();
+  useEffect(() => { navigate("/composer", { replace: true, state: { startTab: tab } }); }, [navigate, tab]);
+  return null;
+}
+
 function App() {
   return (
     <div className="App">
@@ -105,10 +111,10 @@ function App() {
                 <Boom />
                 <Routes>
                   <Route path="/" element={<Dashboard />} />
-                  <Route path="/studio" element={<Studio />} />
-                  <Route path="/visuals" element={<Visuals />} />
-                  <Route path="/repurpose" element={<Repurpose />} />
-                  <Route path="/templates" element={<Templates />} />
+                  <Route path="/studio" element={<RedirectToComposerMode tab="topic" />} />
+                  <Route path="/visuals" element={<RedirectToComposerMode tab="visual" />} />
+                  <Route path="/repurpose" element={<RedirectToComposerMode tab="source" />} />
+                  <Route path="/templates" element={<RedirectToComposerMode tab="batch" />} />
                   <Route path="/designs" element={<RedirectToLibraryTab tab="designs" />} />
                   <Route path="/composer" element={<Composer />} />
                   <Route path="/calendar" element={<CalendarPage />} />

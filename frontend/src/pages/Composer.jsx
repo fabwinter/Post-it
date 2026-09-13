@@ -25,6 +25,9 @@ import { groupFontsByCategory, fontStack, useAllFontsLoaded, useFontCatalog } fr
 import { FontNotice } from "@/components/CustomFonts";
 import { reelTimeline, normalizeClip, formatSeconds } from "@/lib/videoClip";
 import { ElementsLibrary } from "@/components/ElementsLibrary";
+import { ComposerFromSource } from "@/components/ComposerFromSource";
+import { ComposerVisualPanel } from "@/components/ComposerVisualPanel";
+import { ComposerBatchPanel } from "@/components/ComposerBatchPanel";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
@@ -32,8 +35,17 @@ import {
   Plus, ChevronLeft, ChevronRight, Download, ImagePlus, History, Hash, Film, Layers,
   Search, Wand, Palette, Upload, FileText, Image as ImageIcon, Presentation,
   Type, Square, LayoutTemplate, Undo2, Redo2, Copy, ChevronsUp, ChevronsDown, AlignLeft, AlignCenter, AlignRight,
-  Shapes, CopyPlus, BookmarkPlus, Maximize2, PlayCircle, SquarePen,
+  Shapes, CopyPlus, BookmarkPlus, Maximize2, PlayCircle, SquarePen, Lightbulb, Repeat, LayoutGrid,
 } from "lucide-react";
+
+// The four ways a post can start here — icons/labels for the mode switcher
+// above the topic/build controls.
+const START_MODES = [
+  { key: "topic", label: "Topic", icon: Lightbulb },
+  { key: "source", label: "Source", icon: Repeat },
+  { key: "visual", label: "Visual", icon: Shapes },
+  { key: "batch", label: "Batch", icon: LayoutGrid },
+];
 
 // Pexels only accepts these three; map a platform's aspect onto the closest one
 // so results aren't a mismatched crop away from unusable.
@@ -78,6 +90,17 @@ export default function Composer() {
   const [aiLoading, setAiLoading] = useState(false);
   const [building, setBuilding] = useState(false);
   const [brief, setBrief] = useState(state.brief || "");
+  // Folded in from the old Write page's own tone picker — "Caption only"
+  // used to always write as "engaging" with no way to change it.
+  const [briefTone, setBriefTone] = useState("engaging");
+  // How this post is starting: a topic (the default — brief + AI write/
+  // build), a source to repurpose, a generated visual, or one pick from a
+  // batch of drafts. Folded in from three standalone pages that each did
+  // one of these and then handed off to the Composer; a deep link from one
+  // of their old routes opens straight on that mode.
+  const [startMode, setStartMode] = useState(
+    ["topic", "source", "visual", "batch"].includes(state.startTab) ? state.startTab : "topic"
+  );
   const { models, default: defaultModel } = useTextModels("gemini-3-flash-preview");
   const [model, setModel] = useState("");
   const [coach, setCoach] = useState(null);
@@ -182,16 +205,39 @@ export default function Composer() {
       return;
     }
     if (state.plan) { applyPlan(state.plan); return; }
-    // A deck arriving from Visual Studio comes as specs, not a flattened PNG.
-    if (state.visual) {
-      const { data, template, theme = "midnight" } = state.visual;
-      setAssets(visualToAssets(data, template, theme));
-      setFormat(data?.slides ? "carousel" : "single");
-      setContent((c) => c || summaryOf(data, template));
-    }
+    // A deck arriving from the Visual panel (or, before that, a deep link
+    // from the old standalone Visual Studio page) comes as specs, not a
+    // flattened PNG.
+    if (state.visual) applyVisual(state.visual, state.content, state.platforms);
     if (state.brief && !state.content) generate(state.brief);
+    // Keyed on location.key, not just mount: several flows now navigate
+    // here from Composer itself (a redirect from a retired page, History's
+    // "Use" while already composing) — a same-path navigation doesn't
+    // remount the component, so without this its own new state (a fresh
+    // plan, a different post) would silently never be picked up.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [location.key]);
+
+  // Turns a generated card/deck (from the Visual panel) into editable
+  // slides on the post currently open here — used both for a deep link
+  // arriving with state.visual already set, and for the panel's own live
+  // "Use in post" while composing.
+  const applyVisual = ({ data, template, theme = "midnight" }, content, platformsArg) => {
+    setAssets(visualToAssets(data, template, theme));
+    setFormat(data?.slides ? "carousel" : "single");
+    setContent((c) => content || c || summaryOf(data, template));
+    if (platformsArg) setPlatforms(platformsArg);
+  };
+
+  // The Source and Batch panels both resolve to "here's a caption, maybe a
+  // platform to go with it" — apply it to the post currently open and drop
+  // back to the plain topic view so the result is immediately visible.
+  const applyDraft = ({ content, platform }) => {
+    setContent(content);
+    if (platform) setPlatforms([platform]);
+    setStartMode("topic");
+    toast.success("Applied to this post");
+  };
 
   // Keep the format legal for whatever platform is selected first — an
   // Instagram carousel doesn't mean anything once you switch to X.
@@ -286,7 +332,7 @@ export default function Composer() {
     if (!useBrief.trim()) { toast.error("Add a brief or some text first."); return; }
     setAiLoading(true);
     try {
-      const { data } = await api.post("/ai/write", { brief: useBrief, platform: primary, tone: "engaging", model: model || defaultModel, brand_kit_id: brandKitId || undefined });
+      const { data } = await api.post("/ai/write", { brief: useBrief, platform: primary, tone: briefTone, model: model || defaultModel, brand_kit_id: brandKitId || undefined });
       setContent(data.content);
     } catch (e) { toast.error(apiErrorMessage(e, "AI write failed.")); } finally { setAiLoading(false); }
   };
@@ -931,26 +977,70 @@ export default function Composer() {
                 className="mt-1.5 w-full rounded-lg border border-white/10 bg-[#0A0A0A] px-3 py-2 text-sm text-white outline-none focus:border-iris placeholder:text-zinc-600" />
             </label>
 
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              <input value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="Topic or brief…"
-                data-testid="composer-brief"
-                className="min-w-[180px] flex-1 rounded-lg border border-white/10 bg-[#0A0A0A] px-3 py-2 text-sm outline-none focus:border-iris" />
-              <ModelPicker value={model || defaultModel} onChange={setModel} models={models} testid="composer-model" className="w-auto min-w-[160px] flex-none" />
+            {/* Four ways to start (or add to) this post — Topic is the
+                default and stays visible even when the deck below already
+                has content, since "Build whole post"/"Caption only"/Coach
+                all act on the draft in progress, not just an empty one. The
+                other three each resolve to a result you pick, then drop
+                back to Topic so it's visible immediately below. */}
+            <div className="mt-4 flex flex-wrap gap-1.5 border-t border-white/5 pt-4">
+              {START_MODES.map((m) => {
+                const Icon = m.icon; const on = startMode === m.key;
+                return (
+                  <button key={m.key} onClick={() => setStartMode(m.key)} data-testid={`composer-start-${m.key}`}
+                    className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${on ? "border-lime bg-lime/10 text-lime" : "border-white/10 text-zinc-400 hover:text-white"}`}>
+                    <Icon size={13} /> {m.label}
+                  </button>
+                );
+              })}
             </div>
-            <div className="mt-2 flex flex-wrap gap-2">
-              <Button onClick={autoBuild} disabled={building} data-testid="composer-autobuild"
-                className="gap-2 rounded-lg bg-lime font-semibold text-[#0A0A0A] hover:bg-lime-hover">
-                {building ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />} Build whole post
-              </Button>
-              <Button variant="secondary" onClick={() => generate()} disabled={aiLoading} data-testid="composer-ai-write"
-                className="gap-2 rounded-lg border border-white/10 bg-white/5 text-white hover:bg-white/10">
-                {aiLoading ? <Loader2 size={16} className="animate-spin" /> : <Wand2 size={16} />} Caption only
-              </Button>
-              <Button variant="secondary" onClick={runCoach} disabled={coachLoading} data-testid="composer-coach"
-                className="gap-2 rounded-lg border border-white/10 bg-white/5 text-white hover:bg-white/10">
-                {coachLoading ? <Loader2 size={16} className="animate-spin" /> : <GraduationCap size={16} />} Coach
-              </Button>
-            </div>
+
+            {startMode === "topic" && (
+              <div className="mt-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <input value={brief} onChange={(e) => setBrief(e.target.value)} placeholder="Topic or brief…"
+                    data-testid="composer-brief"
+                    className="min-w-[180px] flex-1 rounded-lg border border-white/10 bg-[#0A0A0A] px-3 py-2 text-sm outline-none focus:border-iris" />
+                  <ModelPicker value={model || defaultModel} onChange={setModel} models={models} testid="composer-model" className="w-auto min-w-[160px] flex-none" />
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Tone</span>
+                  {["engaging", "professional", "witty", "bold", "inspirational"].map((t) => (
+                    <button key={t} onClick={() => setBriefTone(t)} data-testid={`composer-tone-${t}`}
+                      className={`rounded-full border px-2.5 py-1 text-[11px] font-medium capitalize transition-colors ${briefTone === t ? "border-iris bg-iris/10 text-iris" : "border-white/10 text-zinc-400 hover:text-white"}`}>{t}</button>
+                  ))}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button onClick={autoBuild} disabled={building} data-testid="composer-autobuild"
+                    className="gap-2 rounded-lg bg-lime font-semibold text-[#0A0A0A] hover:bg-lime-hover">
+                    {building ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />} Build whole post
+                  </Button>
+                  <Button variant="secondary" onClick={() => generate()} disabled={aiLoading} data-testid="composer-ai-write"
+                    className="gap-2 rounded-lg border border-white/10 bg-white/5 text-white hover:bg-white/10">
+                    {aiLoading ? <Loader2 size={16} className="animate-spin" /> : <Wand2 size={16} />} Caption only
+                  </Button>
+                  <Button variant="secondary" onClick={runCoach} disabled={coachLoading} data-testid="composer-coach"
+                    className="gap-2 rounded-lg border border-white/10 bg-white/5 text-white hover:bg-white/10">
+                    {coachLoading ? <Loader2 size={16} className="animate-spin" /> : <GraduationCap size={16} />} Coach
+                  </Button>
+                </div>
+              </div>
+            )}
+            {startMode === "source" && (
+              <div className="mt-3 rounded-lg border border-white/10 bg-[#0A0A0A] p-4">
+                <ComposerFromSource onApply={applyDraft} />
+              </div>
+            )}
+            {startMode === "visual" && (
+              <div className="mt-3 rounded-lg border border-white/10 bg-[#0A0A0A] p-4">
+                <ComposerVisualPanel onApply={(v) => { applyVisual(v.visual, v.content, v.platforms); setStartMode("topic"); toast.success("Applied to this post"); }} />
+              </div>
+            )}
+            {startMode === "batch" && (
+              <div className="mt-3 rounded-lg border border-white/10 bg-[#0A0A0A] p-4">
+                <ComposerBatchPanel onApply={applyDraft} />
+              </div>
+            )}
 
             <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-3">
               <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Tone</span>

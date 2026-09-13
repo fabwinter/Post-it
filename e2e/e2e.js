@@ -109,7 +109,7 @@ async function tap(page, testid) {
   ok('reopened post restores slides', (await page.getByTestId('composer-slide-strip').locator('button').count()) === 5);
 
   // ---------- 2. History drawer from any screen ----------
-  await page.goto(B + '/studio', { waitUntil: 'domcontentloaded' });
+  await page.goto(B + '/library', { waitUntil: 'domcontentloaded' });
   await page.getByTestId('mobile-history-open').click();
   await page.getByTestId('history-filter-all').waitFor({ timeout: 8000 });
   // The filter chip is static markup and appears immediately; the items
@@ -117,7 +117,7 @@ async function tap(page, testid) {
   // wait for that, not just the chip, before counting.
   await page.locator('[data-testid^="history-item-"]').first().waitFor({ timeout: 8000 });
   const items = await page.locator('[data-testid^="history-item-"]').count();
-  ok('history reachable from Studio', items > 0, 'items: ' + items);
+  ok('history reachable from the Library', items > 0, 'items: ' + items);
   const firstId = await page.locator('[data-testid^="history-item-"]').first().getAttribute('data-testid');
   const gid = firstId.replace('history-item-', '');
   ok('history shows post plan', (await page.getByTestId('history-filter-plans').isVisible()));
@@ -281,15 +281,12 @@ async function tap(page, testid) {
   await page.waitForTimeout(400);
   ok('brand kit is in the mobile menu', await page.getByTestId('mobile-nav-brand').isVisible());
 
-  // Batch (the topic->N-posts generator) used to share one page and the
-  // word "template" with the saved-layout gallery — confirm the nav label
-  // itself says so now (Designs lives inside the Library as a tab; see the
-  // Library section below for that).
-  ok('Batch is relabeled in the nav, not still "Viral Templates"',
-     (await page.getByTestId('mobile-nav-templates').innerText()).includes('Batch'));
-  await tap(page, 'mobile-nav-templates');
-  await page.getByTestId('templates-page').waitFor({ timeout: 8000 });
-  ok('Batch kept the old /templates route', new URL(page.url()).pathname === '/templates', page.url());
+  // Batch, Content Studio, Visual Studio and Repurpose all folded into the
+  // Composer as modes (see the Composer-modes section below) — none of them
+  // has its own nav entry left to check.
+  ok('the nav no longer lists the four folded-in pages',
+     (await page.locator('[data-testid^="mobile-nav-"]').count()) === 6,
+     await page.locator('[data-testid^="mobile-nav-"]').allTextContents());
 
   // ---------- 9. every route is usable on a phone ----------
   // The design library's cards are grid items, which default to
@@ -617,7 +614,9 @@ async function tap(page, testid) {
   ok('...and actually renders as a real <video>', await page.evaluate(() => !!document.querySelector('[data-testid="composer-visuals"] video[src*="e2e-video"]')));
 
   // ---- reels: a still image works as scene media, with effects and transitions ----
-  await page.goto(B + '/templates', { waitUntil: 'domcontentloaded' });
+  // (/templates now redirects into the Composer itself, so it's no longer a
+  // neutral stop to force a real remount here — /calendar genuinely is.)
+  await page.goto(B + '/calendar', { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(300);
   await page.goto(B + '/composer', { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(400);
@@ -763,7 +762,9 @@ async function tap(page, testid) {
   // page.url() already reading /composer) can resolve as a same-document,
   // no-reload transition — which would leak this block's editingTemplateId
   // router state into the next block instead of the fresh mount it expects.
-  await page.goto(B + '/templates', { waitUntil: 'domcontentloaded' });
+  // (/templates itself now redirects into the Composer, so it's no longer a
+  // neutral stop for this — /calendar genuinely isn't.)
+  await page.goto(B + '/calendar', { waitUntil: 'domcontentloaded' });
 
   // ---- a template's headline text survives editing and re-saving ----
   // Once a slide's title/body live as literal text in freeform elements,
@@ -969,11 +970,61 @@ async function tap(page, testid) {
   ok('/designs redirects into the Library, on the Designs tab',
      new URL(page.url()).pathname === '/library' && await page.getByTestId('library-designs-panel').isVisible());
 
-  // Content Studio kept only Write — everything else generation-shaped moved.
+  // Content Studio, Visual Studio, Repurpose and Batch are gone as pages —
+  // each is a mode inside the Composer now, and a stale link to any of
+  // them should land there on the matching mode, not a 404.
+  await page.goto(B + '/dashboard', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(300);
   await page.goto(B + '/studio', { waitUntil: 'domcontentloaded' });
-  await page.getByTestId('studio-page').waitFor({ timeout: 8000 });
-  ok('Content Studio no longer offers Image/Video/Music/Voice tabs',
-     (await page.locator('[data-testid^="studio-tab-"]').count()) === 0 && (await page.getByTestId('studio-text-brief').isVisible()));
+  await page.getByTestId('composer-page').waitFor({ timeout: 8000 });
+  ok('/studio redirects into the Composer, on the Topic mode (Write\'s old job)',
+     new URL(page.url()).pathname === '/composer' && await page.getByTestId('composer-brief').isVisible());
+
+  await page.goto(B + '/dashboard', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(300);
+  await page.goto(B + '/repurpose', { waitUntil: 'domcontentloaded' });
+  await page.getByTestId('composer-page').waitFor({ timeout: 8000 });
+  ok('/repurpose redirects into the Composer, on the Source mode',
+     new URL(page.url()).pathname === '/composer' && await page.getByTestId('composer-source-panel').isVisible());
+
+  await page.goto(B + '/dashboard', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(300);
+  await page.goto(B + '/templates', { waitUntil: 'domcontentloaded' });
+  await page.getByTestId('composer-page').waitFor({ timeout: 8000 });
+  ok('/templates (Batch) redirects into the Composer, on the Batch mode',
+     new URL(page.url()).pathname === '/composer' && await page.getByTestId('composer-batch-panel').isVisible());
+
+  // ---- the mode switcher itself: Source and Batch, generate and apply ----
+  // The redirects above only prove a stale link lands on the right mode —
+  // this drives the switcher buttons a user actually clicks from inside an
+  // already-open Composer, and that applying a result really does land on
+  // the post being composed (then drops back to Topic to show it).
+  await page.goto(B + '/dashboard', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(300);
+  await page.goto(B + '/composer', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(400);
+  ok('Topic is the default mode', await page.getByTestId('composer-brief').isVisible());
+
+  await tap(page, 'composer-start-source');
+  await page.getByTestId('composer-source-panel').waitFor({ timeout: 5000 });
+  await page.getByTestId('repurpose-source').fill('a long blog post about shipping every week no matter what');
+  await tap(page, 'repurpose-run');
+  await page.locator('[data-testid^="repurpose-result-"]').first().waitFor({ timeout: 10000 });
+  const sourceResultTestid = await page.locator('[data-testid^="repurpose-schedule-"]').first().getAttribute('data-testid');
+  await tap(page, sourceResultTestid);
+  await page.waitForTimeout(300);
+  ok('applying a Source result fills the post and returns to Topic',
+     (await page.getByTestId('composer-content').inputValue()).length > 0 && await page.getByTestId('composer-brief').isVisible());
+
+  await tap(page, 'composer-start-batch');
+  await page.getByTestId('composer-batch-panel').waitFor({ timeout: 5000 });
+  await page.getByTestId('templates-topic').fill('building in public as a solo founder');
+  await tap(page, 'templates-run');
+  await page.locator('[data-testid^="templates-result-"]').first().waitFor({ timeout: 10000 });
+  await tap(page, 'templates-schedule-1');
+  await page.waitForTimeout(300);
+  ok('applying a Batch result fills the post and returns to Topic',
+     (await page.getByTestId('composer-content').inputValue()).length > 0 && await page.getByTestId('composer-brief').isVisible());
 
   // html-to-image reaches for the Google Fonts stylesheet while rasterising
   // the overlay layer; this harness blocks every off-origin request, so those

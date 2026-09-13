@@ -1,5 +1,4 @@
-import { useMemo, useRef, useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useRef, useState, useEffect } from "react";
 import { toPng } from "html-to-image";
 import { api, apiErrorMessage } from "@/lib/api";
 import { useTextModels } from "@/lib/useTextModels";
@@ -21,9 +20,12 @@ const TEMPLATES = [
   { key: "slideshow", label: "Slideshow", icon: ImagesIcon, desc: "Auto-playing slide deck" },
 ];
 
-
-export default function Visuals() {
-  const navigate = useNavigate();
+// A single card or deck generated straight from a prompt (a quote, a tweet
+// screenshot, an infographic, a carousel), folded in from the standalone
+// Visual Studio page. "Use in post" hands the generated spec + a plain-text
+// summary of it to the Composer, the same shape a saved plan already
+// arrives in.
+export function ComposerVisualPanel({ onApply }) {
   const [template, setTemplate] = useState("quote");
   const [topic, setTopic] = useState("");
   const [count, setCount] = useState(5);
@@ -38,7 +40,6 @@ export default function Visuals() {
   const [model, setModel] = useState("");
   const { brand } = useBrand();
 
-  const theme = THEMES[themeKey] || THEMES.midnight;
   const isDeck = template === "carousel" || template === "slideshow";
 
   useEffect(() => { setData(null); setSlideIdx(0); setPlaying(false); }, [template]);
@@ -72,41 +73,33 @@ export default function Visuals() {
   const useInPost = () => {
     if (!data) return;
     const platforms = template === "tweet" ? ["twitter"] : ["instagram"];
-    navigate("/composer", {
-      state: { visual: { data, template, theme: themeKey }, content: summaryText(template, data), platforms },
-    });
+    onApply({ visual: { data, template, theme: themeKey }, content: summaryText(template, data), platforms });
   };
 
   return (
-    <div data-testid="visuals-page">
-      <div className="font-mono text-xs uppercase tracking-[0.25em] text-zinc-500">Visual studio</div>
-      <h1 className="mt-2 font-display text-4xl font-semibold tracking-tight">Design it from a prompt</h1>
-
-      {/* Template picker */}
-      <div className="mt-7 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+    <div data-testid="composer-visual-panel">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
         {TEMPLATES.map((t) => {
           const Icon = t.icon; const on = template === t.key;
           return (
             <button key={t.key} onClick={() => setTemplate(t.key)} data-testid={`visual-template-${t.key}`}
-              className={`rounded-xl border p-4 text-left transition-colors ${on ? "border-lime bg-lime/10" : "border-white/10 bg-[#121212] hover:border-white/20"}`}>
-              <Icon size={20} className={on ? "text-lime" : "text-zinc-400"} />
-              <div className="mt-3 text-sm font-semibold text-white">{t.label}</div>
-              <div className="mt-0.5 text-xs text-zinc-500">{t.desc}</div>
+              className={`rounded-xl border p-3 text-left transition-colors ${on ? "border-lime bg-lime/10" : "border-white/10 bg-[#0A0A0A] hover:border-white/20"}`}>
+              <Icon size={18} className={on ? "text-lime" : "text-zinc-400"} />
+              <div className="mt-2 text-xs font-semibold text-white">{t.label}</div>
             </button>
           );
         })}
       </div>
 
-      <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,380px)_1fr]">
-        {/* Controls */}
-        <div className="rounded-xl border border-white/10 bg-[#121212] p-5">
+      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,320px)_1fr]">
+        <div>
           <label className="font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">Topic / brief</label>
-          <textarea data-testid="visual-topic" value={topic} onChange={(e) => setTopic(e.target.value)} rows={4}
+          <textarea data-testid="visual-topic" value={topic} onChange={(e) => setTopic(e.target.value)} rows={3}
             placeholder="e.g. why consistency beats virality for creators"
             className="mt-2 w-full resize-none rounded-lg border border-white/10 bg-[#0A0A0A] p-3 text-sm text-white outline-none focus:border-lime" />
 
           {isDeck && (
-            <div className="mt-4">
+            <div className="mt-3">
               <label className="font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">Slides</label>
               <div className="mt-2 flex gap-2">
                 {[3, 4, 5, 6, 7].map((n) => (
@@ -117,7 +110,7 @@ export default function Visuals() {
             </div>
           )}
 
-          <label className="mt-4 block font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">Theme</label>
+          <label className="mt-3 block font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">Theme</label>
           <div className="mt-2 grid grid-cols-2 gap-2">
             {Object.values(THEMES).concat([{ key: "brand", label: brand.name || "Brand", bg: activeColors(brand).bg }]).map((th) => (
               <button key={th.key} onClick={() => setThemeKey(th.key)} data-testid={`visual-theme-${th.key}`}
@@ -128,20 +121,16 @@ export default function Visuals() {
             ))}
           </div>
 
-          <label className="mt-4 block font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">Model</label>
-          <div className="mt-2">
-            <ModelPicker value={model || defaultModel} onChange={setModel} models={models} testid="visual-model" />
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <ModelPicker value={model || defaultModel} onChange={setModel} models={models} testid="visual-model" className="w-auto min-w-[160px] flex-none" />
+            <Button data-testid="visual-generate" onClick={generate} disabled={loading}
+              className="gap-2 rounded-lg bg-lime font-semibold text-[#0A0A0A] hover:bg-lime-hover">
+              {loading ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />} Generate copy
+            </Button>
           </div>
-
-          <Button data-testid="visual-generate" onClick={generate} disabled={loading}
-            className="mt-5 w-full gap-2 rounded-lg bg-lime font-semibold text-[#0A0A0A] hover:bg-lime-hover">
-            {loading ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />} Generate copy
-          </Button>
-          <p className="mt-3 text-xs text-zinc-600">AI writes the copy; the graphic renders instantly. Export a crisp PNG or drop it into a post.</p>
         </div>
 
-        {/* Preview */}
-        <div className="rounded-xl border border-white/10 bg-[#121212] p-5">
+        <div className="rounded-xl border border-white/10 bg-[#0A0A0A] p-4">
           <div className="flex items-center justify-between">
             <div className="font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">Preview</div>
             {isDeck && data?.slides && (
@@ -156,14 +145,14 @@ export default function Visuals() {
           </div>
 
           <div className="mt-4 flex flex-col items-center">
-            <div className="w-full max-w-[440px]">
+            <div className="w-full max-w-[300px]">
               <div ref={cardRef} data-testid="visual-canvas" className="aspect-square w-full overflow-hidden rounded-xl">
-                <VisualCard spec={specFrom(template, themeKey, data, slideIdx)} brand={brand} loading={loading} scale={0.86} />
+                <VisualCard spec={specFrom(template, themeKey, data, slideIdx)} brand={brand} loading={loading} scale={0.6} />
               </div>
             </div>
 
             {isDeck && data?.slides && (
-              <div className="mt-4 flex items-center gap-3">
+              <div className="mt-3 flex items-center gap-3">
                 <button onClick={() => setSlideIdx((i) => Math.max(0, i - 1))} data-testid="visual-prev"
                   className="flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 text-zinc-300 hover:text-white"><ChevronLeft size={16} /></button>
                 <button onClick={() => setSlideIdx((i) => Math.min(data.slides.length, i + 1))} data-testid="visual-next"
@@ -172,7 +161,7 @@ export default function Visuals() {
             )}
 
             {data && (
-              <div className="mt-5 flex gap-2">
+              <div className="mt-4 flex gap-2">
                 <Button variant="secondary" onClick={download} disabled={exporting} data-testid="visual-download"
                   className="gap-2 rounded-lg border border-white/10 bg-white/5 text-white hover:bg-white/10">
                   {exporting ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />} PNG
@@ -199,7 +188,7 @@ function summaryText(template, data) {
   return "";
 }
 
-// Map this page's (template, data, slideIdx) view state onto the single-card
+// Map this panel's (template, data, slideIdx) view state onto the single-card
 // spec the shared renderer takes.
 function specFrom(template, theme, data, slideIdx) {
   if (!data) return null;
