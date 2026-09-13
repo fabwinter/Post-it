@@ -162,6 +162,15 @@ _CREATE_TABLES = [
         id TEXT PRIMARY KEY, kind TEXT NOT NULL DEFAULT 'upload',
         name TEXT NOT NULL DEFAULT 'Element', element TEXT NOT NULL DEFAULT '{}',
         thumbnail_url TEXT, created_at TEXT NOT NULL)""",
+    # Typefaces the user licensed elsewhere and uploaded. The catalogue in
+    # lib/fonts.js can only carry faces we may legally serve; a retail script
+    # bought from Creative Market or reached through Canva is not one of them,
+    # so the file itself lives here and the front end registers it as a web
+    # font under `name`.
+    """CREATE TABLE IF NOT EXISTS custom_fonts (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, pathname TEXT,
+        filename TEXT NOT NULL, content_type TEXT, size INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL)""",
     # The brand's long-form memory. A kit says how the brand sounds; these say
     # what it actually knows, believes and has done. brand_kit_id NULL means
     # the document applies to every kit.
@@ -939,6 +948,8 @@ def _upload_kind(content_type: str) -> str:
         return "video"
     if ct.startswith("audio/"):
         return "audio"
+    if ct.startswith("font/") or ct in _FONT_CONTENT_TYPES:
+        return "font"
     return "file"
 
 
@@ -1031,6 +1042,133 @@ async def delete_upload(upload_id: str):
         await asyncio.to_thread(_blob_delete, [rows[0]["url"]])
     except Exception:
         logger.exception("Could not delete blob for upload %s (D1 row already removed)", upload_id)
+    return {"ok": True}
+
+
+# ---------------- Custom fonts ----------------
+# The catalogue the front end ships (lib/fonts.js) is limited to typefaces we
+# have the right to serve: Google Fonts, one SIL OFL face bundled with the
+# app, and the fonts already on the viewer's machine. That leaves out most of
+# what a brand actually designs with — retail scripts from Creative Market,
+# the faces Canva licenses on its users' behalf — which we can neither host
+# nor redistribute on anyone's behalf.
+#
+# So the user supplies their own copy. It's stored like any other upload and
+# served back under a family name they choose, which is all the front end
+# needs to make it render everywhere a built-in font does, exports included.
+MAX_FONT_BYTES = 8 * 1024 * 1024  # a generous ceiling; real faces are 20KB-2MB
+
+_FONT_EXTENSIONS = {"woff2", "woff", "ttf", "otf"}
+_FONT_CONTENT_TYPES = {
+    "font/woff2", "font/woff", "font/ttf", "font/otf", "font/sfnt",
+    "application/font-woff", "application/font-woff2", "application/x-font-ttf",
+    "application/x-font-otf", "application/x-font-truetype", "application/x-font-opentype",
+    "application/vnd.ms-opentype",
+}
+
+# What the bytes really are. Browsers and phones label font uploads wildly
+# inconsistently (often application/octet-stream, sometimes nothing at all),
+# so the extension is a hint and the magic number is the answer.
+_FONT_MAGIC = {
+    b"wOF2": "font/woff2",
+    b"wOFF": "font/woff",
+    b"OTTO": "font/otf",
+    b"\x00\x01\x00\x00": "font/ttf",
+    b"true": "font/ttf",
+    b"ttcf": "font/ttf",
+}
+
+
+def _sniff_font(content: bytes, filename: str) -> str:
+    head = content[:4]
+    if head in _FONT_MAGIC:
+        return _FONT_MAGIC[head]
+    ext = (filename or "").rsplit(".", 1)[-1].lower()
+    raise HTTPException(
+        status_code=400,
+        detail=(f"That doesn't look like a font file (.{ext})" if ext in _FONT_EXTENSIONS
+                else "Upload a .woff2, .woff, .ttf or .otf font file"),
+    )
+
+
+# The name goes straight into a CSS @font-face rule on the client, so it may
+# only hold what a font name plausibly holds — nothing that could close the
+# rule and open another. Mirrors safeFamilyName() in lib/fonts.js so the
+# family stored here is character-for-character the one that renders.
+def _safe_family(name: str) -> str:
+    cleaned = re.sub(r"\s+", " ", re.sub(r"[^A-Za-z0-9 ._-]+", " ", name or "")).strip()
+    return cleaned[:60]
+
+
+def _row_to_font(row: dict):
+    return {
+        "id": row["id"], "name": row["name"], "url": row["url"], "filename": row["filename"],
+        "content_type": row["content_type"], "size": row["size"], "created_at": row["created_at"],
+    }
+
+
+@api_router.get("/fonts")
+async def list_custom_fonts():
+    await ensure_schema()
+    rows, _ = await d1_query("SELECT * FROM custom_fonts ORDER BY name COLLATE NOCASE ASC")
+    return [_row_to_font(r) for r in rows]
+
+
+@api_router.post("/fonts")
+async def create_custom_font(file: UploadFile = File(...), name: str = Form("")):
+    await ensure_schema()
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(content) > MAX_FONT_BYTES:
+        raise HTTPException(status_code=413, detail=f"Font is larger than {MAX_FONT_BYTES // (1024*1024)}MB")
+    filename = _safe_filename(file.filename)
+    content_type = _sniff_font(content, filename)
+    # Falling back to the filename means dropping in "Brittany.otf" is enough;
+    # naming it is only needed when the file is called something unhelpful.
+    family = _safe_family(name) or _safe_family(re.sub(r"\.[A-Za-z0-9]+$", "", filename).replace("-", " ").replace("_", " "))
+    if not family:
+        raise HTTPException(status_code=400, detail="Give the font a name")
+
+    existing, _ = await d1_query("SELECT * FROM custom_fonts WHERE name = ? COLLATE NOCASE", [family])
+    blob = await asyncio.to_thread(_blob_put, f"fonts/{filename}", content, content_type)
+    record = {
+        "id": str(uuid.uuid4()), "name": family, "url": blob.get("url"), "pathname": blob.get("pathname"),
+        "filename": filename, "content_type": content_type, "size": len(content), "created_at": now_iso(),
+    }
+    if existing:
+        # Re-uploading a family replaces it rather than adding a second face
+        # under the same name, which would render unpredictably.
+        record["id"] = existing[0]["id"]
+        await d1_query(
+            "UPDATE custom_fonts SET url = ?, pathname = ?, filename = ?, content_type = ?, size = ?, created_at = ? WHERE id = ?",
+            [record["url"], record["pathname"], record["filename"], record["content_type"],
+             record["size"], record["created_at"], record["id"]],
+        )
+        try:
+            await asyncio.to_thread(_blob_delete, [existing[0]["url"]])
+        except Exception:
+            logger.exception("Could not delete the replaced blob for font %s", record["id"])
+    else:
+        await d1_query(
+            "INSERT INTO custom_fonts (id, name, url, pathname, filename, content_type, size, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [record["id"], record["name"], record["url"], record["pathname"], record["filename"],
+             record["content_type"], record["size"], record["created_at"]],
+        )
+    return _row_to_font(record)
+
+
+@api_router.delete("/fonts/{font_id}")
+async def delete_custom_font(font_id: str):
+    await ensure_schema()
+    rows, _ = await d1_query("DELETE FROM custom_fonts WHERE id = ? RETURNING *", [font_id])
+    if not rows:
+        raise HTTPException(status_code=404, detail="Font not found")
+    try:
+        await asyncio.to_thread(_blob_delete, [rows[0]["url"]])
+    except Exception:
+        logger.exception("Could not delete blob for font %s (D1 row already removed)", font_id)
     return {"ok": True}
 
 

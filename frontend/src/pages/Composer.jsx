@@ -21,7 +21,8 @@ import { useTemplateStyles } from "@/lib/templateStyles";
 import { useCustomTemplates } from "@/lib/useCustomTemplates";
 import { elementsFromSpec, newElement, useCardScale } from "@/lib/slideElements";
 import { materializeTemplateSlides } from "@/lib/templateEdit";
-import { BRAND_FONTS, groupFontsByCategory, fontStack, useAllFontsLoaded } from "@/lib/fonts";
+import { groupFontsByCategory, fontStack, useAllFontsLoaded, useFontCatalog } from "@/lib/fonts";
+import { FontNotice } from "@/components/CustomFonts";
 import { reelTimeline, normalizeClip, formatSeconds } from "@/lib/videoClip";
 import { ElementsLibrary } from "@/components/ElementsLibrary";
 import { Button } from "@/components/ui/button";
@@ -1344,9 +1345,10 @@ const SlideField = ({ label, value, onChange, rows, testid }) => (
 // fixed heading/body fields once a slide has entered layout-edit mode.
 function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, onRemove, onDuplicate, onReorder, onAddStock, onBrowseStock, onApplyAll, onOpenLibrary, onSaveToLibrary, canApplyAll, brand, bgColor, onChangeBg }) {
   useAllFontsLoaded();
+  const fontCatalog = useFontCatalog();
   const el = elements.find((x) => x.id === selectedId);
-  const fontOptions = brand?.fonts?.display && !BRAND_FONTS.some((f) => f.key === brand.fonts.display)
-    ? [{ key: brand.fonts.display, label: `${brand.fonts.display} (brand)` }, ...BRAND_FONTS] : BRAND_FONTS;
+  const fontOptions = brand?.fonts?.display && !fontCatalog.some((f) => f.key === brand.fonts.display)
+    ? [{ key: brand.fonts.display, label: `${brand.fonts.display} (brand)` }, ...fontCatalog] : fontCatalog;
   const fontGroups = groupFontsByCategory(fontOptions);
 
   return (
@@ -1407,6 +1409,7 @@ function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, 
                   {[400, 500, 600, 700, 800, 900].map((w) => <option key={w} value={w}>{w}</option>)}
                 </select>
               </div>
+              <FontNotice fontKey={el.fontFamily || "Inter"} testid="composer-font-notice" />
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <label className="font-mono text-[10px] text-zinc-500">Size</label>
                 <input type="number" min={8} max={120} value={el.fontSize || 16} onChange={(e) => onPatch(el.id, { fontSize: Number(e.target.value) })}
