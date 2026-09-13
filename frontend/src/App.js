@@ -1,6 +1,6 @@
 import "@/App.css";
 import { useEffect, useState } from "react";
-import { BrowserRouter, Routes, Route, useLocation, Link } from "react-router-dom";
+import { BrowserRouter, Routes, Route, useLocation, useNavigate, Link } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Toaster } from "@/components/ui/sonner";
 import { LockScreen } from "@/components/LockScreen";
@@ -11,7 +11,6 @@ import Studio from "@/pages/Studio";
 import Visuals from "@/pages/Visuals";
 import Repurpose from "@/pages/Repurpose";
 import Templates from "@/pages/Templates";
-import Designs from "@/pages/Designs";
 import Composer from "@/pages/Composer";
 import CalendarPage from "@/pages/CalendarPage";
 import Library from "@/pages/Library";
@@ -86,6 +85,15 @@ function NotFound() {
   );
 }
 
+// Designs used to be its own page for one release before folding into the
+// Library as a tab — this keeps that short-lived link (and anything a user
+// bookmarked from it) landing somewhere real instead of a 404.
+function RedirectToLibraryTab({ tab }) {
+  const navigate = useNavigate();
+  useEffect(() => { navigate("/library", { replace: true, state: { tab } }); }, [navigate, tab]);
+  return null;
+}
+
 function App() {
   return (
     <div className="App">
@@ -101,7 +109,7 @@ function App() {
                   <Route path="/visuals" element={<Visuals />} />
                   <Route path="/repurpose" element={<Repurpose />} />
                   <Route path="/templates" element={<Templates />} />
-                  <Route path="/designs" element={<Designs />} />
+                  <Route path="/designs" element={<RedirectToLibraryTab tab="designs" />} />
                   <Route path="/composer" element={<Composer />} />
                   <Route path="/calendar" element={<CalendarPage />} />
                   <Route path="/library" element={<Library />} />

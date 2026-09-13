@@ -281,20 +281,12 @@ async function tap(page, testid) {
   await page.waitForTimeout(400);
   ok('brand kit is in the mobile menu', await page.getByTestId('mobile-nav-brand').isVisible());
 
-  // Batch (the topic->N-posts generator) and Designs (the saved-layout
-  // gallery) used to be one page sharing the word "template" for two
-  // different things — confirm the nav actually reaches both split pages,
-  // and that the nav label itself says so (read before navigating away,
-  // since the menu closes on click and may not stay queryable after).
-  ok('Designs has its own nav entry', await page.getByTestId('mobile-nav-designs').isVisible());
+  // Batch (the topic->N-posts generator) used to share one page and the
+  // word "template" with the saved-layout gallery — confirm the nav label
+  // itself says so now (Designs lives inside the Library as a tab; see the
+  // Library section below for that).
   ok('Batch is relabeled in the nav, not still "Viral Templates"',
      (await page.getByTestId('mobile-nav-templates').innerText()).includes('Batch'));
-  await tap(page, 'mobile-nav-designs');
-  await page.getByTestId('designs-page').waitFor({ timeout: 8000 });
-  ok('Designs opens at its own route', new URL(page.url()).pathname === '/designs', page.url());
-  await page.waitForTimeout(600);
-  await tap(page, 'mobile-menu-open');
-  await page.waitForTimeout(400);
   await tap(page, 'mobile-nav-templates');
   await page.getByTestId('templates-page').waitFor({ timeout: 8000 });
   ok('Batch kept the old /templates route', new URL(page.url()).pathname === '/templates', page.url());
@@ -914,6 +906,74 @@ async function tap(page, testid) {
   await page.waitForTimeout(1000);
   ok('...with the success toast, not the "nothing to save" one',
      await page.evaluate(() => document.body.innerText.includes('as a design')));
+
+  // ---- the Library absorbed Designs, Elements, and every generator ----
+  // Content Studio used to hold Image/Video/Music/Voice; Designs and
+  // Elements were their own pages. All of it lives under one Library now.
+  await page.goto(B + '/library', { waitUntil: 'domcontentloaded' });
+  await page.getByTestId('library-page').waitFor({ timeout: 10000 });
+  await page.waitForTimeout(400);
+
+  await tap(page, 'library-tab-image');
+  await page.getByTestId('image-controls').waitFor({ timeout: 5000 });
+  await page.getByTestId('studio-image-prompt').fill('a lit workshop bench at dawn');
+  const genResp = page.waitForResponse((r) => r.url().includes('/api/ai/generate'), { timeout: 8000 }).catch(() => null);
+  await tap(page, 'studio-generate-image');
+  await genResp;
+  await page.getByTestId('studio-result-image').waitFor({ timeout: 15000 });
+  ok('the Library\'s Image tab generates and previews a real image',
+     await page.getByTestId('studio-result-image').isVisible());
+  await tap(page, 'studio-use-image');
+  await page.getByTestId('composer-page').waitFor({ timeout: 10000 });
+  ok('...and "Use in post" lands in the Composer', new URL(page.url()).pathname === '/composer', page.url());
+
+  await page.goto(B + '/library', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(400);
+  await tap(page, 'library-tab-voice');
+  await page.getByTestId('voice-controls').waitFor({ timeout: 5000 });
+  ok('the Voice tab shows voice-specific controls, not the Image ones',
+     await page.getByTestId('voice-controls').isVisible() && (await page.getByTestId('image-controls').count()) === 0);
+
+  await tap(page, 'library-tab-designs');
+  await page.getByTestId('library-designs-panel').waitFor({ timeout: 5000 });
+  await page.waitForTimeout(600);
+  ok('the Designs tab lists the starter layouts, folded in from its own former page',
+     (await page.locator('[data-testid^="templates-custom-item-"]').count()) > 0);
+
+  await tap(page, 'library-tab-elements');
+  await page.getByTestId('library-elements-panel').waitFor({ timeout: 5000 });
+  await page.waitForTimeout(600); // let the initial /library/elements fetch settle before baselining
+  const beforeUpload = await page.locator('[data-testid^="library-elements-item-"]').count();
+  const uploadResp = page.waitForResponse((r) => r.url().includes('/api/library/elements') && r.request().method() === 'POST', { timeout: 8000 }).catch(() => null);
+  await page.getByTestId('library-elements-upload-input').setInputFiles(require('path').join(__dirname, 'fixtures/photo.png'));
+  const savedElement = await uploadResp;
+  const savedId = savedElement && (await savedElement.json()).id;
+  await page.getByTestId(`library-elements-item-${savedId}`).waitFor({ timeout: 8000 });
+  const elementCount = await page.locator('[data-testid^="library-elements-item-"]').count();
+  ok('the Elements tab (folded in from the Composer\'s element picker) saves an upload',
+     !!savedId && elementCount === beforeUpload + 1, { beforeUpload, elementCount });
+  page.once('dialog', (d) => d.accept());
+  const delResp = page.waitForResponse((r) => r.url().includes(`/api/library/elements/${savedId}`) && r.request().method() === 'DELETE', { timeout: 5000 }).catch(() => null);
+  await tap(page, `library-elements-delete-${savedId}`);
+  const dr = await delResp;
+  await page.getByTestId(`library-elements-item-${savedId}`).waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
+  ok('...and it can be removed again',
+     !!dr && dr.status() === 200 && (await page.locator('[data-testid^="library-elements-item-"]').count()) === elementCount - 1);
+
+  // The old standalone /designs page is gone — a stale link or bookmark
+  // should still land somewhere real, not a 404.
+  await page.goto(B + '/dashboard', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(300);
+  await page.goto(B + '/designs', { waitUntil: 'domcontentloaded' });
+  await page.getByTestId('library-page').waitFor({ timeout: 8000 });
+  ok('/designs redirects into the Library, on the Designs tab',
+     new URL(page.url()).pathname === '/library' && await page.getByTestId('library-designs-panel').isVisible());
+
+  // Content Studio kept only Write — everything else generation-shaped moved.
+  await page.goto(B + '/studio', { waitUntil: 'domcontentloaded' });
+  await page.getByTestId('studio-page').waitFor({ timeout: 8000 });
+  ok('Content Studio no longer offers Image/Video/Music/Voice tabs',
+     (await page.locator('[data-testid^="studio-tab-"]').count()) === 0 && (await page.getByTestId('studio-text-brief').isVisible()));
 
   // html-to-image reaches for the Google Fonts stylesheet while rasterising
   // the overlay layer; this harness blocks every off-origin request, so those
