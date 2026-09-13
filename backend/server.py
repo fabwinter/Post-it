@@ -4175,11 +4175,17 @@ def _plan_to_assets(plan: dict, theme: str) -> List[Dict[str, Any]]:
             "title": visual.get("title") or plan.get("title") or "",
             "points": visual.get("points") or [],
         }})
-    elif visual.get("image_prompt"):
+    elif style == "photo" or visual.get("cover_image_prompt") or visual.get("image_prompt"):
+        # The prompt schema's single image-generation field for a plain post
+        # is cover_image_prompt (the same key the carousel branch above reads
+        # for its cover) — this used to look for image_prompt instead, a key
+        # the model is never asked to produce here, so a "single" + "photo"
+        # build (the common case for a plain image post) silently produced
+        # zero assets: nothing on the canvas, nothing to save as a template.
         assets.append({"type": "visual", "caption": "", "spec": {
             "template": "cover", "theme": theme, "index": 0, "total": 1,
             "title": visual.get("title") or plan.get("hook") or plan.get("title") or "",
-            "image_prompt": visual.get("image_prompt", ""),
+            "image_prompt": visual.get("cover_image_prompt") or visual.get("image_prompt") or "",
         }})
     return assets
 

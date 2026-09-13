@@ -973,6 +973,23 @@ cover_els = built["assets"][0]["spec"].get("elements") or []
 check("a post built from an uploaded PDF template gets the PDF's real font applied",
       any(e.get("fontFamily") == "Helvetica" for e in cover_els), cover_els)
 
+# A plain "single" + "photo" build with no template picked — the ordinary
+# path for a one-image Instagram post — used to come back with zero assets:
+# the model is asked for its image idea under "cover_image_prompt" (the same
+# key the carousel branch reads for its own cover), but _plan_to_assets only
+# ever looked for "image_prompt", a key nothing here produces. With no
+# visual asset on the canvas there was nothing for "Save as template" to
+# save, which is what "not saving as template after building" actually was.
+CHAT_REPLY["value"] = json.dumps({
+    "format": "single", "title": "T", "caption": "cap", "hashtags": [],
+    "visual": {"style": "photo", "title": "A plain single post", "cover_image_prompt": "a warm coffee shop at dawn"}})
+r = c.post("/api/ai/build-post", json={"topic": "coffee", "platform": "instagram", "format": "single", "use_brand": False})
+built = r.json()
+check("a plain single/photo build (no template) produces a visual asset to save",
+      len(built["assets"]) == 1, built)
+check("...carrying the model's own cover image prompt",
+      built["assets"][0]["spec"].get("image_prompt") == "a warm coffee shop at dawn", built["assets"][0]["spec"])
+
 # --- templates from a file: image (palette only, no slides) ---
 r = c.post("/api/templates/from-file", json={"source_type": "image", "source_url": img_upload["url"]})
 tpl = r.json()
