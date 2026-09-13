@@ -1,6 +1,6 @@
 import "@/App.css";
 import { useEffect, useState } from "react";
-import { BrowserRouter, Routes, Route, useLocation } from "react-router-dom";
+import { BrowserRouter, Routes, Route, useLocation, Link } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Toaster } from "@/components/ui/sonner";
 import { LockScreen } from "@/components/LockScreen";
@@ -63,6 +63,28 @@ function Boom() {
   return null;
 }
 
+// Without a catch-all, an unknown path rendered nothing at all — on desktop
+// that at least left the sidebar to navigate from, but on a phone (where the
+// sidebar is hidden) it was a blank screen with no way out but the back
+// button. A mistyped or stale link deserves an actual answer.
+function NotFound() {
+  const location = useLocation();
+  return (
+    <div className="flex min-h-[60vh] flex-col items-center justify-center text-center" data-testid="not-found">
+      <div className="font-mono text-xs uppercase tracking-[0.25em] text-zinc-500">404</div>
+      <h1 className="mt-3 font-display text-3xl font-semibold tracking-tight">This page doesn't exist</h1>
+      <p className="mt-2 max-w-md text-sm text-zinc-500">
+        Nothing lives at <span className="break-all font-mono text-zinc-400">{location.pathname}</span>.
+        It may have been renamed, or the link that sent you here is out of date.
+      </p>
+      <Link to="/" data-testid="not-found-home"
+        className="mt-6 rounded-lg bg-lime px-4 py-2 text-sm font-semibold text-[#0A0A0A] transition-colors hover:bg-lime-hover">
+        Back to the dashboard
+      </Link>
+    </div>
+  );
+}
+
 function App() {
   return (
     <div className="App">
@@ -83,6 +105,7 @@ function App() {
                   <Route path="/library" element={<Library />} />
                   <Route path="/brand" element={<BrandKit />} />
                   <Route path="/connections" element={<Connections />} />
+                  <Route path="*" element={<NotFound />} />
                 </Routes>
               </RouteErrorBoundary>
             </AppLayout>
