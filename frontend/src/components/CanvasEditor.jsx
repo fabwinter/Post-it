@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   X, Plus, Undo2, Redo2, Type, Image as ImageIcon, Square, Search, Shapes, Upload,
-  Palette, Copy, Trash2, ChevronsUp, ChevronsDown, RotateCw, CopyPlus, Check, BookmarkPlus,
+  Palette, Copy, Trash2, ChevronsUp, ChevronsDown, RotateCw, CopyPlus, Check, BookmarkPlus, Film,
   AlignLeft, AlignCenter, AlignRight, Baseline, Droplets, Crop, LayoutTemplate, Layers,
 } from "lucide-react";
 import { VisualCard, ASPECT_RATIO } from "@/components/VisualCard";
@@ -249,7 +249,7 @@ export function CanvasEditor({
       {elements && sheet === "add" && (
         <Sheet title="Add to slide" onClose={() => setSheet(null)} testid="canvas-sheet-add">
           <div className="flex flex-wrap gap-2">
-            {[{ t: "text", I: Type, l: "Text" }, { t: "image", I: ImageIcon, l: "Image" }, { t: "logo", I: Upload, l: "Logo" }, { t: "shape", I: Square, l: "Shape" }].map(({ t, I, l }) => (
+            {[{ t: "text", I: Type, l: "Text" }, { t: "image", I: ImageIcon, l: "Image" }, { t: "video", I: Film, l: "Video" }, { t: "logo", I: Upload, l: "Logo" }, { t: "shape", I: Square, l: "Shape" }].map(({ t, I, l }) => (
               <Button key={t} variant="secondary" onClick={() => { onAdd(t); setSheet(null); }} data-testid={`canvas-add-${t}`}
                 className="h-10 gap-1.5 rounded-xl border border-white/10 bg-white/5 px-3 text-xs text-white hover:bg-white/10">
                 <I size={14} /> {l}
@@ -335,9 +335,10 @@ export function CanvasEditor({
       )}
 
       {el && sheet === "image" && (
-        <Sheet title="Image" onClose={() => setSheet(null)} testid="canvas-sheet-image">
+        <Sheet title={el.type === "video" ? "Clip" : "Image"} onClose={() => setSheet(null)} testid="canvas-sheet-image">
           <div className="flex gap-2">
-            <input value={el.url || ""} onChange={(e) => patch({ url: e.target.value })} placeholder="Image URL"
+            <input value={el.url || ""} onChange={(e) => patch({ url: e.target.value })}
+              placeholder={el.type === "video" ? "Video URL" : "Image URL"}
               data-testid="canvas-element-url"
               className="h-10 min-w-0 flex-1 rounded-xl border border-white/10 bg-[#0A0A0A] px-3 text-xs text-zinc-300 outline-none focus:border-lime" />
             <Button variant="secondary" onClick={() => { onBrowseStock(); setSheet(null); }} data-testid="canvas-element-browse-stock"
@@ -417,7 +418,7 @@ export function CanvasEditor({
               {el.type === "text" && <Tool icon={Layers} label="Size" active={sheet === "size"} onClick={() => openSheet("size")} testid="canvas-tool-size" />}
               {el.type === "text" && <Tool icon={AlignLeft} label="Align" active={sheet === "align"} onClick={() => openSheet("align")} testid="canvas-tool-align" />}
               {el.type !== "image" && <Tool icon={Palette} label="Colour" active={sheet === "color"} onClick={() => openSheet("color")} testid="canvas-tool-color" />}
-              {el.type === "image" && <Tool icon={Crop} label="Image" active={sheet === "image"} onClick={() => openSheet("image")} testid="canvas-tool-image" />}
+              {(el.type === "image" || el.type === "video") && <Tool icon={el.type === "video" ? Film : Crop} label={el.type === "video" ? "Clip" : "Image"} active={sheet === "image"} onClick={() => openSheet("image")} testid="canvas-tool-image" />}
               {el.type === "shape" && <Tool icon={Square} label="Shape" active={sheet === "shape"} onClick={() => openSheet("shape")} testid="canvas-tool-shape" />}
               <Tool icon={Droplets} label="Opacity" active={sheet === "opacity"} onClick={() => openSheet("opacity")} testid="canvas-tool-opacity" />
               <Tool icon={ChevronsUp} label="Arrange" active={sheet === "layer"} onClick={() => openSheet("layer")} testid="canvas-tool-layer" />
