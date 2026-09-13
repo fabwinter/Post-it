@@ -1202,6 +1202,50 @@ check("starter templates can't be edited", r.status_code == 400, r.text)
 r = c.put("/api/templates/custom/does-not-exist", json={"format": "carousel", "slides": []})
 check("updating an unknown template 404s", r.status_code == 404, r.text)
 
+# Saving an edit must never re-run the AI abstraction over text the user is
+# already looking at (materializeTemplateSlides fills a reopened deck's text
+# straight from the template's own outline, so on update that text IS the
+# outline verbatim) — otherwise every save silently reworded it into a fresh,
+# non-deterministic paraphrase, which is what "template text keeps reverting"
+# actually was.
+CHAT_REPLY["value"] = json.dumps({"slides": [
+    {"heading": "State the core claim v1", "body": "Name the timeframe v1"},
+    {"heading": "Show the payoff curve v1", "body": "Describe the change v1"},
+]})
+r = c.post("/api/templates/from-composer", json={"name": "No-drift template", "format": "carousel", "theme": "midnight", "slides": composer_slides_v1})
+check("no-drift template saves ok", r.status_code == 200, r.text)
+no_drift_id = r.json()["id"]
+check("create runs the outline through AI abstraction", r.json()["slides"][0]["heading"] == "State the core claim v1", r.json()["slides"])
+
+# Re-save with the exact same text the abstracted outline already holds (as if
+# the template was reopened and saved with no edits), while priming a
+# different fake LLM reply that would prove the abstraction step ran again.
+resaved_slides = [
+    {"template": "cover", "heading": "State the core claim v1", "body": "", "bg_color": "#111111",
+     "elements": [_text_el("e1", "State the core claim v1", "Poppins", 32, 800, "#ffffff", 30)]},
+    {"template": "slide", "heading": "Show the payoff curve v1", "body": "Describe the change v1", "bg_color": "#111111",
+     "elements": [_text_el("e2", "Show the payoff curve v1", "Poppins", 24, 800, "#ffffff", 20),
+                  _text_el("e3", "Describe the change v1", "Poppins", 16, 400, "#cccccc", 48)]},
+]
+CHAT_REPLY["value"] = json.dumps({"slides": [
+    {"heading": "DRIFTED v2", "body": "DRIFTED v2"},
+    {"heading": "DRIFTED v2", "body": "DRIFTED v2"},
+]})
+r = c.put(f"/api/templates/custom/{no_drift_id}", json={"format": "carousel", "theme": "midnight", "slides": resaved_slides})
+check("no-op resave succeeds", r.status_code == 200, r.text)
+resaved = r.json()
+check("update does NOT re-run AI abstraction: the text is kept literal, not drifted",
+      resaved["slides"][0]["heading"] == "State the core claim v1" and resaved["slides"][1]["body"] == "Describe the change v1",
+      resaved["slides"])
+
+# A second no-op save cycle must be just as stable.
+r = c.put(f"/api/templates/custom/{no_drift_id}", json={"format": "carousel", "theme": "midnight", "slides": resaved_slides})
+resaved_again = r.json()
+check("...and stays stable across a second save with no changes",
+      resaved_again["slides"] == resaved["slides"], resaved_again["slides"])
+r = c.delete(f"/api/templates/custom/{no_drift_id}")
+check("cleanup: the no-drift template can be deleted", r.status_code == 200, r.text)
+
 # A post built from the edited template reflects the edit, not the original.
 CHAT_REPLY["value"] = json.dumps({
     "format": "carousel", "title": "T", "caption": "cap", "hashtags": [],

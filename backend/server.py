@@ -2832,14 +2832,19 @@ async def create_template_from_file(req: TemplateFromFileRequest):
     return _row_to_visual_template(record)
 
 
+def _literal_composer_outline(slides: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """The outline exactly as the Composer currently has it, with no AI
+    rewrite — just the heading/body/title fields pulled out plainly."""
+    return [{"heading": s.get("heading") or s.get("title") or "", "body": s.get("body") or ""} for s in slides]
+
+
 async def _abstract_composer_outline(slides: List[Dict[str, Any]], model: str) -> List[Dict[str, str]]:
-    """The shared first step of saving a Composer deck as a template: an
+    """The first-save step of turning a Composer deck into a template: an
     abstracted outline (so a future generation writes fresh copy about a new
-    topic, never this deck's literal wording)."""
-    raw_slides = [
-        {"heading": s.get("heading") or s.get("title") or "", "body": s.get("body") or ""}
-        for s in slides
-    ]
+    topic, never this deck's literal wording). Only for the initial save —
+    see update_template_from_composer for why editing an existing template
+    doesn't run this again."""
+    raw_slides = _literal_composer_outline(slides)
     return (
         await _abstract_slides(raw_slides, model)
         if any(s["heading"] or s["body"] for s in raw_slides) else raw_slides
@@ -2880,7 +2885,19 @@ async def update_template_from_composer(template_id: str, req: TemplateFromCompo
     a template's outline, layout and background colors from the Composer
     deck currently open for it and overwrites the saved template in place —
     so a template's colors, style, fonts, layout and slide count can all be
-    changed after it was first saved, not just at the moment of creation."""
+    changed after it was first saved, not just at the moment of creation.
+
+    Unlike create, this does NOT run the outline back through the AI
+    abstraction step. materializeTemplateSlides fills the reopened deck's
+    text straight from the template's own already-abstracted outline, so at
+    the moment this fires, whatever text is on screen — untouched or freshly
+    retyped — IS the outline, verbatim: the user is directly authoring the
+    template's own copy now, not genericizing a specific post the way the
+    first save does. Re-abstracting it here served no purpose but to send it
+    through the LLM a second time, whose phrasing isn't stable between calls
+    even on identical input — every edit-and-save, even one that never
+    touched the text, silently reworded it into a different generic
+    paraphrase. That's what "template text keeps reverting" actually was."""
     await ensure_schema()
     if template_id in STARTER_BY_ID:
         raise HTTPException(status_code=400, detail="Starter templates ship with the app and can't be edited — use \"Save as new\" to keep your changes as a new template")
@@ -2888,8 +2905,7 @@ async def update_template_from_composer(template_id: str, req: TemplateFromCompo
     if not rows:
         raise HTTPException(status_code=404, detail="Template not found")
 
-    model = req.model or CHAT_MODEL
-    slides = await _abstract_composer_outline(req.slides, model)
+    slides = _literal_composer_outline(req.slides)
     layouts, bg_colors, clips = _layouts_from_composer_slides(req.slides)
     name = (req.name or "").strip() or rows[0]["name"]
 
