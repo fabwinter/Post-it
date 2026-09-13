@@ -576,6 +576,32 @@ async function tap(page, testid) {
   const clipsFound = await page.evaluate(() => document.querySelectorAll('[data-testid^="reel-player-seg-"] video').length);
   ok('footage search filled every scene while voice was recording', clipsFound === 3, String(clipsFound));
 
+  // A background score generates alongside voice and visuals — the third
+  // and last thing a script alone doesn't have yet.
+  await page.waitForSelector('[data-testid="composer-music-generating"]', { state: 'hidden', timeout: 15000 });
+  await page.getByTestId('composer-music-row').waitFor({ timeout: 8000 });
+  const musicSrc = await page.evaluate(() =>
+    document.querySelector('[data-testid="composer-music-row"] audio')?.getAttribute('src'));
+  ok('a background score generated for the reel', !!musicSrc, String(musicSrc));
+
+  // It plays under the voice in preview too, not just once exported —
+  // ReelPlayer mounts its own <audio> for the score.
+  await page.waitForTimeout(300);
+  const playerMusicSrc = await page.evaluate(() =>
+    document.querySelector('[data-testid="reel-player-music"]')?.getAttribute('src'));
+  ok('the score plays in the reel preview, not just after export', playerMusicSrc === musicSrc, String(playerMusicSrc));
+
+  await tap(page, 'composer-music-mute');
+  await page.waitForTimeout(150);
+  ok('muting the score zeroes its volume', Number(await page.getByTestId('composer-music-volume').inputValue()) === 0);
+  await tap(page, 'composer-music-mute');
+  await page.waitForTimeout(150);
+  ok('unmuting restores a real level', Number(await page.getByTestId('composer-music-volume').inputValue()) > 0);
+
+  await tap(page, 'composer-music-remove');
+  await page.waitForTimeout(200);
+  ok('removing the score clears the row', (await page.getByTestId('composer-music-row').count()) === 0);
+
   // ---- fonts ----
   // Three of the catalogue's faces we serve ourselves (two from Google, one
   // bundled); the rest of the new ones are licensed elsewhere and only real

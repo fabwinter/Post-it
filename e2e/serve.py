@@ -114,6 +114,10 @@ def fake_post(url, headers=None, json=None, timeout=None, **kw):
             file_url = f"/e2e-voice-{task_id}.wav"
             BLOB_STORE[f"http://127.0.0.1:8123{file_url}"] = _wav_bytes(seconds)
             TASK_FILES[task_id] = file_url
+        elif "generate-music" in model or "generate-mashup" in model:
+            file_url = f"/e2e-music-{task_id}.wav"
+            BLOB_STORE[f"http://127.0.0.1:8123{file_url}"] = _wav_bytes(8.0)
+            TASK_FILES[task_id] = file_url
         return Resp({"data": {"task_id": task_id, "status": "running"}})
     return Resp({"error": "unhandled"}, 500)
 

@@ -55,7 +55,7 @@ function VoiceLayer({ item, registerAudio }) {
   return <audio ref={ref} src={url} preload="auto" />;
 }
 
-export function ReelPlayer({ assets, brand, aspectCls, activeIndex, onSelectScene, testid = "reel-player" }) {
+export function ReelPlayer({ assets, brand, aspectCls, music, activeIndex, onSelectScene, testid = "reel-player" }) {
   const boxRef = useRef(null);
   const scale = useCardScale(boxRef, 0.45);
   const { items, total } = useMemo(() => reelTimeline(assets), [assets]);
@@ -63,6 +63,7 @@ export function ReelPlayer({ assets, brand, aspectCls, activeIndex, onSelectScen
   const [playing, setPlaying] = useState(false);
   const [loop, setLoop] = useState(true);
   const [t, setT] = useState(0);
+  const musicRef = useRef(null);
 
   const videos = useRef(new Map());
   const registerVideo = useCallback((i, el) => {
@@ -154,6 +155,25 @@ export function ReelPlayer({ assets, brand, aspectCls, activeIndex, onSelectScen
 
   useLayoutEffect(() => { syncVideos(t, playing); syncAudios(t, playing); }, [t, playing, syncVideos, syncAudios]);
 
+  // The score isn't scene-synced — it's one track under the whole reel —
+  // so it only needs to follow play/pause and restart from the top
+  // whenever the playhead does (a manual restart or the loop wrapping
+  // around both set t back to exactly 0).
+  useEffect(() => {
+    const el = musicRef.current;
+    if (!el || !music?.url) return;
+    if (playing && el.paused) el.play().catch(() => {});
+    if (!playing && !el.paused) el.pause();
+  }, [playing, music?.url]);
+  useEffect(() => {
+    const el = musicRef.current;
+    if (el && music?.url) el.volume = music.volume ?? 0.18;
+  }, [music?.volume, music?.url]);
+  useEffect(() => {
+    const el = musicRef.current;
+    if (el && music?.url && t === 0) { try { el.currentTime = 0; } catch { /* not seekable yet */ } }
+  }, [t, music?.url]);
+
   // Editing a clip while parked on it should show the change, so a length or
   // trim edit that moves the playhead past the end pulls it back in range.
   useEffect(() => { if (t > total) setT(0); }, [t, total]);
@@ -184,6 +204,7 @@ export function ReelPlayer({ assets, brand, aspectCls, activeIndex, onSelectScen
         {veil > 0 && <div className="pointer-events-none absolute inset-0 bg-black" style={{ opacity: veil }} />}
       </div>
       {items.map((it) => <VoiceLayer key={it.index} item={it} registerAudio={registerAudio} />)}
+      {!!music?.url && <audio ref={musicRef} src={music.url} loop preload="auto" data-testid={`${testid}-music`} />}
 
       {/* Transport */}
       <div className="mt-2 flex items-center gap-2">
