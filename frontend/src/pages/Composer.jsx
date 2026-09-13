@@ -477,8 +477,8 @@ export default function Composer() {
   // (everything but id/x/y/rotation/opacity) and just needs to land on the
   // canvas.
   const addLibraryElement = (def) => {
-    if (libraryTarget === "clip" && def?.type === "video" && def.url) {
-      setClipSource(def.url);
+    if (libraryTarget === "clip" && (def?.type === "video" || def?.type === "image") && def.url) {
+      setClipSource(def.url, "", def.type);
       setLibraryOpen(false);
       setLibraryTarget(null);
       return;
@@ -584,50 +584,62 @@ export default function Composer() {
   };
 
   // ---- reel clip editing ----
-  // A scene's footage and how it's cut. video_url stays the source of truth
-  // for "is there a clip here" (everything else already reads it); `clip`
-  // carries the edit on top of it.
+  // A scene's footage and how it's cut — footage that can be a still just as
+  // well as a video (clip.kind), sharing the same opacity/fit/effects/
+  // transition controls either way. video_url stays the source of truth for
+  // "is there a clip here" (everything else already reads it, that name
+  // predating stills) regardless of what kind of media it actually holds;
+  // `clip` carries the edit on top of it.
   const patchClip = (patch) => {
     const next = normalizeClip({ ...activeAsset.spec.clip, ...patch });
     patchSlide(active, { clip: next, video_url: next.url });
   };
-  const setClipSource = (url, credit = "") => {
+  const setClipSource = (url, credit = "", kind = "video") => {
     // New footage means the old trim points are meaningless — they referred
     // to a different film. Length keeps whatever was pinned by hand.
     const prev = normalizeClip(activeAsset.spec.clip);
     patchSlide(active, {
-      clip: normalizeClip({ ...prev, url, credit, natural: null, start: 0, end: null }),
+      clip: normalizeClip({ ...prev, url, credit, kind, natural: null, start: 0, end: null }),
       video_url: url, video_credit: credit, image_url: "",
     });
   };
   const clearClip = () => patchSlide(active, { clip: normalizeClip({ ...activeAsset.spec.clip, url: "" }), video_url: "" });
-  const uploadClipVideo = async (file) => {
+  const uploadClipMedia = async (file) => {
     setClipUploading(true);
     try {
       const form = new FormData();
       form.append("file", file);
       const { data: up } = await api.post("/upload", form);
-      if (up.kind !== "video") { toast.error("That file isn't a video."); return; }
-      setClipSource(up.url);
-      toast.success("Clip added");
-    } catch (e) { toast.error(apiErrorMessage(e, "Couldn't upload that clip.")); }
+      if (up.kind !== "video" && up.kind !== "image") { toast.error("That file isn't a video or a photo."); return; }
+      setClipSource(up.url, "", up.kind);
+      toast.success(up.kind === "image" ? "Photo added" : "Clip added");
+    } catch (e) { toast.error(apiErrorMessage(e, "Couldn't upload that.")); }
     finally { setClipUploading(false); }
   };
 
   // One handler for every place the stock picker can be opened from — which
   // field it fills depends on which target requested it.
   const onStockPick = (item) => {
-    if (stockTarget === "clip-video") setClipSource(item.url, item.credit);
+    if (stockTarget === "clip-video") setClipSource(item.url, item.credit, item.type);
     else if (stockTarget === "slide-video") patchSlide(active, { video_url: item.url, video_credit: item.credit, image_url: "" });
     else if (stockTarget === "slide-image") patchSlide(active, { image_url: item.url, image_credit: item.credit, video_url: "" });
     else if (stockTarget === "media") { setMediaUrl(item.url); setMediaType(item.type); }
     else if (stockTarget === "element-new") {
       const theme = themeFor(activeAsset.spec.theme, brand);
-      const el = { ...newElement("image", theme, brand), url: item.url, w: 40, h: 40 };
+      // The stock picker lets you switch to video mid-search (see
+      // MediaPicker's own type toggle), so the element this creates has to
+      // match whatever was actually picked — hardcoding "image" meant a
+      // picked clip landed as an <img> element pointed at an .mp4, which
+      // never renders anything.
+      const type = item.type === "video" ? "video" : "image";
+      const el = { ...newElement(type, theme, brand), url: item.url, w: 40, h: 40 };
       patchSlide(active, { elements: [...(activeAsset.spec.elements || []), el] });
       setSelectedElementId(el.id);
     } else if (stockTarget === "element-replace" && selectedElementId) {
-      patchElement(selectedElementId, { url: item.url });
+      // Same reasoning as element-new: replacing an image element's source
+      // with a picked video (or the reverse) has to retype the element too,
+      // or the new media renders through the wrong tag.
+      patchElement(selectedElementId, { url: item.url, type: item.type === "video" ? "video" : "image" });
     }
     toast.success(item.credit ? `Added — photo by ${item.credit}` : "Added");
   };
@@ -1173,7 +1185,7 @@ export default function Composer() {
                             onChange={patchClip}
                             isFirst={active === 0}
                             uploading={clipUploading}
-                            onUpload={uploadClipVideo}
+                            onUpload={uploadClipMedia}
                             onPickStock={() => setStockTarget("clip-video")}
                             onPickLibrary={() => { setLibraryTarget("clip"); setLibraryOpen(true); }}
                             onGenerate={() => navigate("/studio", { state: { kind: "video", prompt: activeAsset.spec.video_prompt || activeAsset.spec.heading } })}
@@ -1201,6 +1213,22 @@ export default function Composer() {
                               {activeAsset.spec.image_url && (
                                 <Button variant="ghost" onClick={() => patchSlide(active, { image_url: "" })} data-testid="composer-slide-image-clear"
                                   className="h-8 px-2.5 text-xs text-zinc-500 hover:text-magic">Remove image</Button>
+                              )}
+                              {activeAsset.spec.image_url && (
+                                <div className="flex w-full flex-wrap items-center gap-2 pt-1">
+                                  <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">Opacity</span>
+                                  <input type="range" min={0} max={1} step={0.05}
+                                    value={activeAsset.spec.image_opacity ?? 0.45}
+                                    onChange={(e) => patchSlide(active, { image_opacity: Number(e.target.value) })}
+                                    data-testid="composer-slide-image-opacity" className="w-24" />
+                                  <span className="w-8 font-mono text-[10px] text-zinc-500">{Math.round((activeAsset.spec.image_opacity ?? 0.45) * 100)}%</span>
+                                  <div className="flex gap-1">
+                                    {["cover", "contain"].map((f) => (
+                                      <button key={f} onClick={() => patchSlide(active, { image_fit: f })} data-testid={`composer-slide-image-fit-${f}`}
+                                        className={`rounded-full border px-2 py-0.5 text-[11px] ${(activeAsset.spec.image_fit || "cover") === f ? "border-lime text-lime" : "border-white/10 text-zinc-500"}`}>{f}</button>
+                                    ))}
+                                  </div>
+                                </div>
                               )}
                             </>
                           )}
@@ -1310,7 +1338,12 @@ export default function Composer() {
       <MediaPicker
         open={stockTarget !== null}
         onOpenChange={(open) => !open && setStockTarget(null)}
-        defaultType={stockTarget === "slide-video" || stockTarget === "clip-video" ? "video" : "image"}
+        defaultType={
+          stockTarget === "slide-video" || stockTarget === "clip-video" ? "video"
+          : stockTarget === "element-replace"
+            ? ((activeAsset?.spec.elements || []).find((x) => x.id === selectedElementId)?.type === "video" ? "video" : "image")
+            : "image"
+        }
         orientation={orientationFor(aspect)}
         onSelect={onStockPick}
       />

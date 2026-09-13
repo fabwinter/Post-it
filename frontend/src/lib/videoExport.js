@@ -88,7 +88,7 @@ function drawFitted(ctx, source, sw, sh, W, H, fit) {
 // One scene, drawn in the card's own layer order. `f` is that scene's half
 // of the crossover (opacity, slide, zoom, wipe) from transitionFrame.
 function drawScene(ctx, scene, f, W, H) {
-  const { bgImage, contentImage, video, clip } = scene;
+  const { bgImage, contentImage, video, clipImage, clip } = scene;
   ctx.save();
   if (f.clipLeft) {
     ctx.beginPath();
@@ -102,12 +102,16 @@ function drawScene(ctx, scene, f, W, H) {
   }
   ctx.globalAlpha = f.opacity;
   if (bgImage) ctx.drawImage(bgImage, 0, 0, W, H);
-  if (video && video.readyState >= 2 && video.videoWidth) {
+  // clipImage and video are mutually exclusive (clip.kind decides which one
+  // prepareScenes loaded), but both are graded and framed identically — a
+  // still and a video are the same kind of background to this renderer.
+  if (clipImage || (video && video.readyState >= 2 && video.videoWidth)) {
     ctx.save();
     ctx.globalAlpha = f.opacity * clip.opacity;
     const grade = filterCss(clip.effects);
     if (grade) ctx.filter = grade;
-    drawFitted(ctx, video, video.videoWidth, video.videoHeight, W, H, clip.fit);
+    if (clipImage) drawFitted(ctx, clipImage, clipImage.naturalWidth, clipImage.naturalHeight, W, H, clip.fit);
+    else drawFitted(ctx, video, video.videoWidth, video.videoHeight, W, H, clip.fit);
     ctx.restore();
   }
   ctx.globalAlpha = f.opacity;
@@ -136,13 +140,20 @@ export function drawFrame(ctx, scenes, items, t, W, H) {
   }
 }
 
-function loadImage(src) {
+function loadImage(src, { crossOrigin } = {}) {
   return new Promise((resolve, reject) => {
     const img = new Image();
+    if (crossOrigin) img.crossOrigin = crossOrigin;
     img.onload = () => resolve(img);
     img.onerror = () => reject(new Error("layer image failed to load"));
     img.src = src;
   });
+}
+
+// A still clip loaded the same tolerant way loadVideo is: resolves null on
+// failure rather than rejecting, so one bad image doesn't sink the export.
+function loadClipImage(url) {
+  return loadImage(proxied(url), { crossOrigin: "anonymous" }).catch(() => null);
 }
 
 // A clip element ready to be drawn from. Resolves as soon as there are
@@ -174,8 +185,10 @@ export async function prepareScenes(items, layers, { onProgress } = {}) {
       layers[it.index]?.bg ? loadImage(layers[it.index].bg) : null,
       layers[it.index]?.content ? loadImage(layers[it.index].content) : null,
     ]);
-    const video = clip.url ? await loadVideo(clip.url, { muted: clip.volume === 0 }) : null;
-    scenes[it.index] = { bgImage, contentImage, video, clip, item: it };
+    const isStill = clip.url && clip.kind === "image";
+    const video = clip.url && !isStill ? await loadVideo(clip.url, { muted: clip.volume === 0 }) : null;
+    const clipImage = isStill ? await loadClipImage(clip.url) : null;
+    scenes[it.index] = { bgImage, contentImage, video, clipImage, clip, item: it };
     onProgress?.((i + 1) / items.length);
   }
   return scenes;

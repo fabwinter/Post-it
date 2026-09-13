@@ -51,10 +51,12 @@ export function VideoClipEditor({
 
   // The source's real length isn't known until the browser reads its
   // metadata, and every trim control needs it — so it's probed once and
-  // cached on the clip rather than re-read on each render.
+  // cached on the clip rather than re-read on each render. A still has no
+  // length to probe (normalizeClip never lets an image clip carry `natural`
+  // at all), so there's nothing for this to do.
   useEffect(() => {
     const el = probeRef.current;
-    if (!el || !clip.url || clip.natural) return undefined;
+    if (!el || !clip.url || clip.kind === "image" || clip.natural) return undefined;
     const onMeta = () => {
       if (el.duration && Number.isFinite(el.duration)) onChange({ ...clip, natural: Number(el.duration.toFixed(2)) });
     };
@@ -71,30 +73,38 @@ export function VideoClipEditor({
 
   return (
     <div className="mt-3 rounded-lg border border-white/10 bg-[#121212] p-3" data-testid="clip-editor">
-      {clip.url && <video ref={probeRef} src={clip.url} preload="metadata" className="hidden" muted />}
+      {clip.url && clip.kind !== "image" && <video ref={probeRef} src={clip.url} preload="metadata" className="hidden" muted />}
 
       {/* Source */}
       <div className="flex items-center gap-2.5">
         <div className="relative h-14 w-14 flex-none overflow-hidden rounded-md border border-white/10 bg-black">
           {clip.url ? (
-            <video src={clip.url} muted loop playsInline autoPlay
-              className="h-full w-full object-cover" style={{ filter: graded }} />
+            clip.kind === "image" ? (
+              <img src={clip.url} alt="" className="h-full w-full object-cover" style={{ filter: graded }} />
+            ) : (
+              <video src={clip.url} muted loop playsInline autoPlay
+                className="h-full w-full object-cover" style={{ filter: graded }} />
+            )
           ) : (
             <div className="flex h-full items-center justify-center text-zinc-700"><Film size={16} /></div>
           )}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-xs font-medium text-white">{clip.url ? "Clip attached" : "No footage yet"}</div>
+          <div className="text-xs font-medium text-white">
+            {clip.url ? (clip.kind === "image" ? "Photo attached" : "Clip attached") : "No footage yet"}
+          </div>
           <div className="mt-0.5 font-mono text-[10px] text-zinc-500">
             {clip.url
-              ? `${seconds.toFixed(1)}s on the timeline${natural ? ` · source ${natural.toFixed(1)}s` : ""}`
+              ? clip.kind === "image"
+                ? `Held ${seconds.toFixed(1)}s`
+                : `${seconds.toFixed(1)}s on the timeline${natural ? ` · source ${natural.toFixed(1)}s` : ""}`
               : `Holds ${seconds.toFixed(1)}s for its overlays`}
           </div>
         </div>
       </div>
 
       <div className="mt-2.5 flex flex-wrap gap-1.5">
-        <input ref={fileRef} type="file" accept="video/mp4,video/quicktime,video/webm,video/*"
+        <input ref={fileRef} type="file" accept="video/mp4,video/quicktime,video/webm,video/*,image/*"
           className="hidden" data-testid="clip-upload-input"
           onChange={(e) => { const f = e.target.files?.[0]; if (f) onUpload(f); e.target.value = ""; }} />
         <Button variant="secondary" onClick={() => fileRef.current?.click()} disabled={uploading}
@@ -155,12 +165,14 @@ export function VideoClipEditor({
             </Row>
           )}
 
+          {clip.url && clip.kind !== "image" && (
+            <Row label="Speed" hint={`${clip.speed.toFixed(2)}×`}>
+              <Slider min={0.25} max={4} step={0.05} value={clip.speed}
+                onChange={(v) => patch({ speed: v })} testid="clip-speed" />
+            </Row>
+          )}
           {clip.url && (
             <>
-              <Row label="Speed" hint={`${clip.speed.toFixed(2)}×`}>
-                <Slider min={0.25} max={4} step={0.05} value={clip.speed}
-                  onChange={(v) => patch({ speed: v })} testid="clip-speed" />
-              </Row>
               <Row label="Behind overlays" hint={`${Math.round(clip.opacity * 100)}%`}>
                 <Slider min={0} max={1} step={0.05} value={clip.opacity}
                   onChange={(v) => patch({ opacity: v })} testid="clip-opacity" />
@@ -172,11 +184,13 @@ export function VideoClipEditor({
                   ))}
                 </div>
               </Row>
-              <Row label="Sound" hint={clip.volume === 0 ? "muted" : `${Math.round(clip.volume * 100)}%`}>
-                <Slider min={0} max={1} step={0.05} value={clip.volume}
-                  onChange={(v) => patch({ volume: v })} testid="clip-volume" />
-              </Row>
             </>
+          )}
+          {clip.url && clip.kind !== "image" && (
+            <Row label="Sound" hint={clip.volume === 0 ? "muted" : `${Math.round(clip.volume * 100)}%`}>
+              <Slider min={0} max={1} step={0.05} value={clip.volume}
+                onChange={(v) => patch({ volume: v })} testid="clip-volume" />
+            </Row>
           )}
         </>
       )}
