@@ -37,6 +37,7 @@ import {
   Search, Wand, Palette, Upload, FileText, Image as ImageIcon, Presentation,
   Type, Square, LayoutTemplate, Undo2, Redo2, Copy, ChevronsUp, ChevronsDown, AlignLeft, AlignCenter, AlignRight,
   Shapes, CopyPlus, BookmarkPlus, Maximize2, PlayCircle, SquarePen, Lightbulb, Repeat, LayoutGrid,
+  Music, Volume2, VolumeX,
 } from "lucide-react";
 
 // The four ways a post can start here — icons/labels for the mode switcher
@@ -59,6 +60,11 @@ const orientationFor = (aspect) => {
 // A beat of silence after the line finishes reading, before the cut — a
 // scene that ends the instant the voice stops feels clipped.
 const VOICE_PAD_SECONDS = 0.5;
+
+// Quiet enough to sit under a voiceover without a fight — there's no real
+// ducking yet (ducking is per-line, this is a flat level for the whole
+// track), so it has to be low enough to work for the loudest line.
+const DEFAULT_MUSIC_VOLUME = 0.18;
 
 const emptySlide = (index, total, theme = "midnight") => ({
   type: "visual", caption: "",
@@ -117,6 +123,10 @@ export default function Composer() {
   const [platformTab, setPlatformTab] = useState(null);
   const [mediaUrl, setMediaUrl] = useState("");
   const [mediaType, setMediaType] = useState("");
+  // A reel's background score — {url, volume, credit}, or {} for none.
+  // Separate from a scene's own clip/voice: one track underscores the
+  // whole reel rather than resetting per scene.
+  const [music, setMusic] = useState({});
   const [scheduleAt, setScheduleAt] = useState("");
   const [saving, setSaving] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
@@ -133,6 +143,9 @@ export default function Composer() {
   // stock search — same background-fill shape as voice, running alongside
   // it rather than after it, since the two touch different fields.
   const [visualFilling, setVisualFilling] = useState(false);
+  // True while a fresh reel's background score is generating — the third
+  // and last of the three things a script alone doesn't have yet.
+  const [musicLoading, setMusicLoading] = useState(false);
   const [brief, setBrief] = useState("");
   // Folded in from the old Write page's own tone picker — "Caption only"
   // used to always write as "engaging" with no way to change it.
@@ -236,9 +249,11 @@ export default function Composer() {
     // same click that wrote the script. The two run side by side (voice
     // sets clip.hold and spec.voice; visuals sets clip.url) rather than one
     // after the other, since they touch different fields on the same scene.
+    setMusic({});
     if (plan.format === "reel" && (plan.assets || []).some((a) => a.type === "scene")) {
       synthesizeReelVoices(plan.assets);
       autoFillReelVisuals(plan.assets);
+      synthesizeReelMusic(plan);
     }
   };
 
@@ -335,6 +350,31 @@ export default function Composer() {
     }
   };
 
+  // A background score for the whole reel — one track, not per scene,
+  // generated from what the post is actually about so it isn't generic
+  // stock elevator music. Instrumental by default: a second voice under
+  // the one already reading the script would only compete with it.
+  const synthesizeReelMusic = async (plan) => {
+    const seed = (plan.title || plan.hook || plan.caption || "").slice(0, 80).trim();
+    const prompt = `Upbeat, unobtrusive instrumental background music for a short vertical video${seed ? ` about: ${seed}` : ""}.`;
+    setMusicLoading(true);
+    try {
+      const { data } = await api.post("/ai/generate", { kind: "music", prompt, options: { instrumental: true } });
+      const result = await pollTask(data.task_id);
+      const url = (result.files || []).find((f) => f.file_url)?.file_url;
+      if (!url) { toast.error("Couldn't generate background music."); return; }
+      setMusic({ url, volume: DEFAULT_MUSIC_VOLUME, credit: "" });
+      toast.success("Background music ready");
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "Couldn't generate background music."));
+    } finally {
+      setMusicLoading(false);
+    }
+  };
+
+  const removeMusic = () => setMusic({});
+  const setMusicVolume = (v) => setMusic((m) => (m.url ? { ...m, volume: v } : m));
+
   // The one door in: everywhere that used to hand the Composer its own
   // loose location.state key (postId, plan, brief, content, visual,
   // mediaUrl, startTab, applyCustomTemplateId, editTemplateId, presetDate…
@@ -374,6 +414,7 @@ export default function Composer() {
           setAltText(data.alt_text || "");
           setContentByPlatform(data.content_by_platform || {});
           setMediaUrl((data.media_urls || [])[0] || ""); setMediaType(data.media_type || "");
+          setMusic(data.music || {});
           if (data.brand_kit_id) setBrandKitId(data.brand_kit_id);
           if (data.scheduled_time) setScheduleAt(toLocalInput(data.scheduled_time));
         }).catch((e) => toast.error(apiErrorMessage(e, "Couldn't load that post.")));
@@ -959,6 +1000,7 @@ export default function Composer() {
     ),
     media_urls: mediaUrl ? [mediaUrl] : [],
     media_type: mediaType || null,
+    music,
     brand_kit_id: brandKitId || null,
     scheduled_time: status === "scheduled" && scheduleAt ? new Date(scheduleAt).toISOString() : null,
   });
@@ -1359,6 +1401,29 @@ export default function Composer() {
               </div>
             )}
 
+            {isReel && musicLoading && (
+              <div className="mt-3 flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-zinc-300" data-testid="composer-music-generating">
+                <Loader2 size={13} className="animate-spin" /> Writing a background score for this reel…
+              </div>
+            )}
+
+            {isReel && !!music.url && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2" data-testid="composer-music-row">
+                <Music size={13} className="flex-none text-zinc-400" />
+                <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">Music</span>
+                <button onClick={() => setMusicVolume(music.volume > 0 ? 0 : DEFAULT_MUSIC_VOLUME)} data-testid="composer-music-mute"
+                  title={music.volume > 0 ? "Mute" : "Unmute"} className="flex-none text-zinc-400 hover:text-white">
+                  {music.volume > 0 ? <Volume2 size={14} /> : <VolumeX size={14} />}
+                </button>
+                <input type="range" min="0" max="1" step="0.02" value={music.volume ?? DEFAULT_MUSIC_VOLUME}
+                  onChange={(e) => setMusicVolume(Number(e.target.value))} data-testid="composer-music-volume"
+                  className="h-1.5 w-24 flex-none accent-lime" />
+                <audio src={music.url} controls className="h-8 flex-1 min-w-[160px]" />
+                <Button variant="ghost" onClick={removeMusic} data-testid="composer-music-remove"
+                  className="h-7 flex-none px-2 text-zinc-500 hover:text-magic"><Trash2 size={13} /></Button>
+              </div>
+            )}
+
             {isReel && assets.length > 0 && (
               <div className="mt-3 flex flex-wrap items-center gap-1.5">
                 <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">View</span>
@@ -1457,7 +1522,7 @@ export default function Composer() {
                           right-hand platform-preview column). */}
                       <div className="mx-auto w-full md:mx-0" style={{ maxWidth: inlineCanvasMaxW }}>
                         {isReel && reelView === "play" ? (
-                          <ReelPlayer assets={assets} brand={brand} aspectCls={aspectCls}
+                          <ReelPlayer assets={assets} brand={brand} aspectCls={aspectCls} music={music}
                             activeIndex={active} onSelectScene={(i) => { setActive(i); setSelectedElementId(null); }} />
                         ) : activeAsset.spec.elements ? (
                           <SlideEditor spec={activeAsset.spec} brand={brand} aspectCls={aspectCls} cardRef={canvasOpen ? null : cardRef}
@@ -1685,7 +1750,7 @@ export default function Composer() {
           button on a rail. It sits at z-40 so the stock picker and elements
           library (z-50 sheets) still open over the top of it. */}
       <ReelExportDialog open={exportOpen} onClose={() => setExportOpen(false)}
-        assets={assets} brand={brand} aspect={aspect} title={title} />
+        assets={assets} brand={brand} aspect={aspect} title={title} music={music} />
 
       {canvasOpen && activeAsset && (
         <CanvasEditor

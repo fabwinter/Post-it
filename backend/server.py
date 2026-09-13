@@ -200,6 +200,7 @@ _ADD_COLUMNS = {
         ("brand_kit_id", "ALTER TABLE posts ADD COLUMN brand_kit_id TEXT"),
         ("alt_text", "ALTER TABLE posts ADD COLUMN alt_text TEXT NOT NULL DEFAULT ''"),
         ("content_by_platform", "ALTER TABLE posts ADD COLUMN content_by_platform TEXT NOT NULL DEFAULT '{}'"),
+        ("music", "ALTER TABLE posts ADD COLUMN music TEXT NOT NULL DEFAULT '{}'"),
     ],
     "generations": [
         ("output", "ALTER TABLE generations ADD COLUMN output TEXT"),
@@ -436,6 +437,11 @@ class Post(BaseModel):
     # the same text (and the same char-limit warning) onto every platform.
     content_by_platform: Dict[str, str] = Field(default_factory=dict)
     brand_kit_id: Optional[str] = None
+    # A reel's background score: {url, volume (0-1, mixed under the voice),
+    # credit}. Empty dict means no track set — the common case for every
+    # non-reel format, and a reel before Auto Reel's music phase has picked
+    # one for it.
+    music: Dict[str, Any] = Field(default_factory=dict)
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
 
@@ -454,6 +460,7 @@ class PostCreate(BaseModel):
     alt_text: Optional[str] = ""
     content_by_platform: Optional[Dict[str, str]] = Field(default_factory=dict)
     brand_kit_id: Optional[str] = None
+    music: Optional[Dict[str, Any]] = Field(default_factory=dict)
 
 
 class PostUpdate(BaseModel):
@@ -470,10 +477,11 @@ class PostUpdate(BaseModel):
     alt_text: Optional[str] = None
     content_by_platform: Optional[Dict[str, str]] = None
     brand_kit_id: Optional[str] = None
+    music: Optional[Dict[str, Any]] = None
 
 
 # Post columns whose Python value is a list/dict and whose D1 value is JSON text.
-JSON_POST_FIELDS = ("platforms", "media_urls", "assets", "hashtags", "content_by_platform")
+JSON_POST_FIELDS = ("platforms", "media_urls", "assets", "hashtags", "content_by_platform", "music")
 
 
 def _post_row(post: dict):
@@ -484,6 +492,7 @@ def _post_row(post: dict):
         json.dumps(post.get("assets") or []), post.get("format") or "single",
         json.dumps(post.get("hashtags") or []), post.get("alt_text") or "",
         json.dumps(post.get("content_by_platform") or {}), post.get("brand_kit_id"),
+        json.dumps(post.get("music") or {}),
         post["created_at"], post["updated_at"],
     ]
 
@@ -504,6 +513,7 @@ def _row_to_post(row: dict):
         "alt_text": row.get("alt_text") or "",
         "content_by_platform": json.loads(row.get("content_by_platform") or "{}"),
         "brand_kit_id": row.get("brand_kit_id"),
+        "music": json.loads(row.get("music") or "{}"),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -4338,8 +4348,8 @@ async def create_post(inp: PostCreate):
     post = Post(**{k: v for k, v in inp.model_dump().items() if v is not None})
     await d1_query(
         "INSERT INTO posts (id, title, content, platforms, status, scheduled_time, media_urls, media_type, "
-        "assets, format, hashtags, alt_text, content_by_platform, brand_kit_id, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "assets, format, hashtags, alt_text, content_by_platform, brand_kit_id, music, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         _post_row(post.model_dump()),
     )
     return post

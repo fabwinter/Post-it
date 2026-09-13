@@ -7,7 +7,7 @@ import { CARD_REF_WIDTH } from "@/lib/slideElements";
 import { reelTimeline, formatSeconds } from "@/lib/videoClip";
 import {
   EXPORT_PRESETS, exportDimensions, exportSupported, pickRecorderMime,
-  prepareScenes, recordReel, downloadBlob,
+  prepareScenes, recordReel, downloadBlob, loadMusic,
 } from "@/lib/videoExport";
 
 // Renders the reel to a real video file.
@@ -30,7 +30,7 @@ const STAGE_CSS = `
 .reel-export-content [data-export-backdrop] { display: none !important; }
 `;
 
-export function ReelExportDialog({ open, onClose, assets, brand, aspect, title }) {
+export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, music }) {
   const [preset, setPreset] = useState("720");
   const [phase, setPhase] = useState("idle"); // idle | preparing | recording | done | error
   const [progress, setProgress] = useState(0);
@@ -82,7 +82,10 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title }
         if (cancelled.current) { setPhase("idle"); return; }
       }
 
-      const scenes = await prepareScenes(items, layers, { onProgress: (p) => setProgress(p * 0.4) });
+      const [scenes, musicEl] = await Promise.all([
+        prepareScenes(items, layers, { onProgress: (p) => setProgress(p * 0.4) }),
+        loadMusic(music?.url),
+      ]);
       if (cancelled.current) { setPhase("idle"); return; }
 
       const canvas = document.createElement("canvas");
@@ -94,6 +97,7 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title }
         canvas, scenes, items, total, fps: 30,
         onProgress: (p) => setProgress(p),
         isCancelled: () => cancelled.current,
+        musicEl, musicVolume: music?.volume,
       });
       if (cancelled.current) { setPhase("idle"); return; }
       setResult(out);
@@ -102,7 +106,7 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title }
       setError(e?.message || "Export failed");
       setPhase("error");
     }
-  }, [items, total, dims.width, dims.height]);
+  }, [items, total, dims.width, dims.height, music?.url, music?.volume]);
 
   if (!open) return null;
 

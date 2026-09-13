@@ -176,9 +176,11 @@ function loadVideo(url, { muted }) {
   });
 }
 
-// A scene's recorded voiceover, loaded the same tolerant way loadVideo is —
-// resolves null on failure so one bad take can't sink the export.
-function loadVoice(url) {
+// An audio URL loaded into a playable element, the same tolerant way
+// loadVideo is — resolves null on failure so one bad take (or a reel with
+// no music) can't sink the export. Shared by a scene's own voiceover and
+// the reel's one background score; nothing about loading it differs.
+function loadAudioClip(url) {
   return new Promise((resolve) => {
     const el = document.createElement("audio");
     el.crossOrigin = "anonymous";
@@ -191,6 +193,14 @@ function loadVoice(url) {
     setTimeout(() => done(el.readyState >= 2 ? el : null), 15000);
     el.load();
   });
+}
+
+// Loads the reel's background score ahead of recording — public because it
+// isn't scoped to a scene the way prepareScenes's own loads are, so the
+// export dialog calls it directly rather than threading a music URL
+// through prepareScenes's per-scene loop.
+export function loadMusic(url) {
+  return url ? loadAudioClip(url) : Promise.resolve(null);
 }
 
 export async function prepareScenes(items, layers, { onProgress } = {}) {
@@ -206,7 +216,7 @@ export async function prepareScenes(items, layers, { onProgress } = {}) {
     const video = clip.url && !isStill ? await loadVideo(clip.url, { muted: clip.volume === 0 }) : null;
     const clipImage = isStill ? await loadClipImage(clip.url) : null;
     const voiceUrl = it.asset?.spec?.voice?.url || "";
-    const voice = voiceUrl ? await loadVoice(voiceUrl) : null;
+    const voice = voiceUrl ? await loadAudioClip(voiceUrl) : null;
     scenes[it.index] = { bgImage, contentImage, video, clipImage, clip, voice, item: it };
     onProgress?.((i + 1) / items.length);
   }
@@ -253,14 +263,15 @@ function syncScenes(scenes, items, t, playing) {
 }
 
 // Every source of sound a reel can have, mixed into one recording: a
-// background clip with its volume turned up, and every scene's own
-// voiceover (always audible — there's no mute control for it, it's the
-// point of the scene). Wrapped in its own try/catch because a browser
-// refusing the audio graph should cost the soundtrack, not the export.
-function buildAudioTrack(scenes) {
+// background clip with its volume turned up, every scene's own voiceover
+// (always audible — there's no mute control for it, it's the point of the
+// scene), and the reel's one background score at whatever level it was set
+// to. Wrapped in its own try/catch because a browser refusing the audio
+// graph should cost the soundtrack, not the export.
+function buildAudioTrack(scenes, musicEl, musicVolume) {
   const withClipSound = scenes.filter((s) => s?.video && s.clip.volume > 0);
   const withVoice = scenes.filter((s) => s?.voice);
-  if (!withClipSound.length && !withVoice.length) return { track: null, ctx: null };
+  if (!withClipSound.length && !withVoice.length && !musicEl) return { track: null, ctx: null };
   try {
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     const actx = new AudioCtx();
@@ -277,6 +288,13 @@ function buildAudioTrack(scenes) {
       src.connect(dest);
       s.voice.muted = false;
     });
+    if (musicEl) {
+      const src = actx.createMediaElementSource(musicEl);
+      const gain = actx.createGain();
+      gain.gain.value = Number.isFinite(musicVolume) ? musicVolume : 0.18;
+      src.connect(gain).connect(dest);
+      musicEl.muted = false;
+    }
     return { track: dest.stream.getAudioTracks()[0] || null, ctx: actx };
   } catch {
     return { track: null, ctx: null };
@@ -286,7 +304,7 @@ function buildAudioTrack(scenes) {
 // Records the reel in real time. MediaRecorder captures a live stream, so
 // this takes as long as the reel runs — the progress callback is what makes
 // that legible rather than a frozen dialog.
-export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress, isCancelled }) {
+export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress, isCancelled, musicEl, musicVolume }) {
   return new Promise((resolve, reject) => {
     const picked = pickRecorderMime();
     if (!picked) { reject(new Error("This browser can't record video.")); return; }
@@ -295,7 +313,7 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
     const H = canvas.height;
 
     const stream = canvas.captureStream(fps);
-    const { track: audioTrack, ctx: audioCtx } = buildAudioTrack(scenes);
+    const { track: audioTrack, ctx: audioCtx } = buildAudioTrack(scenes, musicEl, musicVolume);
     if (audioTrack) stream.addTrack(audioTrack);
 
     let recorder;
@@ -314,6 +332,7 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
         if (s?.video && !s.video.paused) s.video.pause();
         if (s?.voice && !s.voice.paused) s.voice.pause();
       });
+      if (musicEl && !musicEl.paused) musicEl.pause();
       stream.getTracks().forEach((tr) => tr.stop());
       if (audioCtx) audioCtx.close().catch(() => {});
     };
@@ -328,9 +347,13 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
     // on black.
     drawFrame(ctx, scenes, items, 0, W, H);
     syncScenes(scenes, items, 0, false);
+    // The score isn't scene-synced — it just loops under the whole thing,
+    // starting from the top the moment the recording does.
+    if (musicEl) { musicEl.loop = true; try { musicEl.currentTime = 0; } catch { /* not seekable yet */ } }
 
     setTimeout(() => {
       recorder.start(250);
+      if (musicEl) musicEl.play().catch(() => {});
       const t0 = performance.now();
       const tick = (now) => {
         const t = (now - t0) / 1000;
