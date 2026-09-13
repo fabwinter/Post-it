@@ -106,3 +106,17 @@ export function newElement(type, theme, brand) {
 }
 
 export const MIN_SIZE = 6; // percent — an element can't be resized smaller than this
+export const MAX_SIZE = 240; // percent — generous enough for an intentionally oversized bleed image, short of "so big it can't be told apart from the background"
+
+// A bled element (a background image wider than the card, a shape or badge
+// hanging off a corner) is a normal design move, so dragging or resizing
+// past the card's own edges is allowed rather than clamped to [0, 100] —
+// but an element that can slide fully off-canvas becomes unrecoverable: no
+// handle left to grab, nothing left to see. clampPos keeps at least
+// MIN_OVERLAP percentage-points of the box overlapping the card on each
+// axis; the rest of the box is free to hang off any edge, in either
+// direction, as far as MAX_SIZE allows.
+const MIN_OVERLAP = 10;
+export function clampPos(pos, size) {
+  return Math.max(MIN_OVERLAP - size, Math.min(100 - MIN_OVERLAP, pos));
+}

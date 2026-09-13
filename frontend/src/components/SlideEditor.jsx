@@ -1,7 +1,7 @@
 import { useState, useRef } from "react";
 import { Ruler } from "lucide-react";
 import { VisualCard } from "@/components/VisualCard";
-import { elementBoxStyle, MIN_SIZE, useCardScale } from "@/lib/slideElements";
+import { elementBoxStyle, MIN_SIZE, MAX_SIZE, clampPos, useCardScale } from "@/lib/slideElements";
 
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 const dist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
@@ -79,13 +79,13 @@ export function SlideEditor({ spec, brand, selectedId, onSelect, onChangeElement
     const dx = cur.x - ds.start.x, dy = cur.y - ds.start.y;
     if (ds.mode === "move") {
       onChangeElement(ds.id, {
-        x: clamp(ds.startEl.x + dx, 0, 100 - ds.startEl.w),
-        y: clamp(ds.startEl.y + dy, 0, 100 - ds.startEl.h),
+        x: clampPos(ds.startEl.x + dx, ds.startEl.w),
+        y: clampPos(ds.startEl.y + dy, ds.startEl.h),
       });
     } else if (ds.mode === "resize") {
       onChangeElement(ds.id, {
-        w: clamp(ds.startEl.w + dx, MIN_SIZE, 100 - ds.startEl.x),
-        h: clamp(ds.startEl.h + dy, MIN_SIZE, 100 - ds.startEl.y),
+        w: clamp(ds.startEl.w + dx, MIN_SIZE, MAX_SIZE),
+        h: clamp(ds.startEl.h + dy, MIN_SIZE, MAX_SIZE),
       });
     } else if (ds.mode === "rotate") {
       const cx = ds.startEl.x + ds.startEl.w / 2, cy = ds.startEl.y + ds.startEl.h / 2;
@@ -113,13 +113,19 @@ export function SlideEditor({ spec, brand, selectedId, onSelect, onChangeElement
     const scale = dist(t1, t2) / (ps.startDist || 1);
     const rot = (ps.startEl.rotation || 0) + (angleOf(t1, t2) - ps.startAngle);
     const cx = ps.startEl.x + ps.startEl.w / 2, cy = ps.startEl.y + ps.startEl.h / 2;
-    const w = clamp(ps.startEl.w * scale, MIN_SIZE, 100), h = clamp(ps.startEl.h * scale, MIN_SIZE, 100);
-    onChangeElement(ps.id, { w, h, x: clamp(cx - w / 2, 0, 100 - w), y: clamp(cy - h / 2, 0, 100 - h), rotation: Math.round(rot) });
+    const w = clamp(ps.startEl.w * scale, MIN_SIZE, MAX_SIZE), h = clamp(ps.startEl.h * scale, MIN_SIZE, MAX_SIZE);
+    onChangeElement(ps.id, { w, h, x: clampPos(cx - w / 2, w), y: clampPos(cy - h / 2, h), rotation: Math.round(rot) });
   };
   const onTouchEnd = (e) => { if (e.touches.length < 2) pinchState.current = null; };
 
+  // Not overflow-hidden: an element can now be dragged or resized past the
+  // card's own edges (a bled background, a badge peeking off a corner), and
+  // its hit-box/handles need to stay reachable out there to be dragged back.
+  // VisualCard's own root keeps its overflow-hidden below, so the rendered
+  // pixels — and anything exported from them — still crop at the real edge
+  // exactly as published; only the invisible interactive layer here spills.
   return (
-    <div ref={containerRef} className={`relative ${aspectCls} w-full select-none overflow-hidden rounded-xl`}
+    <div ref={containerRef} className={`relative ${aspectCls} w-full select-none rounded-xl`}
       style={{ touchAction: "none" }}
       onPointerMove={onPointerMove} onPointerUp={endDrag} onPointerCancel={endDrag}
       onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}

@@ -19,7 +19,7 @@ import { ReelExportDialog } from "@/components/ReelExportDialog";
 import { MediaPicker } from "@/components/MediaPicker";
 import { useTemplateStyles } from "@/lib/templateStyles";
 import { useCustomTemplates } from "@/lib/useCustomTemplates";
-import { elementsFromSpec, newElement, useCardScale } from "@/lib/slideElements";
+import { elementsFromSpec, newElement, useCardScale, clampPos } from "@/lib/slideElements";
 import { materializeTemplateSlides } from "@/lib/templateEdit";
 import { groupFontsByCategory, fontStack, useAllFontsLoaded, useFontCatalog } from "@/lib/fonts";
 import { FontNotice } from "@/components/CustomFonts";
@@ -426,7 +426,7 @@ export default function Composer() {
   const duplicateElement = (elId) => {
     const el = (activeAsset.spec.elements || []).find((x) => x.id === elId);
     if (!el) return;
-    const copy = { ...el, id: `el_${Math.random().toString(36).slice(2, 9)}`, x: Math.min(el.x + 4, 100 - el.w), y: Math.min(el.y + 4, 100 - el.h) };
+    const copy = { ...el, id: `el_${Math.random().toString(36).slice(2, 9)}`, x: clampPos(el.x + 4, el.w), y: clampPos(el.y + 4, el.h) };
     patchSlide(active, { elements: [...activeAsset.spec.elements, copy] });
     setSelectedElementId(copy.id);
   };
@@ -493,10 +493,32 @@ export default function Composer() {
   // outline plus, for any slide that's been customized, its actual freeform
   // layout and background color — so "build whole post" can start from it
   // next time instead of from a blank AI guess.
-  const templateSlidesPayload = () => assets.map((a) => ({
-    template: a.spec.template, heading: a.spec.heading, title: a.spec.title,
-    body: a.spec.body, elements: a.spec.elements, bg_color: a.spec.bg_color,
-  }));
+  //
+  // Once a slide has elements, enterLayoutEdit's own comment states the
+  // rule: elements, not heading/body/title, are the source of truth for
+  // that slide's content. spec.heading/spec.body are only ever written when
+  // a slide is first generated or materialized from a template — editing a
+  // role-tagged title/body element on the canvas (patchElement) updates just
+  // the element, so those two fields go stale the moment that happens. The
+  // backend's outline (what a template's dynamic slots get refilled with,
+  // see _abstract_composer_outline) is built from heading/body alone, so
+  // sending the stale ones back here is exactly how an edited headline
+  // "reverts" the next time the template is reopened — this reads the
+  // element's own text first and only falls back when there's no element to
+  // ask, so an edit made straight on the canvas is never silently dropped.
+  const templateSlidesPayload = () => assets.map((a) => {
+    const els = a.spec.elements;
+    const textOf = (roles) => els?.find((el) => el.type === "text" && roles.includes(el.role))?.text;
+    const heading = textOf(["title", "heading"]);
+    const body = textOf(["body"]);
+    return {
+      template: a.spec.template,
+      heading: heading !== undefined ? heading : a.spec.heading,
+      title: a.spec.title,
+      body: body !== undefined ? body : a.spec.body,
+      elements: els, bg_color: a.spec.bg_color,
+    };
+  });
 
   const saveAsTemplate = async () => {
     if (assets.length === 0) { toast.error("Nothing to save yet — add a slide first."); return; }

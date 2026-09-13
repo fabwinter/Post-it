@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { VisualCard, ASPECT_RATIO } from "@/components/VisualCard";
 import { SlideEditor } from "@/components/SlideEditor";
+import { clampPos } from "@/lib/slideElements";
 import { groupFontsByCategory, fontStack, useAllFontsLoaded, useFontCatalog } from "@/lib/fonts";
 import { FontNotice } from "@/components/CustomFonts";
 import { Button } from "@/components/ui/button";
@@ -130,8 +131,8 @@ export function CanvasEditor({
       if (nudge) {
         e.preventDefault();
         onChangeElement(el.id, {
-          x: Math.max(0, Math.min(100 - el.w, el.x + (nudge.x || 0))),
-          y: Math.max(0, Math.min(100 - el.h, el.y + (nudge.y || 0))),
+          x: clampPos(el.x + (nudge.x || 0), el.w),
+          y: clampPos(el.y + (nudge.y || 0), el.h),
         });
       }
     };

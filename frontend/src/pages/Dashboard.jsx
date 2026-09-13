@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { motion } from "framer-motion";
 import { api, apiErrorMessage } from "@/lib/api";
 import { useTextModels } from "@/lib/useTextModels";
 import { PLATFORM_LIST, platformOf } from "@/lib/platforms";
@@ -10,11 +9,6 @@ import { usePlatformSpecs, specFor, FORMAT_LABEL } from "@/lib/platformSpecs";
 import { PLATFORMS } from "@/lib/platforms";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-
-const fade = {
-  hidden: { opacity: 0, y: 16 },
-  show: (i = 0) => ({ opacity: 1, y: 0, transition: { delay: i * 0.06, duration: 0.4, ease: "easeOut" } }),
-};
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -86,15 +80,15 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-8" data-testid="dashboard-page">
-      <motion.div variants={fade} initial="hidden" animate="show">
+      <div>
         <div className="font-mono text-xs uppercase tracking-[0.25em] text-zinc-500">Welcome back</div>
         <h1 className="mt-2 font-display text-4xl font-semibold tracking-tight sm:text-5xl">
           What are we creating <span className="text-lime">today?</span>
         </h1>
-      </motion.div>
+      </div>
 
       {/* Hero AI ideation */}
-      <motion.div variants={fade} custom={1} initial="hidden" animate="show" className="relative overflow-hidden rounded-2xl border border-white/10 bg-[#121212] p-6 sm:p-8">
+      <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-[#121212] p-6 sm:p-8">
         <div className="pointer-events-none absolute -right-10 -top-10 h-52 w-52 rounded-full bg-gradient-to-br from-magic/30 to-lime/20 blur-3xl float-blur" />
         <div className="relative">
           <div className="flex items-center gap-2 text-zinc-400">
@@ -149,12 +143,8 @@ export default function Dashboard() {
           {ideas.length > 0 && (
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
               {ideas.map((idea, i) => (
-                <motion.div
+                <div
                   key={i}
-                  variants={fade}
-                  custom={i}
-                  initial="hidden"
-                  animate="show"
                   data-testid={`idea-item-${i}`}
                   className="group flex items-center gap-3 rounded-xl border border-white/10 bg-[#0A0A0A] p-4 transition-colors hover:border-lime/40 hover:bg-white/[0.04]"
                 >
@@ -170,24 +160,23 @@ export default function Dashboard() {
                     Build
                   </button>
                   <ArrowRight size={16} className="hidden text-zinc-600 transition-transform group-hover:translate-x-0.5 group-hover:text-lime sm:block" />
-                </motion.div>
+                </div>
               ))}
             </div>
           )}
         </div>
-      </motion.div>
+      </div>
 
       {/* Stats */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        {statCards.map((s, i) => {
+        {statCards.map((s) => {
           const Icon = s.icon;
           return (
-            <motion.div key={s.label} variants={fade} custom={i} initial="hidden" animate="show"
-              className="rounded-xl border border-white/10 bg-[#121212] p-5">
+            <div key={s.label} className="rounded-xl border border-white/10 bg-[#121212] p-5">
               <Icon size={18} className="text-zinc-500" />
               <div className="mt-4 font-display text-3xl font-semibold">{s.value}</div>
               <div className="font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">{s.label}</div>
-            </motion.div>
+            </div>
           );
         })}
       </div>
