@@ -451,6 +451,43 @@ check("deleted upload is gone from the list", all(u["id"] != image_upload_id for
 r = c.delete(f"/api/uploads/{image_upload_id}")
 check("deleting twice 404s", r.status_code == 404, r.text)
 
+# --- custom fonts (a licensed face the user uploads themselves) ---
+WOFF2 = b"wOF2" + b"\x00" * 60
+TTF = b"\x00\x01\x00\x00" + b"\x00" * 60
+
+r = c.post("/api/fonts", files={"file": ("brittany.otf", b"this is really a text file", "font/otf")})
+check("font upload rejects bytes that aren't a font", r.status_code == 400, r.text)
+
+r = c.post("/api/fonts", files={"file": ("Brittany-Regular.woff2", WOFF2, "application/octet-stream")})
+font = r.json()
+check("font upload accepts a woff2 mislabelled by the browser", r.status_code == 200, r.text)
+check("font upload sniffs the real type", font["content_type"] == "font/woff2", font)
+check("font name falls back to a readable filename", font["name"] == "Brittany Regular", font)
+check("font bytes reach blob storage", BLOBS[font["url"]] == WOFF2)
+
+r = c.post("/api/fonts", files={"file": ("x.ttf", TTF, "font/ttf")}, data={"name": "Moon'}time; body{x"})
+check("font name is stripped of anything that could escape a CSS rule",
+      r.json()["name"] == "Moon time body x", r.json())
+moon_id = r.json()["id"]
+
+r = c.post("/api/fonts", files={"file": ("replacement.woff2", WOFF2 + b"v2", "application/octet-stream")},
+           data={"name": "Brittany Regular"})
+check("re-uploading a family replaces it rather than duplicating", r.json()["id"] == font["id"], r.json())
+check("the replaced blob is cleaned up", font["url"] in DELETED_BLOBS, DELETED_BLOBS)
+
+rows = c.get("/api/fonts").json()
+check("fonts list holds one row per family", len(rows) == 2, rows)
+check("fonts list is sorted by name", [f["name"] for f in rows] == ["Brittany Regular", "Moon time body x"], rows)
+
+r = c.delete(f"/api/fonts/{moon_id}")
+check("font delete succeeds", r.status_code == 200, r.text)
+check("deleted font is gone from the list", [f["name"] for f in c.get("/api/fonts").json()] == ["Brittany Regular"])
+r = c.delete(f"/api/fonts/{moon_id}")
+check("deleting a font twice 404s", r.status_code == 404, r.text)
+
+r = c.post("/api/upload", files={"file": ("face.woff2", WOFF2, "font/woff2")})
+check("a font through the generic upload route is labelled as one", r.json()["kind"] == "font", r.json())
+
 # --- an uploaded image as a reference for image generation ---
 r = c.post("/api/ai/generate", json={
     "kind": "image", "prompt": "restyle this product shot",

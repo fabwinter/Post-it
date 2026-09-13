@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { toPng } from "html-to-image";
 import { api, apiErrorMessage } from "@/lib/api";
 import { useBrandKits } from "@/lib/useBrand";
-import { BRAND_FONTS, groupFontsByCategory, fontStack, useAllFontsLoaded } from "@/lib/fonts";
+import { groupFontsByCategory, fontStack, useAllFontsLoaded, useFontCatalog } from "@/lib/fonts";
+import { CustomFontsPanel, FontNotice } from "@/components/CustomFonts";
 import { BrandGuidelineDoc } from "@/components/BrandGuidelineDoc";
 import { KnowledgeBase } from "@/components/KnowledgeBase";
 import { Button } from "@/components/ui/button";
@@ -348,6 +349,14 @@ export default function BrandKit() {
               <FontField label="Display / headings" value={form.fonts?.display} onChange={(v) => set("fonts", { ...form.fonts, display: v })} testid="brand-font-display" />
               <FontField label="Body text" value={form.fonts?.body} onChange={(v) => set("fonts", { ...form.fonts, body: v })} testid="brand-font-body" />
             </div>
+            <div className="mt-5 border-t border-white/10 pt-4">
+              <h4 className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">Your own fonts</h4>
+              <p className="mt-1.5 text-xs leading-relaxed text-zinc-400">
+                Most of the list above is served for you. A font you licensed elsewhere isn't ours to serve, so
+                add the file here and it joins the pickers like any other — on every device, and in exports.
+              </p>
+              <div className="mt-3"><CustomFontsPanel /></div>
+            </div>
           </section>
 
           <section className="rounded-xl border border-white/10 bg-[#121212] p-5">
@@ -594,11 +603,12 @@ const LogoVariantUpload = ({ label, url, uploading, dark, onUpload, onUrlChange,
 
 const FontField = ({ label, value, onChange, testid, className = "" }) => {
   useAllFontsLoaded();
+  const catalog = useFontCatalog();
   // A detected font from brand analysis might not be in the curated list —
   // keep it selectable rather than silently dropping it.
-  const options = BRAND_FONTS.some((f) => f.key === value) || !value
-    ? BRAND_FONTS
-    : [{ key: value, label: `${value} (detected)` }, ...BRAND_FONTS];
+  const options = catalog.some((f) => f.key === value) || !value
+    ? catalog
+    : [{ key: value, label: `${value} (detected)` }, ...catalog];
   const groups = groupFontsByCategory(options);
   return (
     <div className={className}>
@@ -611,6 +621,7 @@ const FontField = ({ label, value, onChange, testid, className = "" }) => {
           </optgroup>
         ))}
       </select>
+      <FontNotice fontKey={value} testid={`${testid}-notice`} />
     </div>
   );
 };

@@ -6,7 +6,8 @@ import {
 } from "lucide-react";
 import { VisualCard, ASPECT_RATIO } from "@/components/VisualCard";
 import { SlideEditor } from "@/components/SlideEditor";
-import { BRAND_FONTS, groupFontsByCategory, fontStack, useAllFontsLoaded } from "@/lib/fonts";
+import { groupFontsByCategory, fontStack, useAllFontsLoaded, useFontCatalog } from "@/lib/fonts";
+import { FontNotice } from "@/components/CustomFonts";
 import { Button } from "@/components/ui/button";
 
 // The card is sized to the biggest it can be inside the stage while keeping
@@ -152,11 +153,13 @@ export function CanvasEditor({
     };
   }, []);
 
+  const fontCatalog = useFontCatalog();
+
   const patch = (p) => el && onChangeElement(el.id, p);
   const openSheet = (k) => setSheet((s) => (s === k ? null : k));
 
-  const fontOptions = brand?.fonts?.display && !BRAND_FONTS.some((f) => f.key === brand.fonts.display)
-    ? [{ key: brand.fonts.display, label: `${brand.fonts.display} (brand)` }, ...BRAND_FONTS] : BRAND_FONTS;
+  const fontOptions = brand?.fonts?.display && !fontCatalog.some((f) => f.key === brand.fonts.display)
+    ? [{ key: brand.fonts.display, label: `${brand.fonts.display} (brand)` }, ...fontCatalog] : fontCatalog;
 
   return (
     <div className="fixed inset-0 z-40 flex flex-col bg-[#0A0A0A]" data-testid="canvas-editor">
@@ -292,6 +295,7 @@ export function CanvasEditor({
               </optgroup>
             ))}
           </select>
+          <FontNotice fontKey={el.fontFamily || "Inter"} testid="canvas-font-notice" />
           <div className="mt-2 flex flex-wrap gap-1.5">
             {[400, 500, 600, 700, 800, 900].map((w) => (
               <button key={w} onClick={() => patch({ fontWeight: w })} data-testid={`canvas-weight-${w}`}
