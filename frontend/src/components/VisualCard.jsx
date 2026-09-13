@@ -105,12 +105,12 @@ export const VisualCard = forwardRef(function VisualCard(
   // videoControlled to drive currentTime/playbackRate itself instead.
   const clip = spec?.video_url ? normalizeClip({ ...spec.clip, url: spec.video_url }) : null;
   const backdrop = clip ? (
-    <video ref={videoRef} src={spec.video_url} muted playsInline
+    <video ref={videoRef} src={spec.video_url} muted playsInline data-export-backdrop
       loop={!videoControlled} autoPlay={!videoControlled}
       className="absolute inset-0 h-full w-full"
       style={{ opacity: clip.opacity, objectFit: clip.fit, filter: filterCss(clip.effects) }} />
   ) : spec?.image_url ? (
-    <img src={spec.image_url} alt="" crossOrigin="anonymous"
+    <img src={spec.image_url} alt="" crossOrigin="anonymous" data-export-backdrop
       className="absolute inset-0 h-full w-full object-cover" style={{ opacity: 0.45 }} />
   ) : null;
   // Type sizes are expressed against a 440px-wide reference card so the same

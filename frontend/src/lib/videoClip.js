@@ -177,6 +177,63 @@ export function reelTimeline(assets) {
   return { items, total: t };
 }
 
+// The two frames of a crossover as plain numbers, so the CSS player and the
+// canvas exporter draw the same thing from one definition rather than two
+// implementations that drift. `under` is the outgoing scene, `over` the
+// incoming one; tx is a fraction of the frame width, clipLeft the fraction
+// of the incoming scene still hidden, veil the black dip over the top.
+export function transitionFrame(type, p) {
+  const flat = { under: null, over: { opacity: 1, tx: 0, scale: 1, clipLeft: 0 }, veil: 0 };
+  switch (type) {
+    case "dissolve":
+      return { under: { opacity: 1, tx: 0, scale: 1, clipLeft: 0 }, over: { opacity: p, tx: 0, scale: 1, clipLeft: 0 }, veil: 0 };
+    case "slide":
+      return {
+        under: { opacity: 1, tx: -0.3 * p, scale: 1, clipLeft: 0 },
+        over: { opacity: 1, tx: 1 - p, scale: 1, clipLeft: 0 },
+        veil: 0,
+      };
+    case "zoom":
+      return {
+        under: { opacity: 1, tx: 0, scale: 1 + 0.08 * p, clipLeft: 0 },
+        over: { opacity: p, tx: 0, scale: 1 + 0.18 * (1 - p), clipLeft: 0 },
+        veil: 0,
+      };
+    case "wipe":
+      return {
+        under: { opacity: 1, tx: 0, scale: 1, clipLeft: 0 },
+        over: { opacity: 1, tx: 0, scale: 1, clipLeft: 1 - p },
+        veil: 0,
+      };
+    case "fade":
+      // Through black rather than straight across: the veil peaks at the
+      // boundary, so it reads as a beat rather than a blend.
+      return {
+        under: { opacity: 1, tx: 0, scale: 1, clipLeft: 0 },
+        over: { opacity: p > 0.5 ? 1 : 0, tx: 0, scale: 1, clipLeft: 0 },
+        veil: 1 - Math.abs(2 * p - 1),
+      };
+    default:
+      return flat;
+  }
+}
+
+// Where the playhead sits: which scene owns this moment, what it's coming
+// from, and how far through the crossover we are. Shared so the exporter
+// reproduces the player's timing exactly rather than approximating it.
+export function frameAt(items, t) {
+  if (!items.length) return null;
+  const idx = items.findIndex((it) => t < it.end);
+  const cur = idx === -1 ? items[items.length - 1] : items[idx];
+  const prev = items[cur.index - 1];
+  const window = cur.clip.transition.type === "cut"
+    ? 0
+    : Math.min(cur.clip.transition.duration, cur.seconds, prev?.seconds ?? 0);
+  const into = t - cur.start;
+  const inTransition = !!prev && window > 0 && into < window;
+  return { cur, prev, inTransition, p: inTransition ? Math.min(1, Math.max(0, into / window)) : 1 };
+}
+
 export function formatSeconds(s) {
   const v = Math.max(0, Number(s) || 0);
   const m = Math.floor(v / 60);

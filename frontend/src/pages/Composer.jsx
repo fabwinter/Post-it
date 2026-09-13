@@ -15,6 +15,7 @@ import { SlideEditor } from "@/components/SlideEditor";
 import { CanvasEditor } from "@/components/CanvasEditor";
 import { ReelPlayer } from "@/components/ReelPlayer";
 import { VideoClipEditor } from "@/components/VideoClipEditor";
+import { ReelExportDialog } from "@/components/ReelExportDialog";
 import { MediaPicker } from "@/components/MediaPicker";
 import { useTemplateStyles } from "@/lib/templateStyles";
 import { useCustomTemplates } from "@/lib/useCustomTemplates";
@@ -89,6 +90,7 @@ export default function Composer() {
   // Reels get a second way to look at the deck: the canvas edits one scene,
   // the player watches all of them end to end at their real lengths.
   const [reelView, setReelView] = useState("canvas");
+  const [exportOpen, setExportOpen] = useState(false);
   const [clipUploading, setClipUploading] = useState(false);
   // Which surface asked for the elements library — a scene's footage, or
   // just another element to drop on the canvas.
@@ -1000,6 +1002,10 @@ export default function Composer() {
                 <span className="font-mono text-[10px] text-zinc-600" data-testid="composer-reel-duration">
                   {formatSeconds(reelTimeline(assets).total)} total
                 </span>
+                <Button variant="secondary" onClick={() => setExportOpen(true)} data-testid="composer-reel-export"
+                  className="h-7 gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 text-[11px] text-white hover:bg-white/10">
+                  <Film size={12} /> Export video
+                </Button>
               </div>
             )}
 
@@ -1286,6 +1292,9 @@ export default function Composer() {
           the card gets the whole viewport and every control is a thumb-sized
           button on a rail. It sits at z-40 so the stock picker and elements
           library (z-50 sheets) still open over the top of it. */}
+      <ReelExportDialog open={exportOpen} onClose={() => setExportOpen(false)}
+        assets={assets} brand={brand} aspect={aspect} title={title} />
+
       {canvasOpen && activeAsset && (
         <CanvasEditor
           spec={activeAsset.spec} brand={brand} aspect={aspect} aspectCls={aspectCls} cardRef={cardRef}

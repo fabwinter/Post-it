@@ -2,9 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { Play, Pause, SkipBack, Repeat } from "lucide-react";
 import { VisualCard } from "@/components/VisualCard";
 import { useCardScale } from "@/lib/slideElements";
-import {
-  reelTimeline, normalizeClip, TRANSITION_BY_KEY, formatSeconds,
-} from "@/lib/videoClip";
+import { reelTimeline, transitionFrame, frameAt, formatSeconds } from "@/lib/videoClip";
 
 // Plays a reel the way it will actually be watched: scenes end to end at
 // their real lengths, each clip graded and trimmed as set, transitions
@@ -16,39 +14,14 @@ import {
 // frame loop drives — so there's no canvas pass and the preview is exactly
 // the DOM the cards already render.
 
-// The two frames of a crossover, as a function of progress (0 -> 1).
-// `under` is the outgoing scene, `over` the incoming one. Only transitions
-// flagged `overlaps` in lib/videoClip.js ever show both at once.
-function transitionStyles(type, p) {
-  switch (type) {
-    case "dissolve":
-      return { under: { opacity: 1 }, over: { opacity: p }, veil: 0 };
-    case "slide":
-      return {
-        under: { opacity: 1, transform: `translateX(${-30 * p}%)` },
-        over: { opacity: 1, transform: `translateX(${100 * (1 - p)}%)` },
-        veil: 0,
-      };
-    case "zoom":
-      return {
-        under: { opacity: 1, transform: `scale(${1 + 0.08 * p})` },
-        over: { opacity: p, transform: `scale(${1 + 0.18 * (1 - p)})` },
-        veil: 0,
-      };
-    case "wipe":
-      return {
-        under: { opacity: 1 },
-        over: { opacity: 1, clipPath: `inset(0 0 0 ${100 * (1 - p)}%)` },
-        veil: 0,
-      };
-    case "fade":
-      // Through black rather than straight across: the veil peaks at the
-      // boundary, so it reads as a beat rather than a blend.
-      return { under: { opacity: 1 }, over: { opacity: p > 0.5 ? 1 : 0 }, veil: 1 - Math.abs(2 * p - 1) };
-    default:
-      return { under: { opacity: 1 }, over: { opacity: 1 }, veil: 0 };
-  }
-}
+// transitionFrame gives the crossover as plain numbers (shared with the
+// canvas exporter so the two renderers can't drift); this is only the
+// translation of those numbers into CSS.
+const layerCss = (f) => (f ? {
+  opacity: f.opacity,
+  transform: f.tx || f.scale !== 1 ? `translateX(${f.tx * 100}%) scale(${f.scale})` : undefined,
+  clipPath: f.clipLeft ? `inset(0 0 0 ${f.clipLeft * 100}%)` : undefined,
+} : undefined);
 
 // One scene layer. Holds its own <video> ref so the frame loop can seek it
 // to the right point of the source without re-rendering React on every tick.
@@ -81,21 +54,7 @@ export function ReelPlayer({ assets, brand, aspectCls, activeIndex, onSelectScen
     else videos.current.delete(i);
   }, []);
 
-  // Which scene owns this moment, and how far into a crossover we are. The
-  // incoming clip's transition duration is what defines the window, and
-  // `overlap` (computed in reelTimeline) is how much of it actually fits.
-  const frame = useMemo(() => {
-    if (!items.length) return null;
-    const i = Math.max(0, items.findIndex((it) => t < it.end));
-    const cur = items[i] === undefined ? items[items.length - 1] : items[i];
-    const prev = items[cur.index - 1];
-    const window = TRANSITION_BY_KEY[cur.clip.transition.type]?.key === "cut"
-      ? 0
-      : Math.min(cur.clip.transition.duration, cur.seconds, prev?.seconds ?? 0);
-    const into = t - cur.start;
-    const inTransition = prev && window > 0 && into < window;
-    return { cur, prev, p: inTransition ? Math.min(1, Math.max(0, into / window)) : 1, inTransition };
-  }, [items, t]);
+  const frame = useMemo(() => frameAt(items, t), [items, t]);
 
   // Seek every mounted clip to the source time this moment implies, and keep
   // only the ones on screen rolling. Done outside React state so a 60fps
@@ -167,18 +126,18 @@ export function ReelPlayer({ assets, brand, aspectCls, activeIndex, onSelectScen
   if (!items.length) return null;
 
   const { cur, prev, p, inTransition } = frame;
-  const tx = transitionStyles(cur.clip.transition.type, p);
+  const tx = transitionFrame(cur.clip.transition.type, p);
   const veil = inTransition ? tx.veil : 0;
 
   return (
     <div data-testid={testid}>
       <div ref={boxRef} className={`relative ${aspectCls} w-full overflow-hidden rounded-xl bg-black`}
         data-testid={`${testid}-stage`}>
-        {inTransition && prev && (
-          <SceneLayer item={prev} brand={brand} scale={scale} style={tx.under} registerVideo={registerVideo} />
+        {inTransition && prev && tx.under && (
+          <SceneLayer item={prev} brand={brand} scale={scale} style={layerCss(tx.under)} registerVideo={registerVideo} />
         )}
         <SceneLayer item={cur} brand={brand} scale={scale}
-          style={inTransition ? tx.over : { opacity: 1 }} registerVideo={registerVideo} />
+          style={inTransition ? layerCss(tx.over) : { opacity: 1 }} registerVideo={registerVideo} />
         {veil > 0 && <div className="pointer-events-none absolute inset-0 bg-black" style={{ opacity: veil }} />}
       </div>
 
