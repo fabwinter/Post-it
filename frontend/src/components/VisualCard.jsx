@@ -97,21 +97,30 @@ export const VisualCard = forwardRef(function VisualCard(
   const base = { background: theme.bg, color: theme.fg };
   const patt = patternStyle(theme);
   // Whatever sits behind the words. A clip carries its own grade, framing
-  // and how far it sits behind the overlays (lib/videoClip.js); a still
-  // keeps the plain dim it always had. Both render branches below share
-  // this — they used to hold separate copies, and the one every reel scene
-  // actually goes through kept a hardcoded 0.45 that no clip setting could
-  // move. Left looping on its own as a preview; ReelPlayer passes
-  // videoControlled to drive currentTime/playbackRate itself instead.
+  // and how far it sits behind the overlays (lib/videoClip.js) — this used
+  // to mean "video" specifically, but a reel scene's clip can hold a still
+  // just as well (kind: "image"), reusing the same opacity/fit/effects/
+  // transition machinery rather than being a second, video-only system.
+  // Both render branches used to hold separate copies, and the one every
+  // reel scene actually goes through kept a hardcoded 0.45 that no clip
+  // setting could move — video_url/videoRef only ever apply to the "video"
+  // branch now that a clip can legitimately be a still. Video is left
+  // looping on its own as a preview; ReelPlayer passes videoControlled to
+  // drive currentTime/playbackRate itself instead.
   const clip = spec?.video_url ? normalizeClip({ ...spec.clip, url: spec.video_url }) : null;
-  const backdrop = clip ? (
+  const backdrop = clip && clip.kind === "image" ? (
+    <img src={spec.video_url} alt="" crossOrigin="anonymous" data-export-backdrop
+      className="absolute inset-0 h-full w-full"
+      style={{ opacity: clip.opacity, objectFit: clip.fit, filter: filterCss(clip.effects) }} />
+  ) : clip ? (
     <video ref={videoRef} src={spec.video_url} muted playsInline data-export-backdrop
       loop={!videoControlled} autoPlay={!videoControlled}
       className="absolute inset-0 h-full w-full"
       style={{ opacity: clip.opacity, objectFit: clip.fit, filter: filterCss(clip.effects) }} />
   ) : spec?.image_url ? (
     <img src={spec.image_url} alt="" crossOrigin="anonymous" data-export-backdrop
-      className="absolute inset-0 h-full w-full object-cover" style={{ opacity: 0.45 }} />
+      className="absolute inset-0 h-full w-full object-cover"
+      style={{ opacity: spec.image_opacity ?? 0.45, objectFit: spec.image_fit || "cover" }} />
   ) : null;
   // Type sizes are expressed against a 440px-wide reference card so the same
   // spec renders identically in a 120px strip thumbnail and a full preview.

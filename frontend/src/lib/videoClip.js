@@ -63,13 +63,21 @@ const num = (v, fallback) => (Number.isFinite(Number(v)) ? Number(v) : fallback)
 
 // A clip is stored sparsely (a scene that only ever had a stock video set is
 // just `{url}`), so every read goes through here rather than assuming keys.
+//
+// `kind` is "video" (the default, for every clip stored before this existed)
+// or "image" — a still held on screen for `hold`/DEFAULT_CLIP_SECONDS
+// instead of played. Everything else (opacity, fit, effects, transition) is
+// shared: a still and a video are the same kind of scene background, they
+// just differ in whether there's a timeline to trim or speed up.
 export function normalizeClip(raw) {
   const c = raw && typeof raw === "object" ? raw : {};
-  const natural = c.natural > 0 ? Number(c.natural) : null;
+  const kind = c.kind === "image" ? "image" : "video";
+  const natural = kind === "video" && c.natural > 0 ? Number(c.natural) : null;
   const start = Math.max(0, num(c.start, 0));
   const rawEnd = c.end === null || c.end === undefined ? null : num(c.end, null);
   return {
     url: c.url || "",
+    kind,
     credit: c.credit || "",
     natural,
     start,
