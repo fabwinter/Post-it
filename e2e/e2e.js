@@ -724,7 +724,7 @@ async function tap(page, testid) {
   // a reusable look, not a copy of the deck. Footage was keyed the same
   // way, which for a reel meant only the first scene's clip was ever
   // stored, then replayed onto every scene with the rest dropped.
-  const designClips = await page.evaluate(async () => {
+  const saveDesign = (format) => page.evaluate(async (fmt) => {
     const scene = (url, heading) => ({
       template: 'slide', heading, body: `${heading} body`,
       clip: { url, kind: 'video' }, video_url: url,
@@ -732,17 +732,33 @@ async function tap(page, testid) {
     const r = await fetch('/api/templates/from-composer', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        name: 'e2e reel design', format: 'reel', theme: 'midnight',
+        name: `e2e ${fmt} design`, format: fmt, theme: 'midnight',
         slides: [scene('http://127.0.0.1:8123/one.mp4', 'One'),
                  scene('http://127.0.0.1:8123/two.mp4', 'Two'),
                  scene('http://127.0.0.1:8123/three.mp4', 'Three')],
       }),
     });
-    return (await r.json()).clips || {};
-  });
+    return r.json();
+  }, format);
+
+  const reelDesign = await saveDesign('reel');
+  const designClips = reelDesign.clips || {};
   ok("a saved reel design keeps every scene's own footage, not just the first",
      designClips['0']?.url?.endsWith('one.mp4') && designClips['1']?.url?.endsWith('two.mp4')
      && designClips['2']?.url?.endsWith('three.mp4'), JSON.stringify(designClips));
+
+  // A design normally has its copy reworked into generic instructions so it
+  // can be reused for a new topic — right for a carousel, wrong for a reel,
+  // which is saved precisely to keep one script. Both halves are asserted
+  // here so neither can quietly become the other.
+  ok('...and its script word-for-word, not reworded',
+     reelDesign.slides?.[0]?.heading === 'One' && reelDesign.slides?.[2]?.body === 'Three body',
+     JSON.stringify(reelDesign.slides));
+
+  const carouselDesign = await saveDesign('carousel');
+  ok('a carousel design still abstracts its copy, so it stays reusable',
+     carouselDesign.slides?.[0]?.heading === 'ABSTRACTED',
+     JSON.stringify(carouselDesign.slides));
 
   // ---- fonts ----
   // Three of the catalogue's faces we serve ourselves (two from Google, one

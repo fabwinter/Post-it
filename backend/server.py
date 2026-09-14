@@ -2906,13 +2906,22 @@ async def _abstract_composer_outline(slides: List[Dict[str, Any]], model: str) -
 @api_router.post("/templates/from-composer")
 async def create_template_from_composer(req: TemplateFromComposerRequest):
     """Saves the deck currently open in the Composer as a reusable template:
-    an abstracted outline (so future generations write fresh copy, not this
-    post's literal wording) plus — for any slide that was customized in the
-    freeform editor — the actual layout, in the same shape STARTER_TEMPLATES
-    and file-converted templates already speak."""
+    an outline — abstracted for a carousel so future generations write fresh
+    copy rather than this post's literal wording, verbatim for a reel, which
+    is saved to keep one particular script — plus, for any slide that was
+    customized in the freeform editor, the actual layout, in the same shape
+    STARTER_TEMPLATES and file-converted templates already speak."""
     await ensure_schema()
     model = req.model or CHAT_MODEL
-    slides = await _abstract_composer_outline(req.slides, model)
+    # Abstracting the copy is what makes a carousel design reusable: "Week 6
+    # is where everyone quits" becomes "State the turning point", so the next
+    # post built from it writes fresh copy about its own topic. A reel is
+    # saved for the opposite reason — to keep a particular script, timing and
+    # cut — so rewording it there only ever destroyed what was being saved.
+    slides = (
+        _literal_composer_outline(req.slides) if req.format == "reel"
+        else await _abstract_composer_outline(req.slides, model)
+    )
     layouts, bg_colors, clips = _layouts_from_composer_slides(req.slides)
 
     record = {
