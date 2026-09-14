@@ -545,9 +545,22 @@ async function tap(page, testid) {
   await page.goto(B + '/composer', { waitUntil: 'domcontentloaded' });
   await page.getByTestId('composer-page').waitFor({ timeout: 10000 });
   await tap(page, 'composer-format-reel');
+
+  // A voice can be picked before the reel even exists, so the first take
+  // already comes back in the right voice instead of needing a retake per
+  // scene afterward.
+  await tap(page, 'composer-voice-preset-pre-aria');
+  const preActive = await page.evaluate(() =>
+    document.querySelector('[data-testid="composer-voice-preset-pre-aria"]')?.className.includes('border-lime'));
+  ok('a voice can be picked before the reel is built', !!preActive);
+
   await page.getByTestId('composer-brief').fill('shipping weekly no matter what');
   await tap(page, 'composer-autobuild');
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
+  await page.waitForSelector('[data-testid="composer-voice-synthesizing"]', { state: 'hidden', timeout: 15000 });
+  const postActive = await page.evaluate(() =>
+    document.querySelector('[data-testid="composer-voice-preset-aria"]')?.className.includes('border-lime'));
+  ok("the voice picked before building carries through to the built reel's own picker", !!postActive);
 
   // Voice recording and footage search both run in the background, side by
   // side, and can each finish before this next line even executes in this

@@ -40,16 +40,28 @@ import {
   Music, Volume2, VolumeX, RefreshCw,
 } from "lucide-react";
 
-// A small, named set rather than every voice PoYo's TTS model happens to
-// support — these four are the ones its own schema documents as examples,
-// so they're real voices, not invented ones. Picking one only steers what
-// a scene records next (a fresh build, or a per-scene retake); it never
-// silently re-records takes already sitting on the reel.
+// The first four are the ones PoYo's TTS model schema documents as its own
+// examples. The rest are specific ElevenLabs voices picked by ID rather than
+// name — the turbo-2.5 model's `voice` field explicitly accepts either
+// ("voice name or compatible voice ID"), so a real voice ID works exactly
+// like a preset name. Three of the six have public names/descriptions
+// findable outside ElevenLabs' own (unreachable from here) voice pages;
+// the other three don't turn up anywhere public — likely private or
+// recently added — so they're labeled plainly rather than guessed at.
+// Either way, picking one only steers what a scene records next (a fresh
+// build, or a per-scene retake); it never silently re-records takes
+// already sitting on the reel.
 const VOICE_PRESETS = [
   { key: "Rachel", label: "Rachel", desc: "Warm, professional — the default" },
   { key: "Aria", label: "Aria", desc: "Bright, expressive" },
   { key: "Sarah", label: "Sarah", desc: "Calm, measured" },
   { key: "Laura", label: "Laura", desc: "Confident, upbeat" },
+  { key: "Qggl4b0xRMiqOwhPtVWT", label: "Clara", desc: "Warm, soothing, American accent" },
+  { key: "M7ya1YbaeFaPXljg9BpK", label: "Hannah", desc: "Natural Australian accent" },
+  { key: "jQQiXyFE3PBHLF8znAIb", label: "Custom voice — AU", desc: "Australian, urban Sydney accent, early-mid 30s" },
+  { key: "vChnJZ1Cu89g2XXumPfT", label: "Custom voice 1", desc: "No public description found for this voice ID" },
+  { key: "uWAhmTxbFR3p3HsniNS9", label: "Custom voice 2", desc: "No public description found for this voice ID" },
+  { key: "VyyyOgRmsqOzaZXnKWnI", label: "Custom voice 3", desc: "No public description found for this voice ID" },
 ];
 
 // The four ways a post can start here — icons/labels for the mode switcher
@@ -1380,6 +1392,9 @@ export default function Composer() {
                       className={`rounded-full border px-2.5 py-1 text-[11px] font-medium capitalize transition-colors ${briefTone === t ? "border-iris bg-iris/10 text-iris" : "border-white/10 text-zinc-400 hover:text-white"}`}>{t}</button>
                   ))}
                 </div>
+                {isReel && (
+                  <VoicePresetPicker value={voicePreset} onChange={setVoicePreset} idPrefix="composer-voice-preset-pre" />
+                )}
                 <div className="mt-2 flex flex-wrap gap-2">
                   <Button onClick={autoBuild} disabled={building} data-testid="composer-autobuild"
                     className="gap-2 rounded-lg bg-lime font-semibold text-[#0A0A0A] hover:bg-lime-hover">
@@ -1558,18 +1573,7 @@ export default function Composer() {
             )}
 
             {isReel && assets.length > 0 && (
-              <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Voice</span>
-                {VOICE_PRESETS.map((v) => (
-                  <button key={v.key} onClick={() => setVoicePreset(v.key)} title={v.desc}
-                    data-testid={`composer-voice-preset-${v.key.toLowerCase()}`}
-                    className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                      voicePreset === v.key ? "border-lime bg-lime/10 text-lime" : "border-white/10 text-zinc-400 hover:text-white"
-                    }`}>
-                    {v.label}
-                  </button>
-                ))}
-              </div>
+              <VoicePresetPicker value={voicePreset} onChange={setVoicePreset} idPrefix="composer-voice-preset" />
             )}
 
             {isReel && assets.length > 0 && (
@@ -1955,6 +1959,25 @@ const IconBtn = ({ children, onClick, disabled, testid, danger, title }) => (
     className={`flex h-7 w-7 items-center justify-center rounded-md border border-white/10 transition-colors disabled:opacity-30 ${danger ? "text-zinc-500 hover:text-magic" : "text-zinc-400 hover:text-white"}`}>
     {children}
   </button>
+);
+
+// Shared by both places a reel's voice can be picked: before a build (so
+// the first take already comes back in the right voice) and after one
+// (for a per-scene retake in a different voice). `idPrefix` keeps their
+// testids distinct without duplicating this markup twice.
+const VoicePresetPicker = ({ value, onChange, idPrefix }) => (
+  <div className="mt-3 flex flex-wrap items-center gap-1.5">
+    <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Voice</span>
+    {VOICE_PRESETS.map((v) => (
+      <button key={v.key} onClick={() => onChange(v.key)} title={v.desc}
+        data-testid={`${idPrefix}-${v.key.toLowerCase()}`}
+        className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+          value === v.key ? "border-lime bg-lime/10 text-lime" : "border-white/10 text-zinc-400 hover:text-white"
+        }`}>
+        {v.label}
+      </button>
+    ))}
+  </div>
 );
 
 const SlideField = ({ label, value, onChange, rows, testid }) => (
