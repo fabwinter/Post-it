@@ -178,7 +178,7 @@ def fake_get(url, headers=None, timeout=None, params=None, **kw):
     if url == "http://127.0.0.1:8123/e2e-asset.png":
         return Resp(open(os.path.join(FIXTURES, "stock_photo.png"), "rb").read(), content_type="image/png")
     if url == "http://127.0.0.1:8123/e2e-video.mp4":
-        return Resp(open(os.path.join(FIXTURES, "clip.mp4"), "rb").read(), content_type="video/mp4")
+        return Resp(open(os.path.join(FIXTURES, "clip.webm"), "rb").read(), content_type="video/webm")
     # The Music Series isn't queried through the generic status endpoint —
     # PoYo's docs give it its own "Query Music Detail" endpoint, task_id as
     # a query param, and audio_url instead of file_url. Faked distinctly so
@@ -261,7 +261,8 @@ BUILD = os.path.join(ROOT, "frontend", "build")
 server.app.mount("/static", StaticFiles(directory=f"{BUILD}/static"), name="static")
 
 MIME = {".woff2": "font/woff2", ".woff": "font/woff", ".ttf": "font/ttf", ".otf": "font/otf",
-        ".mp4": "video/mp4", ".png": "image/png", ".jpg": "image/jpeg", ".wav": "audio/wav"}
+        ".mp4": "video/mp4", ".webm": "video/webm", ".png": "image/png", ".jpg": "image/jpeg",
+        ".wav": "audio/wav"}
 
 @server.app.get("/{full_path:path}")
 async def spa(full_path: str):
@@ -282,8 +283,16 @@ async def spa(full_path: str):
         # A real, colorful photo (not the 1x1 black photo.png used for
         # lightweight upload-flow tests elsewhere) — anything that actually
         # samples pixels from a "stock photo" pick needs real content to see.
-        name = "stock_photo.png" if full_path.endswith(".png") else "clip.mp4"
-        return FileResponse(os.path.join(FIXTURES, name), media_type=MIME[os.path.splitext(full_path)[1]])
+        # Pexels only ever lists mp4 and the backend filters on that, so the
+        # link keeps the .mp4 name — but the bytes are a real, decodable webm
+        # recorded by Chromium itself (see make-fixture-clip.js), served under
+        # its true content-type. The browser plays what it is told it is
+        # getting, not what the path is called, and a fixture that actually
+        # decodes is the whole point: the 14-byte placeholder this replaced
+        # meant no export ever composited real footage.
+        if full_path.endswith(".png"):
+            return FileResponse(os.path.join(FIXTURES, "stock_photo.png"), media_type="image/png")
+        return FileResponse(os.path.join(FIXTURES, "clip.webm"), media_type="video/webm")
     f = os.path.join(BUILD, full_path)
     if full_path and os.path.isfile(f): return FileResponse(f)
     return FileResponse(os.path.join(BUILD, "index.html"))

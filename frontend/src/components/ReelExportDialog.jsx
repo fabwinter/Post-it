@@ -7,7 +7,7 @@ import { CARD_REF_WIDTH } from "@/lib/slideElements";
 import { reelTimeline, formatSeconds } from "@/lib/videoClip";
 import {
   EXPORT_PRESETS, exportDimensions, exportSupported, pickRecorderMime,
-  prepareScenes, recordReel, downloadBlob, loadMusic,
+  prepareScenes, recordReel, downloadBlob, loadMusic, missingMedia,
 } from "@/lib/videoExport";
 
 // Renders the reel to a real video file.
@@ -69,6 +69,11 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
+  // What the render couldn't fetch. An export that silently drops the
+  // footage, the voiceover or the score still produces a perfectly valid
+  // file, which is exactly how a half-empty reel gets mistaken for a
+  // finished one — so whatever went missing gets said out loud.
+  const [missing, setMissing] = useState(null);
   // Which word the off-screen stage should highlight for a given scene while
   // capturing that scene's per-word caption frames — see `run()`.
   const [stageWordIndex, setStageWordIndex] = useState({});
@@ -84,12 +89,15 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
   const dims = exportDimensions(aspect, height);
 
   useEffect(() => {
-    if (!open) { setPhase("idle"); setProgress(0); setError(""); setResult(null); cancelled.current = false; setStageWordIndex({}); }
+    if (!open) {
+      setPhase("idle"); setProgress(0); setError(""); setResult(null); setMissing(null);
+      cancelled.current = false; setStageWordIndex({});
+    }
   }, [open]);
 
   const run = useCallback(async () => {
     cancelled.current = false;
-    setError(""); setResult(null); setProgress(0); setPhase("preparing");
+    setError(""); setResult(null); setMissing(null); setProgress(0); setPhase("preparing");
     try {
       // Webfonts have to be resolved before rasterising or the overlay layer
       // bakes in a fallback face that the preview never showed.
@@ -168,6 +176,7 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
       });
       if (cancelled.current) { setPhase("idle"); return; }
       setResult(out);
+      setMissing(missingMedia(scenes, { musicWanted: !!music?.url, musicEl }));
       setPhase("done");
     } catch (e) {
       setError(e?.message || "Export failed");
@@ -179,6 +188,15 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
 
   const busy = phase === "preparing" || phase === "recording";
   const safeName = (title || "reel").replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 60) || "reel";
+  const missingSummary = (() => {
+    if (!missing) return "";
+    const parts = [];
+    if (missing.clips) parts.push(missing.clips === 1 ? "1 scene's footage" : `${missing.clips} scenes' footage`);
+    if (missing.voices) parts.push(missing.voices === 1 ? "1 voiceover" : `${missing.voices} voiceovers`);
+    if (missing.music) parts.push("the background score");
+    if (!parts.length) return "";
+    return parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+  })();
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" data-testid="reel-export">
@@ -245,6 +263,17 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
             {phase === "done" && result && (
               <div className="mt-4 rounded-lg border border-lime/30 bg-lime/5 p-3 text-xs text-lime" data-testid="reel-export-done">
                 Done — {(result.blob.size / (1024 * 1024)).toFixed(1)}MB {result.ext.toUpperCase()}
+              </div>
+            )}
+
+            {phase === "done" && missingSummary && (
+              <div className="mt-2 flex gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-200"
+                data-testid="reel-export-missing">
+                <AlertTriangle size={14} className="mt-0.5 flex-none" />
+                <span>
+                  The file is missing {missingSummary}. It downloaded everything else — try rendering
+                  again, and if it keeps happening the source may be too large or offline.
+                </span>
               </div>
             )}
 

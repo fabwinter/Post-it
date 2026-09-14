@@ -527,6 +527,41 @@ async function tap(page, testid) {
     });
     ok('...that decodes at the export size', decoded.w === 480 && decoded.h > 800, JSON.stringify(decoded));
     ok('...and runs about as long as the reel', decoded.duration > 0.8 && decoded.duration < 6, String(decoded.duration));
+
+    // The footage is actually IN the file, not just a valid container of
+    // the right length. Everything above here passes just as happily on a
+    // reel of nothing but background and text, which is exactly how
+    // "the export is missing its stock videos" shipped more than once.
+    // The clip fixture is flat magenta, a colour no theme or text uses, so
+    // sampling a frame mid-reel says plainly whether the clip layer was
+    // composited — even at the clip's default 45% opacity, magenta over a
+    // dark ground still leaves red and blue far ahead of green.
+    const footage = await page.evaluate(async () => {
+      const v = document.createElement('video');
+      v.muted = true; v.playsInline = true; v.src = window.__lastBlobUrl;
+      await new Promise((res) => { v.onloadeddata = res; v.onerror = res; setTimeout(res, 8000); });
+      await new Promise((res) => { v.onseeked = res; v.currentTime = Math.min(0.6, (v.duration || 1) / 2); setTimeout(res, 4000); });
+      const c = document.createElement('canvas');
+      c.width = v.videoWidth; c.height = v.videoHeight;
+      c.getContext('2d').drawImage(v, 0, 0);
+      const { data } = c.getContext('2d').getImageData(0, 0, c.width, c.height);
+      let magenta = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        const [r, g, b] = [data[i], data[i + 1], data[i + 2]];
+        if (r > 45 && b > 45 && g < Math.min(r, b) * 0.65) magenta += 1;
+      }
+      return { magenta, pixels: data.length / 4 };
+    });
+    ok('...and the stock footage is actually composited into it, not just the text',
+       footage.magenta > footage.pixels * 0.05, JSON.stringify(footage));
+
+    // The export now says out loud when it couldn't fetch a clip, a
+    // voiceover or the score, rather than shipping a file with holes in it
+    // that looks finished. The other half of that promise is not crying
+    // wolf: a render with nothing missing must stay quiet.
+    const missingCount = await page.getByTestId('reel-export-missing').count();
+    ok('a render with nothing missing says nothing about missing media', missingCount === 0,
+       missingCount ? (await page.getByTestId('reel-export-missing').innerText()).trim() : '');
   }
   await tap(page, 'reel-export-close');
   await page.waitForTimeout(300);
@@ -696,6 +731,38 @@ async function tap(page, testid) {
   ok('proxy-image allows audio content through for export',
      proxyAudioCheck.status === 200 && (proxyAudioCheck.contentType || '').startsWith('audio/'),
      JSON.stringify(proxyAudioCheck));
+
+  // ---------- 11a-viii. export media loads direct first, proxy only as fallback ----------
+  // The proxy runs as a Vercel serverless function, and those cap their
+  // response body at ~4.5MB however big a file the handler will fetch — so
+  // routing every clip/voiceover/score through it meant real footage (5-50MB)
+  // and plenty of voice and music tracks came back as nothing at all, and the
+  // export composited what was left: background and text, no media. The
+  // loader now tries the source's own origin first and only falls back to the
+  // proxy, which is both unbounded in size and the thing that made this fail.
+  // This mirrors that two-step against a host that genuinely doesn't resolve,
+  // proving the fallback is both needed and sufficient for such a URL.
+  const twoStep = await page.evaluate(async () => {
+    const url = 'http://poyo-storage.e2e-fixture.test/voice-check.wav';
+    const attempt = (src) => new Promise((resolve) => {
+      const el = document.createElement('audio');
+      el.crossOrigin = 'anonymous';
+      el.preload = 'auto';
+      let settled = false;
+      const done = (ok) => { if (!settled) { settled = true; resolve(ok); } };
+      el.addEventListener('loadeddata', () => done(true), { once: true });
+      el.addEventListener('error', () => done(false), { once: true });
+      setTimeout(() => done(el.readyState >= 2), 8000);
+      el.src = src;
+      el.load();
+    });
+    return {
+      direct: await attempt(url),
+      viaProxy: await attempt('/api/proxy-image?url=' + encodeURIComponent(url)),
+    };
+  });
+  ok('a media URL its own origin will not serve falls back to the proxy',
+     twoStep.direct === false && twoStep.viaProxy === true, JSON.stringify(twoStep));
 
   // ---------- 11a-viii. a built reel survives a crash or reload ----------
   // Everything generated here lived only in component state until someone
