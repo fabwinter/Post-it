@@ -159,6 +159,11 @@ export default function Composer() {
   // and last of the three things a script alone doesn't have yet.
   const [musicLoading, setMusicLoading] = useState(false);
   const [musicError, setMusicError] = useState(false);
+  // The real reason a score failed — a toast says this once and is gone;
+  // this sits next to the retry button so a failure that only shows up
+  // against the real PoYo backend (never seen against the e2e fake) is
+  // actually diagnosable from a screenshot instead of a guess.
+  const [musicErrorMessage, setMusicErrorMessage] = useState("");
   // Per-scene state for voice/footage, keyed by scene index — lets a single
   // scene whose take or search failed show its own retry control and its
   // own spinner, instead of only the reel-wide toast the first pass gave.
@@ -429,16 +434,22 @@ export default function Composer() {
     const prompt = `Upbeat, unobtrusive instrumental background music for a short vertical video${seed ? ` about: ${seed}` : ""}.`;
     setMusicLoading(true);
     setMusicError(false);
+    setMusicErrorMessage("");
     try {
       const { data } = await api.post("/ai/generate", { kind: "music", prompt, options: { instrumental: true } });
-      const result = await pollTask(data.task_id);
+      // Music renders slower than the other kinds under load — the generic
+      // 6-minute default (shared with image/video) was cutting off takes
+      // that were still genuinely in progress, not stuck.
+      const result = await pollTask(data.task_id, null, { timeout: 480000 });
       const url = (result.files || []).find((f) => f.file_url)?.file_url;
       if (!url) throw new Error("No music file came back");
       setMusic({ url, volume: DEFAULT_MUSIC_VOLUME, credit: "" });
       toast.success("Background music ready");
     } catch (e) {
+      const msg = apiErrorMessage(e, "Couldn't generate background music.");
       setMusicError(true);
-      toast.error(apiErrorMessage(e, "Couldn't generate background music."));
+      setMusicErrorMessage(msg);
+      toast.error(msg);
     } finally {
       setMusicLoading(false);
     }
@@ -1490,10 +1501,17 @@ export default function Composer() {
                     <Loader2 size={13} className="animate-spin" /> Score
                   </span>
                 ) : (musicError && !music.url) ? (
-                  <button onClick={() => synthesizeReelMusic(title || content)} data-testid="composer-music-retry"
-                    className="flex items-center gap-1.5 text-magic hover:text-white">
-                    <RefreshCw size={12} /> Score failed — retry
-                  </button>
+                  <>
+                    <button onClick={() => synthesizeReelMusic(title || content)} data-testid="composer-music-retry"
+                      title={musicErrorMessage} className="flex items-center gap-1.5 text-magic hover:text-white">
+                      <RefreshCw size={12} /> Score failed — retry
+                    </button>
+                    {!!musicErrorMessage && (
+                      <span className="basis-full font-mono text-[10px] text-magic/70" data-testid="composer-music-error">
+                        {musicErrorMessage}
+                      </span>
+                    )}
+                  </>
                 ) : null}
               </div>
             )}
