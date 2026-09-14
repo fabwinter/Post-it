@@ -648,6 +648,25 @@ export default function Composer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Voice/footage/music generate in the background after a reel's script
+  // lands — closing or reloading the tab mid-build abandons whichever of
+  // them hasn't landed yet (there's nothing server-side to resume it from),
+  // silently: no error, the post just never gets its score. A warning here
+  // is the cheapest real guard against that, short of making the fills
+  // resumable jobs.
+  const buildingInBackground = voiceSynthesizing || visualFilling || musicLoading;
+  const buildingRef = useRef(buildingInBackground);
+  buildingRef.current = buildingInBackground;
+  useEffect(() => {
+    const onBeforeUnload = (e) => {
+      if (!buildingRef.current) return;
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
+
   // A "design" intent's own apply (from the Library's Designs tab, not a
   // dropdown pick made here) adopts that design's native format once, so
   // it opens looking the way it was built. After that the format
