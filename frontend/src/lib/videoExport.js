@@ -119,7 +119,7 @@ function contentImageAt(scene, sceneTime) {
 // One scene, drawn in the card's own layer order. `f` is that scene's half
 // of the crossover (opacity, slide, zoom, wipe) from transitionFrame.
 function drawScene(ctx, scene, f, W, H, sceneTime) {
-  const { bgImage, video, clipImage, clip } = scene;
+  const { bgImage, bgColor, video, clipImage, clip } = scene;
   const contentImage = contentImageAt(scene, sceneTime);
   ctx.save();
   if (f.clipLeft) {
@@ -133,7 +133,10 @@ function drawScene(ctx, scene, f, W, H, sceneTime) {
     ctx.translate(-W / 2, -H / 2);
   }
   ctx.globalAlpha = f.opacity;
+  // A flat-coloured scene carries its colour rather than a bitmap of it —
+  // see the dialog's isPlainColor. Filling costs nothing and holds nothing.
   if (bgImage) ctx.drawImage(bgImage, 0, 0, W, H);
+  else if (bgColor) { ctx.fillStyle = bgColor; ctx.fillRect(0, 0, W, H); }
   // clipImage and video are mutually exclusive (clip.kind decides which one
   // prepareScenes loaded), but both are graded and framed identically — a
   // still and a video are the same kind of background to this renderer.
@@ -352,7 +355,8 @@ export async function prepareScenes(items, layers, { onProgress } = {}) {
     const voiceUrl = it.asset?.spec?.voice?.url || "";
     const voice = voiceUrl ? await loadAudioClip(voiceUrl) : null;
     scenes[it.index] = {
-      bgImage, contentImage, contentFrames, video, clipImage, clip, voice, item: it,
+      bgImage, bgColor: layers[it.index]?.bgColor || null,
+      contentImage, contentFrames, video, clipImage, clip, voice, item: it,
       // What this scene was supposed to have but couldn't load, so the
       // export can report holes rather than quietly shipping them.
       clipFailed: !!(isStill && clip.url && !clipImage),
@@ -405,20 +409,41 @@ export function missingMedia(scenes, { musicWanted, musicEl } = {}) {
   };
 }
 
+// A played-out scene's overlay screenshots, dropped so the browser can
+// reclaim them. These are the export's other bulk consumer besides the
+// clips: every one decodes to a bitmap the size of the output (~3.7MB at
+// 720p), a captioned scene holds one PER HIGHLIGHTED WORD, and until now
+// every scene's whole set stayed resident from the moment it was captured
+// to the moment the file was written — so the static layers alone scaled
+// with scene count exactly the way the video decoders used to.
+//
+// Safe for the same reason releasing a clip is: recording only ever moves
+// forward, so a scene behind the playhead is never drawn again.
+function releaseSceneLayers(scene) {
+  scene.bgImage = null;
+  scene.contentImage = null;
+  scene.contentFrames = null;
+  scene.layersReleased = true;
+}
+
 // Kicks off loading for whichever scenes are coming up soon, and releases
-// whichever are safely behind playback. Called every recording tick — the
-// checks themselves are just a handful of flag comparisons, cheap enough to
-// run at frame rate; the actual loads happen in the background.
-function manageClipWindow(scenes, items, t) {
+// whatever is safely behind playback — clip and overlays alike. Called every
+// recording tick; the checks are a handful of flag comparisons, cheap enough
+// to run at frame rate, and the actual loads happen in the background.
+function manageSceneWindow(scenes, items, t) {
   items.forEach((it) => {
     const s = scenes[it.index];
-    if (!s?.video) return;
-    if (s.videoState === "idle" && t < it.end && it.start - t <= CLIP_LOOKAHEAD_S) {
-      ensureVideoLoaded(s);
-    } else if (s.videoState === "loaded" && t > it.end + CLIP_RELEASE_MARGIN_S) {
-      releaseVideoSrc(s.video);
-      s.videoState = "idle";
+    if (!s) return;
+    const behind = t > it.end + CLIP_RELEASE_MARGIN_S;
+    if (s.video) {
+      if (s.videoState === "idle" && t < it.end && it.start - t <= CLIP_LOOKAHEAD_S) {
+        ensureVideoLoaded(s);
+      } else if (s.videoState === "loaded" && behind) {
+        releaseVideoSrc(s.video);
+        s.videoState = "idle";
+      }
     }
+    if (behind && !s.layersReleased) releaseSceneLayers(s);
   });
 }
 
@@ -508,6 +533,18 @@ function buildAudioTrack(scenes, musicEl, musicVolume) {
   }
 }
 
+// Bitrate scaled to the frame actually being encoded, rather than one flat
+// number for every preset. This was pinned at 8Mbps, which is roughly triple
+// what 720p vertical needs and six times 480p's — and since every recorded
+// chunk is held in memory until the file is assembled at the end, that
+// overshoot was paid for in RAM for the whole render: a 30s reel banked
+// ~30MB of chunks where ~10MB would have looked the same. ~4.3 bits per
+// pixel per second lands near what a social platform re-encodes to anyway.
+function bitrateFor(width, height) {
+  const perSecond = Math.round(width * height * 4.3);
+  return Math.max(1_200_000, Math.min(perSecond, 8_000_000));
+}
+
 // Records the reel in real time. MediaRecorder captures a live stream, so
 // this takes as long as the reel runs — the progress callback is what makes
 // that legible rather than a frozen dialog.
@@ -525,7 +562,7 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
 
     let recorder;
     try {
-      recorder = new MediaRecorder(stream, { mimeType: picked.mime, videoBitsPerSecond: 8_000_000 });
+      recorder = new MediaRecorder(stream, { mimeType: picked.mime, videoBitsPerSecond: bitrateFor(W, H) });
     } catch (e) { reject(e); return; }
 
     const chunks = [];
@@ -558,7 +595,7 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
       // scene(s) the opening frame actually needs have to be explicitly
       // waited on here, or the file would open on black while the first
       // clip is still fetching.
-      manageClipWindow(scenes, items, 0);
+      manageSceneWindow(scenes, items, 0);
       await Promise.all(
         items.filter((it) => it.start <= CLIP_LOOKAHEAD_S).map((it) => ensureVideoLoaded(scenes[it.index]))
       );
@@ -591,7 +628,7 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
             setTimeout(() => recorder.stop(), 120);
             return;
           }
-          manageClipWindow(scenes, items, t);
+          manageSceneWindow(scenes, items, t);
           syncScenes(scenes, items, t, true);
           drawFrame(ctx, scenes, items, t, W, H);
           onProgress?.(t / total);

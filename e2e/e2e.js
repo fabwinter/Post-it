@@ -555,6 +555,56 @@ async function tap(page, testid) {
     ok('...and the stock footage is actually composited into it, not just the text',
        footage.magenta > footage.pixels * 0.05, JSON.stringify(footage));
 
+    // A scene's flat background is filled straight onto the canvas now
+    // rather than screenshotted into a full-resolution bitmap and held for
+    // the whole render — six scenes at 720p were spending ~22MB of a phone's
+    // memory budget to say "this scene is #0A0A0A" six times, which is
+    // memory the real footage needs. Switching the clip to "contain"
+    // letterboxes the 4:3 fixture inside a 9:16 frame, so the bars top and
+    // bottom are that background and nothing else: this sees the actual fill
+    // rather than inferring it.
+    await tap(page, 'reel-export-close');
+    await page.waitForTimeout(250);
+    // Every scene, not just the first — a seek into the finished file snaps
+    // to a keyframe, so which scene a sampled frame belongs to isn't ours to
+    // choose.
+    for (let i = 0; i < 3; i += 1) {
+      await tap(page, `composer-slide-${i}`);
+      await page.waitForTimeout(250);
+      await tap(page, 'clip-fit-contain');
+      await page.waitForTimeout(200);
+    }
+    await tap(page, 'composer-reel-export');
+    await page.getByTestId('reel-export').waitFor({ timeout: 6000 });
+    await tap(page, 'reel-export-preset-480');
+    await page.waitForTimeout(200);
+    await tap(page, 'reel-export-start');
+    await page.getByTestId('reel-export-done').waitFor({ timeout: 60000 });
+    // __lastBlobUrl only updates when the file is actually handed over, so
+    // without this the sample below re-reads the PREVIOUS export's bytes.
+    await page.evaluate(async () => {
+      document.querySelector('[data-testid="reel-export-download"]')?.click();
+      await new Promise((r) => setTimeout(r, 400));
+    });
+    const bgFill = await page.evaluate(async () => {
+      const v = document.createElement('video');
+      v.muted = true; v.playsInline = true; v.src = window.__lastBlobUrl;
+      await new Promise((res) => { v.onloadeddata = res; v.onerror = res; setTimeout(res, 8000); });
+      await new Promise((res) => { v.onseeked = res; v.currentTime = 0.1; setTimeout(res, 4000); });
+      const c = document.createElement('canvas');
+      c.width = v.videoWidth; c.height = v.videoHeight;
+      c.getContext('2d').drawImage(v, 0, 0);
+      // Top-left corner: past the safe area of any centred copy, so it is
+      // background and nothing else.
+      const d = c.getContext('2d').getImageData(4, 4, 1, 1).data;
+      return { r: d[0], g: d[1], b: d[2] };
+    });
+    // Not magenta any more (the clip is invisible) and not the black the
+    // canvas is cleared to — a real background colour actually got filled.
+    const isMagenta = bgFill.r > 45 && bgFill.b > 45 && bgFill.g < Math.min(bgFill.r, bgFill.b) * 0.65;
+    ok('a flat scene background is filled from its colour, not a held bitmap',
+       !isMagenta, JSON.stringify(bgFill));
+
     // The export now says out loud when it couldn't fetch a clip, a
     // voiceover or the score, rather than shipping a file with holes in it
     // that looks finished. The other half of that promise is not crying
