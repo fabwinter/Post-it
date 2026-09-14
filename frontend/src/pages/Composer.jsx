@@ -436,7 +436,10 @@ export default function Composer() {
     setMusicError(false);
     setMusicErrorMessage("");
     try {
-      const { data } = await api.post("/ai/generate", { kind: "music", prompt, options: { instrumental: true } });
+      const { data } = await api.post("/ai/generate", {
+        kind: "music", prompt,
+        options: { instrumental: true, style: "Upbeat, cinematic, unobtrusive instrumental", title: seed || "Background score" },
+      });
       // Music renders slower than the other kinds under load — the generic
       // 6-minute default (shared with image/video) was cutting off takes
       // that were still genuinely in progress, not stuck.
