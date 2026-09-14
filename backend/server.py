@@ -380,14 +380,91 @@ async def chat(messages, model, temperature=0.8, max_tokens=1200):
 CHAT_MODEL = "gemini-3-flash-preview"
 
 PLATFORM_GUIDE = {
-    "twitter": "X/Twitter: punchy, <=280 chars, strong hook first line, 1-2 relevant hashtags max.",
-    "linkedin": "LinkedIn: professional but human, short paragraphs, a hook, insight, and a soft CTA. Use line breaks.",
-    "instagram": "Instagram: warm and visual, a scroll-stopping first line, emojis sparingly, 5-10 hashtags at the end.",
-    "tiktok": "TikTok: casual, trend-aware caption, hook + payoff, 3-5 hashtags.",
-    "youtube": "YouTube: a compelling video title/description, keyword-aware, clear value proposition.",
-    "threads": "Threads: conversational, authentic, concise, minimal hashtags.",
-    "facebook": "Facebook: friendly, story-driven, medium length, clear CTA.",
+    "twitter": ("X/Twitter: punchy, <=280 chars, strong hook first line, 0-1 hashtags max (only if genuinely "
+                "trending). Never a formal, brand-speak opening — this audience calls it out."),
+    "linkedin": ("LinkedIn: professional but human, short paragraphs, a hook, insight, and a soft CTA. Use line "
+                 "breaks. Never open with \"We're excited to announce\" — that's the single most-skipped opener "
+                 "on this platform. 2-3 specific hashtags at the very end, never mid-post."),
+    "instagram": ("Instagram: warm and visual, a scroll-stopping first line (only ~2 lines show before \"more\"), "
+                  "emojis sparingly, 5-10 hashtags on their own line at the end — mix a couple of huge ones with "
+                  "several niche ones, not eight generic broad tags."),
+    "tiktok": ("TikTok: casual, trend-aware caption, hook + payoff, 3-5 hashtags (one broad, one niche, one "
+               "genuinely trending this week). The caption is a supplement — the hook has to already be in the "
+               "video's first second."),
+    "youtube": ("YouTube: a compelling video title/description, keyword-aware (the title is what search ranks "
+                "on, not just a hook), clear value proposition stated in the first two description lines."),
+    "threads": ("Threads: conversational, authentic, concise, first-person. Skip hashtags entirely — there's no "
+                "established hashtag culture here yet and using them reads as try-hard."),
+    "facebook": ("Facebook: friendly, story-driven, medium length (this audience reads more than X's), clear CTA "
+                 "as a question. Max 1-2 hashtags — they carry little SEO value here."),
 }
+
+# ---------------- Content-craft prompt modules ----------------
+# Distilled, reusable instruction fragments appended to system prompts across
+# the AI routes below. Each condenses one editorial discipline down to what
+# actually changes a model's output, rather than the source's full reference
+# material (a 100-row hook table, a page of AI-vocabulary tells, a slide-deck
+# design system) — the app's own users never see these; they only see better
+# hooks, less robotic copy, and tighter slides, every time, without having to
+# know any of this exists.
+
+# Hook-writing: 10 psychology triggers, one filled example per trigger, and
+# the "mix a stop-scroll trigger with a retention trigger" tactic.
+HOOK_CRAFT_GUIDE = (
+    " Hook-writing rules: a hook is a proven pattern filled with THIS topic's specific number, pain point, or "
+    "contrarian claim — never a generic opener. Draw from these shapes, mixing one stop-scroll trigger with one "
+    "retention trigger so it grabs attention AND keeps them reading: "
+    "stop-scroll — curiosity gap (\"Nobody talks about [X] in [niche]\"), negation (\"It's not [assumed cause] — "
+    "it's [real cause]\"), specificity (\"$[amount]: what [thing] actually costs\"), question (\"Why does [problem] "
+    "keep happening?\"); "
+    "retention — story (\"[time ago] I was [low point]. Today [high point]\"), confession (\"I'll admit it: "
+    "[vulnerable fact]\"), emotional (\"This is for the [person] who [struggle]\"); "
+    "also useful — contrarian (\"Stop [common advice] — here's what works\"), authority (\"I analyzed [N] [things]; "
+    "here's what I found\"), listicle (\"[N] [things] that will [outcome]\"). "
+    "Keep the filled hook under 12 words and native to the platform's voice."
+)
+
+# Humanize-writing: the highest-signal AI-writing tells, condensed from
+# Wikipedia's "Signs of AI writing" guide, plus the calendar skill's "never
+# open with the brand name" rule. Applied to every route that outputs
+# finished, ready-to-publish copy.
+HUMANIZE_GUIDE = (
+    " Write like a specific person with real opinions, not a language model: no significance inflation "
+    "(\"pivotal moment\", \"testament to\", \"stands as\", \"underscores its importance\"), no AI-vocabulary tells "
+    "(delve, leverage, elevate, unlock, unleash, navigate, landscape, tapestry, realm, myriad, robust, seamless, "
+    "cutting-edge, game-changing, revolutionize, synergy, streamline), no hedge-then-assert filler (\"it's worth "
+    "noting\", \"in today's fast-paced world\", \"at the end of the day\"), no chatbot artifacts (\"I hope this "
+    "helps\"), and no formulaic \"not just X, it's Y\" or a perfectly balanced good-news/bad-news closer. Vary "
+    "sentence length — some short and blunt, some longer. State one real, specific opinion or fact instead of a "
+    "vague claim. Never open with the brand name, \"We\", or \"Our\"."
+)
+
+# Carousel/reel slide discipline: one idea per slide, a hook-worthy opener, a
+# CTA close, varied rhythm instead of every slide reading the same.
+CAROUSEL_CRAFT_GUIDE = (
+    " Slide/scene discipline: one idea per slide — never two joined with \"and\". Body text short enough to read "
+    "in under 3 seconds. The first slide/scene is the single most intriguing line, strong enough to work as a "
+    "standalone hook. The last is a clear call to action. Vary the rhythm across slides — not every slide is a flat "
+    "statement; let some pose a question, some drop a number, some contradict the one before it."
+)
+
+# Short-form video (Reel/TikTok/Short) script pacing rules.
+SHORTFORM_SCRIPT_GUIDE = (
+    " Short-form video script rules: the hook must land in the first 1-2 seconds — no logo intro, no \"hey guys\", "
+    "spoken word and on-screen text both start at scene 1. Cut every 1-3 seconds of screen time rather than one long "
+    "static shot. On-screen text must carry the point with sound off. Arc: hook, then the problem, then the "
+    "payoff/answer, then a one-line CTA."
+)
+
+# Cover/thumbnail image-generation prompt rules: what a viewer actually
+# perceives at the small size a feed or a mobile thumbnail renders it at.
+THUMBNAIL_PROMPT_GUIDE = (
+    " This image doubles as a thumbnail people scan at postage-stamp size while scrolling, so the image-generation "
+    "prompt must describe: one single focal point with nothing cluttering it, a clear emotional expression if a face "
+    "is involved (surprise, curiosity, or concern reads best — a neutral expression reads worst), a high-contrast "
+    "2-3 color palette, and simple bold shapes that still read when shrunk small rather than fine detail that "
+    "vanishes at a glance."
+)
 
 
 # ---------------- Models ----------------
@@ -624,6 +701,7 @@ async def ai_ideate(req: IdeateRequest):
         "You are a world-class social media strategist and viral content ideator. "
         "You output ONLY a numbered list of distinct, specific, scroll-stopping content ideas. "
         "No preamble, no closing remarks. Each idea is one line: a punchy hook or angle."
+        + HOOK_CRAFT_GUIDE
         + await brand_and_knowledge(req, req.topic)
     )
     user = f"Give me {req.count} fresh content ideas{platform_note} about: {req.topic}"
@@ -653,6 +731,7 @@ async def ai_write(req: WriteRequest):
         f"You are an elite copywriter. Write a single ready-to-publish {req.platform} post. "
         f"Tone: {req.tone}. Platform rules: {guide} "
         "Return ONLY the post text, no explanations, no quotation marks, no markdown headers."
+        + HOOK_CRAFT_GUIDE + HUMANIZE_GUIDE
         + await brand_and_knowledge(req, req.brief)
     )
     model = req.model or CHAT_MODEL
@@ -673,6 +752,7 @@ async def ai_repurpose(req: RepurposeRequest):
         system = (
             f"You repurpose source content into a native {platform} post. {guide} "
             "Return ONLY the post text, no explanations, no quotes."
+            + HUMANIZE_GUIDE
         )
         txt = await chat(
             [{"role": "system", "content": system}, {"role": "user", "content": f"Source content:\n{req.source}"}],
@@ -713,26 +793,31 @@ async def ai_visual(req: VisualRequest):
     n = max(3, min(int(req.count or 5), 8))
     if t == "quote":
         system = ('You craft punchy, original social quotes. Return ONLY JSON: '
-                  '{"quote": "a single powerful sentence, max 140 chars", "author": "a fitting short attribution"}')
+                  '{"quote": "a single powerful sentence, max 140 chars", "author": "a fitting short attribution"}'
+                  + HUMANIZE_GUIDE)
         user = f"Topic: {req.topic}"
     elif t == "tweet":
         system = ('You write a viral-style tweet. Return ONLY JSON: '
-                  '{"name": "display name", "handle": "@handle", "text": "the tweet, max 260 chars"}')
+                  '{"name": "display name", "handle": "@handle", "text": "the tweet, max 260 chars"}'
+                  + HOOK_CRAFT_GUIDE + HUMANIZE_GUIDE)
         user = f"Topic: {req.topic}"
     elif t == "infographic":
         system = ('You design infographic copy. Return ONLY JSON: '
-                  '{"title": "short punchy title, max 50 chars", "points": ["3 to 5 concise bullet points, each max 70 chars"]}')
+                  '{"title": "short punchy title, max 50 chars", "points": ["3 to 5 concise bullet points, each max 70 chars"]}'
+                  + HUMANIZE_GUIDE)
         user = f"Topic: {req.topic}"
     else:  # carousel / slideshow / photo
         if t == "photo":
             system = ('You plan a photo slideshow. Return ONLY JSON: '
                       f'{{"title": "short cover title, max 50 chars", "slides": [{n} objects each '
                       '{"caption": "short on-image caption, max 60 chars", "image_prompt": "a vivid, cinematic, '
-                      'detailed image-generation prompt for this slide; do NOT include any text or words in the image"}]}}')
+                      'detailed image-generation prompt for this slide; do NOT include any text or words in the image"}]}}'
+                      + CAROUSEL_CRAFT_GUIDE + HUMANIZE_GUIDE + THUMBNAIL_PROMPT_GUIDE)
         else:
             system = ('You design a swipeable social carousel. Return ONLY JSON: '
                       f'{{"title": "hook cover title, max 50 chars", "slides": [{n} objects each '
-                      '{"heading": "max 40 chars", "body": "max 120 chars"}]}. The first slide is the hook/cover.')
+                      '{"heading": "max 40 chars", "body": "max 120 chars"}]}. The first slide is the hook/cover.'
+                      + HOOK_CRAFT_GUIDE + CAROUSEL_CRAFT_GUIDE + HUMANIZE_GUIDE)
         user = f"Topic: {req.topic}. Make exactly {n} slides."
 
     content = await chat([{"role": "system", "content": system}, {"role": "user", "content": user}], req.model or CHAT_MODEL, 0.85)
@@ -799,6 +884,7 @@ async def ai_templates(req: TemplateRequest):
         f"You are a viral content strategist. Write {n} distinct {req.platform} posts about the given topic, "
         f"each following this template: {style} Platform rules: {guide} "
         f'Return ONLY JSON: {{"posts": [{n} strings, each a complete ready-to-publish post]}}. No explanations.'
+        + (HOOK_CRAFT_GUIDE if req.template == "hooks" else "") + HUMANIZE_GUIDE
         + await brand_and_knowledge(req, req.topic)
     )
     content = await chat(
@@ -840,6 +926,7 @@ async def ai_restyle(req: RestyleRequest):
         f"Keep the same core message and facts — restructure and rephrase the delivery, don't invent new claims. "
         f"Platform rules: {guide} "
         "Return ONLY the rewritten post text, no explanations, no quotation marks, no markdown headers."
+        + (HOOK_CRAFT_GUIDE if req.template == "hooks" else "") + HUMANIZE_GUIDE
         + await brand_and_knowledge(req, req.content)
     )
     model = req.model or CHAT_MODEL
@@ -866,8 +953,11 @@ async def ai_coach(req: CoachRequest):
     system = (
         "You are a blunt, expert social media coach who has studied a million viral posts. "
         f"Critique the given draft honestly. Platform context: {guide} "
+        "If the draft reads like AI-generated writing (significance inflation, hedge-then-assert filler, "
+        "AI-vocabulary tells, robotic parallel structure), call that out by name as one of the improvements. "
         'Return ONLY JSON: {"score": integer 0-100, "strengths": [2-3 short strings], '
         '"improvements": [2-3 short specific actionable strings], "hook_rewrite": "a stronger rewritten opening line"}'
+        + HOOK_CRAFT_GUIDE
     )
     content = await chat(
         [{"role": "system", "content": system}, {"role": "user", "content": req.content}],
@@ -4126,49 +4216,58 @@ PLATFORM_SPECS = {
         "formats": ["carousel", "reel", "single", "story"], "default_format": "carousel",
         "aspect": {"carousel": "4:5", "single": "4:5", "reel": "9:16", "story": "9:16"},
         "slides": {"min": 3, "max": 10, "default": 6},
-        "notes": "Cover slide must stop the scroll on its own. Caption opens with a hook line, hashtags go at the end.",
+        "notes": ("Cover slide must stop the scroll on its own — carousels get pushed by the algorithm because "
+                  "they raise dwell time. Caption opens with a hook line (only ~2 lines show before \"more\"), "
+                  "hashtags on their own line at the end. Low-quality or generic stock-photo visuals kill reach here."),
     },
     "tiktok": {
         "label": "TikTok", "char_limit": 2200, "hashtags": 5,
         "formats": ["reel", "carousel", "single"], "default_format": "reel",
         "aspect": {"reel": "9:16", "carousel": "9:16", "single": "9:16"},
         "slides": {"min": 3, "max": 8, "default": 5},
-        "notes": "Hook in the first 2 seconds. Casual, spoken-word voiceover, on-screen text every scene.",
+        "notes": ("Hook in the first 1-2 seconds, on-screen text from the first frame. Casual, spoken-word "
+                  "voiceover — never a polished corporate-video feel, that's the fastest way to get scrolled past. "
+                  "No slow intro, no logo card, no \"hey guys\"."),
     },
     "linkedin": {
         "label": "LinkedIn", "char_limit": 3000, "hashtags": 3,
         "formats": ["single", "carousel", "text"], "default_format": "carousel",
         "aspect": {"carousel": "1:1", "single": "1.91:1", "text": "1:1"},
         "slides": {"min": 4, "max": 10, "default": 7},
-        "notes": "Professional but human. Short paragraphs, one insight per line, a soft CTA at the end.",
+        "notes": ("Professional but human. Short paragraphs, one insight per line, a soft CTA at the end. Never "
+                  "open with \"We're excited to announce\" or generic promotional language — that gets skipped. "
+                  "Put any link in a comment, never the post body; the algorithm suppresses posts with links in them."),
     },
     "twitter": {
         "label": "X / Twitter", "char_limit": 280, "hashtags": 2,
         "formats": ["single", "thread", "carousel"], "default_format": "thread",
         "aspect": {"single": "16:9", "thread": "16:9", "carousel": "1:1"},
         "slides": {"min": 3, "max": 8, "default": 5},
-        "notes": "Every tweet stands alone and is under 280 characters. No hashtag spam.",
+        "notes": ("Every tweet stands alone and is under 280 characters. 0-1 hashtags — spam kills reach. The "
+                  "opening line is a standalone hook, not a lead-in to what follows."),
     },
     "threads": {
         "label": "Threads", "char_limit": 500, "hashtags": 1,
         "formats": ["single", "thread", "carousel"], "default_format": "single",
         "aspect": {"single": "1:1", "thread": "1:1", "carousel": "1:1"},
         "slides": {"min": 3, "max": 8, "default": 5},
-        "notes": "Conversational and unpolished. Minimal hashtags.",
+        "notes": "Conversational, first-person, and unpolished. Skip hashtags — there's no established hashtag culture here.",
     },
     "youtube": {
         "label": "YouTube", "char_limit": 5000, "hashtags": 3,
         "formats": ["reel", "single"], "default_format": "reel",
         "aspect": {"reel": "9:16", "single": "16:9"},
         "slides": {"min": 3, "max": 8, "default": 5},
-        "notes": "Title carries the click. Description is keyword-aware with a clear value proposition.",
+        "notes": ("Title carries the click — under 60 characters, keyword up front, never redundant with the "
+                  "thumbnail's own text. Description's first two lines are what shows in search, so lead with "
+                  "the hook and the keyword there too."),
     },
     "facebook": {
         "label": "Facebook", "char_limit": 5000, "hashtags": 2,
         "formats": ["single", "carousel", "reel"], "default_format": "single",
         "aspect": {"single": "1.91:1", "carousel": "1:1", "reel": "9:16"},
         "slides": {"min": 3, "max": 10, "default": 5},
-        "notes": "Story-driven and friendly, medium length, clear CTA.",
+        "notes": "Story-driven and friendly, medium length (this audience reads more than X's), clear CTA as a question.",
     },
 }
 
@@ -4325,6 +4424,15 @@ async def ai_build_post(req: BuildPostRequest):
     else:
         format_rule = f'Use format \"{fmt}\" — {FORMAT_NOTES.get(fmt, fmt)}.'
 
+    # Craft guidance for the "hook", "caption"/"cta", "slides"/"script", and
+    # "cover_image_prompt" fields the JSON schema below asks for. Every
+    # platform here allows at least one of carousel/thread/reel, so the slide
+    # guide always applies; the short-form script guide only makes sense when
+    # a video scene script is actually possible for this platform.
+    craft_notes = HOOK_CRAFT_GUIDE + CAROUSEL_CRAFT_GUIDE + HUMANIZE_GUIDE + THUMBNAIL_PROMPT_GUIDE
+    if "reel" in allowed:
+        craft_notes += SHORTFORM_SCRIPT_GUIDE
+
     system = (
         f"You are a senior social creative director producing a finished, ready-to-publish "
         f"{spec['label']} post. Tone: {tone}. Platform rules: {spec['notes']} "
@@ -4332,6 +4440,7 @@ async def ai_build_post(req: BuildPostRequest):
         f"{format_rule} "
         f"If the format is carousel, thread or reel, produce exactly {n} slides/scenes (a carousel's cover "
         f"is separate and does not count). "
+        f"{craft_notes} "
         f"{brand_note}{template_note}"
         "Return ONLY JSON with this exact shape:\n"
         '{"format": "one of ' + "|".join(allowed) + '", '
