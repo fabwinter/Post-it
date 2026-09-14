@@ -166,8 +166,8 @@ function loadImage(src, { crossOrigin } = {}) {
   });
 }
 
-// A still clip loaded the same tolerant way loadVideo is: resolves null on
-// failure rather than rejecting, so one bad image doesn't sink the export.
+// A still clip loaded the same tolerant way loadVideoSrc is: resolves null
+// on failure rather than rejecting, so one bad image doesn't sink the export.
 function loadClipImage(url) {
   return loadImage(proxied(url), { crossOrigin: "anonymous" }).catch(() => null);
 }
@@ -184,30 +184,54 @@ function loadClipImage(url) {
 // on top of the fetch.
 const MEDIA_LOAD_TIMEOUT_MS = 55000;
 
-// A clip element ready to be drawn from. Resolves as soon as there are
-// frames to read; a clip that never loads resolves null rather than
-// failing the whole export — one missing source shouldn't lose the reel.
-function loadVideo(url, { muted }) {
+// A bare <video> element with no source yet. Split from actually loading a
+// clip (loadVideoSrc, below) so the element itself — the object identity
+// buildAudioTrack wires into the recording's Web Audio graph — can exist
+// from the very start of the export, while the expensive part (fetching
+// and decoding the real footage) happens only once a scene is actually
+// about to need it. See recordReel's clip window for why.
+function createVideoEl({ muted }) {
+  const el = document.createElement("video");
+  el.crossOrigin = "anonymous";
+  el.preload = "auto";
+  el.playsInline = true;
+  el.muted = muted;
+  return el;
+}
+
+// Points an already-created <video> element at a real clip and waits for
+// its first frame. Resolves the element either way — on a load failure it's
+// simply left without a source, which drawScene already treats as "nothing
+// to draw here" rather than an error, so one bad clip doesn't lose the reel.
+function loadVideoSrc(el, url) {
   return new Promise((resolve) => {
-    const el = document.createElement("video");
-    el.crossOrigin = "anonymous";
-    el.preload = "auto";
-    el.playsInline = true;
-    el.muted = muted;
-    el.src = proxied(url);
     let settled = false;
-    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
-    el.addEventListener("loadeddata", () => done(el), { once: true });
-    el.addEventListener("error", () => done(null), { once: true });
-    setTimeout(() => done(el.readyState >= 2 ? el : null), MEDIA_LOAD_TIMEOUT_MS);
+    const done = () => { if (!settled) { settled = true; resolve(el); } };
+    el.addEventListener("loadeddata", done, { once: true });
+    el.addEventListener("error", done, { once: true });
+    setTimeout(done, MEDIA_LOAD_TIMEOUT_MS);
+    el.src = proxied(url);
     el.load();
   });
 }
 
+// Drops a clip's source so the browser can free whatever decoder it was
+// holding for it, without discarding the element itself (still wired into
+// the audio graph if this scene's clip volume is audible). Recording only
+// ever moves forward through the timeline, so once a scene's clip is
+// released it is never needed — and never reloaded — again this pass.
+function releaseVideoSrc(el) {
+  if (!el) return;
+  try { el.pause(); } catch { /* ignore */ }
+  try { el.removeAttribute("src"); el.load(); } catch { /* ignore */ }
+}
+
 // An audio URL loaded into a playable element, the same tolerant way
-// loadVideo is — resolves null on failure so one bad take (or a reel with
-// no music) can't sink the export. Shared by a scene's own voiceover and
-// the reel's one background score; nothing about loading it differs.
+// loadVideoSrc is — resolves null on failure so one bad take (or a reel
+// with no music) can't sink the export. Shared by a scene's own voiceover
+// and the reel's one background score; nothing about loading it differs.
+// Kept eager (unlike clip video, see prepareScenes) — audio decode has none
+// of a video decoder's resource ceiling, so there's nothing to bound here.
 function loadAudioClip(url) {
   return new Promise((resolve) => {
     const el = document.createElement("audio");
@@ -267,14 +291,68 @@ export async function prepareScenes(items, layers, { onProgress } = {}) {
       layer.contentFrames = null;
     }
     const isStill = clip.url && clip.kind === "image";
-    const video = clip.url && !isStill ? await loadVideo(clip.url, { muted: clip.volume === 0 }) : null;
+    // The <video> element is created now (cheap — no source yet), but not
+    // pointed at real footage until recordReel's clip window decides this
+    // scene is actually coming up. Loading every clip here, up front, used
+    // to mean a many-scene reel held every clip's decoder open for the
+    // entire export regardless of how low the output resolution was set —
+    // a clip decodes at ITS OWN source resolution, not the canvas it's
+    // drawn into, and iOS Safari in particular caps how many video
+    // decoders it will run at once. See recordReel for the load/release.
+    const video = clip.url && !isStill ? createVideoEl({ muted: clip.volume === 0 }) : null;
     const clipImage = isStill ? await loadClipImage(clip.url) : null;
     const voiceUrl = it.asset?.spec?.voice?.url || "";
     const voice = voiceUrl ? await loadAudioClip(voiceUrl) : null;
-    scenes[it.index] = { bgImage, contentImage, contentFrames, video, clipImage, clip, voice, item: it };
+    scenes[it.index] = {
+      bgImage, contentImage, contentFrames, video, clipImage, clip, voice, item: it,
+      videoUrl: clip.url && !isStill ? clip.url : null,
+      videoState: "idle", // idle | loading | loaded
+    };
     onProgress?.((i + 1) / items.length);
   }
   return scenes;
+}
+
+// How far ahead of a scene's own start (seconds) its clip begins loading.
+// Bounds how many clips are ever concurrently decoded to roughly however
+// many scenes fall within this window, instead of every clip in the reel.
+// Generous on purpose: a proxied stock clip fetching over a slow connection
+// needs real head start, and the cost of starting early is at most a couple
+// of extra concurrent decoders, not the whole reel's worth.
+const CLIP_LOOKAHEAD_S = 4;
+
+// How long past a scene's own end to keep its clip loaded before releasing
+// it. An overlapping transition (dissolve/slide/zoom/wipe) can keep the
+// outgoing clip on screen for up to its full transition duration — clamped
+// to 3s in normalizeClip — after the incoming scene has already started, so
+// this has to clear that with room to spare rather than matching it exactly.
+const CLIP_RELEASE_MARGIN_S = 3.5;
+
+// Loads a scene's clip if it doesn't have one yet, idempotently — safe to
+// call every tick. Returns the in-flight (or already-resolved) load so a
+// caller that needs this exact scene ready (the opening frame) can await it.
+function ensureVideoLoaded(scene) {
+  if (!scene?.video || !scene.videoUrl || scene.videoState !== "idle") return scene?.videoLoadPromise || Promise.resolve();
+  scene.videoState = "loading";
+  scene.videoLoadPromise = loadVideoSrc(scene.video, scene.videoUrl).then(() => { scene.videoState = "loaded"; });
+  return scene.videoLoadPromise;
+}
+
+// Kicks off loading for whichever scenes are coming up soon, and releases
+// whichever are safely behind playback. Called every recording tick — the
+// checks themselves are just a handful of flag comparisons, cheap enough to
+// run at frame rate; the actual loads happen in the background.
+function manageClipWindow(scenes, items, t) {
+  items.forEach((it) => {
+    const s = scenes[it.index];
+    if (!s?.video) return;
+    if (s.videoState === "idle" && t < it.end && it.start - t <= CLIP_LOOKAHEAD_S) {
+      ensureVideoLoaded(s);
+    } else if (s.videoState === "loaded" && t > it.end + CLIP_RELEASE_MARGIN_S) {
+      releaseVideoSrc(s.video);
+      s.videoState = "idle";
+    }
+  });
 }
 
 // Keeps each clip rolling at the point of the source the timeline implies —
@@ -382,8 +460,11 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
     let raf = 0;
     const cleanup = () => {
       cancelAnimationFrame(raf);
+      // Fully released, not just paused — a canceled or finished export
+      // shouldn't leave every clip's decoder sitting resident until GC
+      // eventually gets to it.
       scenes.forEach((s) => {
-        if (s?.video && !s.video.paused) s.video.pause();
+        if (s?.video) releaseVideoSrc(s.video);
         if (s?.voice && !s.voice.paused) s.voice.pause();
       });
       if (musicEl && !musicEl.paused) musicEl.pause();
@@ -396,37 +477,49 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
       resolve({ blob: new Blob(chunks, { type: picked.mime }), ext: picked.ext, mime: picked.mime });
     };
 
-    // Draw the opening frame and give the clips a moment to actually be at
-    // their first frame before the recorder starts, so the file doesn't open
-    // on black.
-    drawFrame(ctx, scenes, items, 0, W, H);
-    syncScenes(scenes, items, 0, false);
-    // The score isn't scene-synced — it just loops under the whole thing,
-    // starting from the top the moment the recording does.
-    if (musicEl) { musicEl.loop = true; try { musicEl.currentTime = 0; } catch { /* not seekable yet */ } }
+    const begin = async () => {
+      // Clips load just-in-time as playback approaches them (manageClipWindow,
+      // called every tick below) rather than all at once — but whichever
+      // scene(s) the opening frame actually needs have to be explicitly
+      // waited on here, or the file would open on black while the first
+      // clip is still fetching.
+      manageClipWindow(scenes, items, 0);
+      await Promise.all(
+        items.filter((it) => it.start <= CLIP_LOOKAHEAD_S).map((it) => ensureVideoLoaded(scenes[it.index]))
+      );
+      if (isCancelled?.()) return;
+      drawFrame(ctx, scenes, items, 0, W, H);
+      syncScenes(scenes, items, 0, false);
+      // The score isn't scene-synced — it just loops under the whole thing,
+      // starting from the top the moment the recording does.
+      if (musicEl) { musicEl.loop = true; try { musicEl.currentTime = 0; } catch { /* not seekable yet */ } }
 
-    setTimeout(() => {
-      recorder.start(250);
-      if (musicEl) musicEl.play().catch(() => {});
-      const t0 = performance.now();
-      const tick = (now) => {
-        const t = (now - t0) / 1000;
-        if (isCancelled?.()) { recorder.stop(); return; }
-        if (t >= total) {
-          drawFrame(ctx, scenes, items, Math.max(0, total - 0.001), W, H);
-          onProgress?.(1);
-          // One extra beat so the final frame is definitely in the stream
-          // before the recorder is told to stop.
-          setTimeout(() => recorder.stop(), 120);
-          return;
-        }
-        syncScenes(scenes, items, t, true);
-        drawFrame(ctx, scenes, items, t, W, H);
-        onProgress?.(t / total);
+      setTimeout(() => {
+        recorder.start(250);
+        if (musicEl) musicEl.play().catch(() => {});
+        const t0 = performance.now();
+        const tick = (now) => {
+          const t = (now - t0) / 1000;
+          if (isCancelled?.()) { recorder.stop(); return; }
+          if (t >= total) {
+            drawFrame(ctx, scenes, items, Math.max(0, total - 0.001), W, H);
+            onProgress?.(1);
+            // One extra beat so the final frame is definitely in the stream
+            // before the recorder is told to stop.
+            setTimeout(() => recorder.stop(), 120);
+            return;
+          }
+          manageClipWindow(scenes, items, t);
+          syncScenes(scenes, items, t, true);
+          drawFrame(ctx, scenes, items, t, W, H);
+          onProgress?.(t / total);
+          raf = requestAnimationFrame(tick);
+        };
         raf = requestAnimationFrame(tick);
-      };
-      raf = requestAnimationFrame(tick);
-    }, 250);
+      }, 250);
+    };
+
+    begin().catch(reject);
   });
 }
 
