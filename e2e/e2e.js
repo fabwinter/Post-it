@@ -678,6 +678,25 @@ async function tap(page, testid) {
   await tap(page, 'reel-export-close');
   await page.waitForTimeout(300);
 
+  // ---------- 11a-vii. /proxy-image allows audio through, not just image/video ----------
+  // A voiceover or score's URL always lives on a different origin than the
+  // app, so canvas export loads it through /proxy-image the same way a
+  // cross-origin stock clip is — and that endpoint used to reject anything
+  // whose content-type wasn't image/* or video/*, silently 400ing every
+  // audio fetch an export tried to make (a real production report: an
+  // exported reel kept its background and text but lost its clips and
+  // voiceover). Every other e2e fixture is same-origin with the app
+  // itself, which never exercises the proxy at all — this hits it with a
+  // deliberately cross-origin fixture URL to actually prove the fix.
+  const proxyAudioCheck = await page.evaluate(async () => {
+    const testUrl = 'http://poyo-storage.e2e-fixture.test/voice-check.wav';
+    const r = await fetch('/api/proxy-image?url=' + encodeURIComponent(testUrl));
+    return { status: r.status, contentType: r.headers.get('content-type') };
+  });
+  ok('proxy-image allows audio content through for export',
+     proxyAudioCheck.status === 200 && (proxyAudioCheck.contentType || '').startsWith('audio/'),
+     JSON.stringify(proxyAudioCheck));
+
   // ---- fonts ----
   // Three of the catalogue's faces we serve ourselves (two from Google, one
   // bundled); the rest of the new ones are licensed elsewhere and only real

@@ -356,6 +356,22 @@ def _poyo_status(task_id: str):
     return resp.json().get("data", {})
 
 
+# The Music Series (generate-music, generate-mashup, ...) isn't queried
+# through the generic status endpoint above — PoYo's own docs give it a
+# dedicated "Query Music Detail" endpoint, task_id as a query param rather
+# than a path segment, and a different result shape (`files[].audio_url`,
+# not `file_url`). Polling the generic endpoint for a music task doesn't
+# necessarily fail outright, but its files never carry a `file_url`, which
+# is exactly a silent "no file came back" from the caller's point of view.
+def _poyo_music_detail(task_id: str):
+    resp = _poyo_call("GET", "/api/generate/detail/music", timeout=60, params={"task_id": task_id})
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"PoYo music detail error {resp.status_code}: {resp.text[:400]}")
+    data = resp.json().get("data", {})
+    files = [{"file_url": f["audio_url"], "credit": f.get("title") or ""} for f in (data.get("files") or []) if f.get("audio_url")]
+    return {**data, "files": files}
+
+
 async def chat(messages, model, temperature=0.8, max_tokens=1200):
     fn = _poyo_responses if model in RESPONSES_ONLY_MODELS else _poyo_chat
     return await asyncio.to_thread(fn, messages, model, temperature, max_tokens)
@@ -869,15 +885,27 @@ async def ai_coach(req: CoachRequest):
 
 @api_router.get("/proxy-image")
 async def proxy_image(url: str):
-    """Re-serves an image or video from our own origin so the browser's
-    canvas export (Composer's PNG download) can read pixels back out of it
-    even when the original host doesn't send CORS headers — a cross-origin
-    <img> without them taints the canvas. Restricted to image/video content
-    and capped in size; _fetch_with_cap already blocks non-http(s) schemes
-    and internal/private addresses."""
-    content, content_type = await asyncio.to_thread(_fetch_with_cap, url, 20 * 1024 * 1024, 20)
-    if not content_type.startswith(("image/", "video/")):
-        raise HTTPException(status_code=400, detail="Only image or video URLs can be proxied")
+    """Re-serves an image, video, or audio file from our own origin so the
+    browser's canvas export (a reel's clip/voiceover/score, or a PNG
+    download) can read pixels/samples back out of it even when the
+    original host doesn't send CORS headers — a cross-origin <img>/<video>/
+    <audio> without them taints the canvas. audio/* used to be rejected
+    outright here (only image/video were allowed), which meant every
+    voiceover and music track — always a different origin than our own —
+    silently 400'd the moment an export tried to load it, even though
+    playback in the live preview never goes through this endpoint at all
+    and so never showed the gap. Video also gets a taller cap and timeout
+    than images: a several-second stock clip is routinely bigger and
+    slower to fetch than a thumbnail, and the caps here used to assume
+    image-sized files for both. _fetch_with_cap already blocks non-http(s)
+    schemes and internal/private addresses."""
+    # The content type isn't known until after the fetch, so one generous
+    # cap covers all three kinds rather than guessing beforehand — images
+    # never get remotely close to it, and it's sized for video, the
+    # largest of the three.
+    content, content_type = await asyncio.to_thread(_fetch_with_cap, url, 60 * 1024 * 1024, 45)
+    if not content_type.startswith(("image/", "video/", "audio/")):
+        raise HTTPException(status_code=400, detail="Only image, video, or audio URLs can be proxied")
     return Response(content=content, media_type=content_type, headers={
         "Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=86400",
     })
@@ -3036,7 +3064,12 @@ async def ai_generate(req: GenerateRequest):
 
 @api_router.get("/ai/task/{task_id}")
 async def ai_task(task_id: str):
-    data = await asyncio.to_thread(_poyo_status, task_id)
+    rows, _ = await d1_query("SELECT kind FROM generations WHERE task_id = ?", [task_id])
+    kind = rows[0]["kind"] if rows else None
+    if kind == "music":
+        data = await asyncio.to_thread(_poyo_music_detail, task_id)
+    else:
+        data = await asyncio.to_thread(_poyo_status, task_id)
     status = data.get("status", "running")
     files = data.get("files", []) or []
     await d1_query(
@@ -3958,7 +3991,10 @@ async def _reconcile(rows: List[dict]) -> List[dict]:
 
     async def refresh(row):
         try:
-            data = await asyncio.to_thread(_poyo_status, row["task_id"])
+            if row.get("kind") == "music":
+                data = await asyncio.to_thread(_poyo_music_detail, row["task_id"])
+            else:
+                data = await asyncio.to_thread(_poyo_status, row["task_id"])
         except Exception:
             return
         status = data.get("status", row["status"])

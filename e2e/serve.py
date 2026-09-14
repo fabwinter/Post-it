@@ -152,7 +152,12 @@ def fake_post(url, headers=None, json=None, timeout=None, **kw):
 COUNTER = itertools.count(1)
 def fake_get(url, headers=None, timeout=None, params=None, **kw):
     if url in BLOB_STORE:
-        return Resp(BLOB_STORE[url])
+        # A real proxied fetch gets back whatever content-type the origin
+        # actually served — matched here by extension so /proxy-image's own
+        # content-type handling (image/video/audio) is exercised faithfully
+        # rather than everything looking like application/octet-stream.
+        ext = os.path.splitext(url)[1].lower()
+        return Resp(BLOB_STORE[url], content_type=MIME.get(ext, "application/octet-stream"))
     # requests.get is monkey-patched process-wide, so the backend's OWN
     # outgoing fetches (uploads/from-url, proxy-image, _safe_get generally)
     # land here too, never touching the real network — this is what makes a
@@ -162,6 +167,20 @@ def fake_get(url, headers=None, timeout=None, params=None, **kw):
         return Resp(open(os.path.join(FIXTURES, "stock_photo.png"), "rb").read(), content_type="image/png")
     if url == "http://127.0.0.1:8123/e2e-video.mp4":
         return Resp(open(os.path.join(FIXTURES, "clip.mp4"), "rb").read(), content_type="video/mp4")
+    # The Music Series isn't queried through the generic status endpoint —
+    # PoYo's docs give it its own "Query Music Detail" endpoint, task_id as
+    # a query param, and audio_url instead of file_url. Faked distinctly so
+    # the backend's kind-aware routing (and its audio_url -> file_url
+    # normalization) is actually exercised rather than accidentally passing
+    # against the generic handler's shape.
+    if "/api/generate/detail/music" in url:
+        task_id = (params or {}).get("task_id")
+        file_url = TASK_FILES.get(task_id, "/e2e-asset.png")
+        return Resp({"data": {
+            "task_id": task_id, "status": "finished", "credits_amount": 8, "progress": 100,
+            "files": [{"audio_id": task_id, "audio_url": file_url, "title": "Score", "tags": "", "duration": 8, "prompt": ""}],
+            "created_time": "2026-01-01T00:00:00", "error_message": None,
+        }})
     if "/api/generate/status/" in url:
         task_id = url.rstrip("/").rsplit("/", 1)[-1]
         file_url = TASK_FILES.get(task_id, "/e2e-asset.png")
@@ -192,6 +211,15 @@ def fake_get(url, headers=None, timeout=None, params=None, **kw):
 
 BLOB_COUNTER = itertools.count(1)
 BLOB_STORE = {}
+
+# A deliberately cross-origin-looking fixture (real fixtures all live under
+# 127.0.0.1:8123, same-origin with the app itself, so the frontend's own
+# proxied() helper skips routing them through /proxy-image at all) — the
+# one way to actually exercise that endpoint's content-type handling for
+# audio, the way a real voiceover or score URL (always a different origin)
+# does during export.
+BLOB_STORE["http://poyo-storage.e2e-fixture.test/voice-check.wav"] = _wav_bytes(1.0)
+
 def fake_put(url, headers=None, data=None, timeout=None, **kw):
     n = next(BLOB_COUNTER)
     ct = (headers or {}).get("x-content-type", "")

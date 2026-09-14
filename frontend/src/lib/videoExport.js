@@ -172,6 +172,18 @@ function loadClipImage(url) {
   return loadImage(proxied(url), { crossOrigin: "anonymous" }).catch(() => null);
 }
 
+// Loading a clip/voiceover/score for export means round-tripping it
+// through our own proxy (see /proxy-image's docstring on why) rather than
+// the browser fetching it directly — the server has to pull the whole
+// file from wherever it actually lives before any of it reaches us. A
+// client timeout shorter than the server's own fetch timeout can only
+// ever lose the race, which this used to do at 15s against the server's
+// 45s: nearly every real (not e2e-fake-fast) clip or voice/music track
+// timed out here before the proxy could finish, regardless of what fixed
+// the proxy itself. 55s clears that with room for real network latency
+// on top of the fetch.
+const MEDIA_LOAD_TIMEOUT_MS = 55000;
+
 // A clip element ready to be drawn from. Resolves as soon as there are
 // frames to read; a clip that never loads resolves null rather than
 // failing the whole export — one missing source shouldn't lose the reel.
@@ -187,7 +199,7 @@ function loadVideo(url, { muted }) {
     const done = (v) => { if (!settled) { settled = true; resolve(v); } };
     el.addEventListener("loadeddata", () => done(el), { once: true });
     el.addEventListener("error", () => done(null), { once: true });
-    setTimeout(() => done(el.readyState >= 2 ? el : null), 15000);
+    setTimeout(() => done(el.readyState >= 2 ? el : null), MEDIA_LOAD_TIMEOUT_MS);
     el.load();
   });
 }
@@ -206,7 +218,7 @@ function loadAudioClip(url) {
     const done = (v) => { if (!settled) { settled = true; resolve(v); } };
     el.addEventListener("loadeddata", () => done(el), { once: true });
     el.addEventListener("error", () => done(null), { once: true });
-    setTimeout(() => done(el.readyState >= 2 ? el : null), 15000);
+    setTimeout(() => done(el.readyState >= 2 ? el : null), MEDIA_LOAD_TIMEOUT_MS);
     el.load();
   });
 }
