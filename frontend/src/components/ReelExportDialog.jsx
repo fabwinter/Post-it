@@ -34,10 +34,32 @@ const MAX_CAPTION_FRAMES = 4;
 // The per-scene cap alone still scales with scene count: a six-scene reel
 // at 720p holds six of these sets at once, and each frame is a full-size
 // bitmap (720x1280 decodes to ~3.7MB however small the PNG itself is).
-// That total is what actually crashed a 720p export. This budgets the
-// whole reel instead, so adding scenes divides the caption frames rather
-// than multiplying the memory.
-const MAX_CAPTION_FRAMES_TOTAL = 18;
+// That total is what actually crashed a 720p export.
+//
+// Budgeted in BYTES rather than frames, because a frame is not a fixed
+// cost: the same 18-frame allowance is ~29MB at 480p and ~150MB at 1080p,
+// so counting frames meant the cap did almost nothing exactly where it was
+// needed most. This holds the line at the same ceiling whatever resolution
+// is picked, and spends it on more caption steps when they're cheap.
+const CAPTION_FRAME_BUDGET_BYTES = 40 * 1024 * 1024;
+
+// Whether a CSS background value is a plain colour the canvas can fill
+// directly, rather than something that genuinely has to be rasterised (a
+// gradient, an image). Assigning an invalid value to fillStyle leaves the
+// previous one in place, so setting it from two different starting points
+// and comparing is the reliable way to ask the browser "is this a colour?"
+let colorProbe = null;
+function isPlainColor(value) {
+  if (!value || typeof value !== "string") return false;
+  if (/gradient|url\(|image-set/i.test(value)) return false;
+  colorProbe = colorProbe || document.createElement("canvas").getContext("2d");
+  colorProbe.fillStyle = "#000000";
+  colorProbe.fillStyle = value;
+  const fromBlack = colorProbe.fillStyle;
+  colorProbe.fillStyle = "#ffffff";
+  colorProbe.fillStyle = value;
+  return colorProbe.fillStyle === fromBlack;
+}
 
 function pickCaptionWordIndices(count, max) {
   if (count <= max) return Array.from({ length: count }, (_, i) => i);
@@ -47,11 +69,14 @@ function pickCaptionWordIndices(count, max) {
 }
 
 // How many caption frames one scene may spend, given how many scenes are
-// competing for the same budget. Always at least one, so a captioned scene
-// never silently loses its caption entirely.
-function captionFrameBudget(captionedSceneCount) {
+// competing for the same budget and how much each frame costs at this
+// output size. Always at least one, so a captioned scene never silently
+// loses its caption entirely.
+function captionFrameBudget(captionedSceneCount, width, height) {
   if (captionedSceneCount <= 0) return MAX_CAPTION_FRAMES;
-  return Math.max(1, Math.min(MAX_CAPTION_FRAMES, Math.floor(MAX_CAPTION_FRAMES_TOTAL / captionedSceneCount)));
+  const perFrameBytes = Math.max(1, width * height * 4);
+  const affordable = Math.floor(CAPTION_FRAME_BUDGET_BYTES / perFrameBytes);
+  return Math.max(1, Math.min(MAX_CAPTION_FRAMES, Math.floor(affordable / captionedSceneCount)));
 }
 
 // Neutralises the card's own background and hides the clip for the overlay
@@ -113,13 +138,25 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
       const contentOpts = (opts) => ({ ...opts, backgroundColor: undefined, filter: dropBackdrop });
 
       const perSceneCaptionFrames = captionFrameBudget(
-        items.filter((it) => it.asset?.spec?.voice?.words?.length).length
+        items.filter((it) => it.asset?.spec?.voice?.words?.length).length,
+        dims.width, dims.height,
       );
 
       const layers = {};
       for (const it of items) {
         const opts = { pixelRatio: 1, cacheBust: true, width: dims.width, height: dims.height };
-        const bg = bgRefs.current[it.index] ? await toPng(bgRefs.current[it.index], opts) : null;
+        // A scene whose background is one flat colour does not need a
+        // full-resolution screenshot to say so. Every one of those decoded to
+        // a bitmap the size of the output (~3.7MB at 720p) and was held for
+        // the whole export, so a six-scene reel spent ~22MB saying "this
+        // scene is #0A0A0A" six times. The canvas can just fill the colour.
+        // Anything that genuinely needs pixels — a gradient, an image — still
+        // gets rasterised.
+        const flat = it.asset?.spec?.bg_color || themeFor(it.asset?.spec?.theme, brand).bg;
+        const bgColor = isPlainColor(flat) ? flat : null;
+        const bg = bgColor || !bgRefs.current[it.index]
+          ? null
+          : await toPng(bgRefs.current[it.index], opts);
         const words = it.asset?.spec?.voice?.words;
         // A captioned scene highlights a different word over its own
         // lifetime, and that highlight is baked into the DOM screenshot
@@ -142,17 +179,17 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
             if (cancelled.current) { setPhase("idle"); return; }
           }
           if (frames.length) {
-            layers[it.index] = { bg, contentFrames: frames };
+            layers[it.index] = { bg, bgColor, contentFrames: frames };
           } else {
             // Every captioned frame failed to capture — fall back to one
             // plain (uncaptioned) screenshot rather than losing the scene.
             // eslint-disable-next-line no-await-in-loop
             const content = await toPng(contentRefs.current[it.index], contentOpts(opts)).catch(() => null);
-            layers[it.index] = { bg, content };
+            layers[it.index] = { bg, bgColor, content };
           }
         } else {
           const content = contentRefs.current[it.index] ? await toPng(contentRefs.current[it.index], contentOpts(opts)) : null;
-          layers[it.index] = { bg, content };
+          layers[it.index] = { bg, bgColor, content };
         }
         if (cancelled.current) { setPhase("idle"); return; }
       }
@@ -182,7 +219,7 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
       setError(e?.message || "Export failed");
       setPhase("error");
     }
-  }, [items, total, dims.width, dims.height, music?.url, music?.volume]);
+  }, [items, total, dims.width, dims.height, brand, music?.url, music?.volume]);
 
   if (!open) return null;
 
