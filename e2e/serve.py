@@ -132,6 +132,17 @@ def fake_post(url, headers=None, json=None, timeout=None, **kw):
                     "character_end_times_seconds": [round((i + 1) * per, 4) for i in range(n)],
                 }
         elif "generate-music" in model or "generate-mashup" in model:
+            # PoYo's own docs for generate-music: instrumental=true needs
+            # custom_mode=true with style+title ("other parameters should be
+            # left empty" in non-custom mode) — a real production run once
+            # hit exactly this by sending custom_mode=false with
+            # instrumental=true. Enforced here so a regression fails loudly
+            # in this suite instead of only in production.
+            music_input = b.get("input") or {}
+            if music_input.get("instrumental") and not music_input.get("custom_mode"):
+                return Resp({"code": 400, "message": "instrumental=true requires custom_mode=true"}, 400)
+            if music_input.get("custom_mode") and not (music_input.get("style") and music_input.get("title")):
+                return Resp({"code": 400, "message": "custom_mode=true requires style and title"}, 400)
             file_url = f"/e2e-music-{task_id}.wav"
             BLOB_STORE[f"http://127.0.0.1:8123{file_url}"] = _wav_bytes(8.0)
             TASK_FILES[task_id] = file_url

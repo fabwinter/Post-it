@@ -3006,12 +3006,22 @@ async def ai_generate(req: GenerateRequest):
             }
         else:
             model = "generate-music"
-            payload = {
-                "prompt": prompt,
-                "custom_mode": False,
-                "instrumental": bool(opts.get("instrumental", False)),
-                "mv": opts.get("mv", "V4_5"),
-            }
+            instrumental = bool(opts.get("instrumental", False))
+            mv = opts.get("mv", "V4_5")
+            if instrumental:
+                # PoYo's own docs: custom_mode=false ("simple mode") is for a
+                # full song with auto-generated lyrics from a prompt, and
+                # explicitly says every other parameter should be left empty
+                # there — instrumental=true never belonged in that mode.
+                # An instrumental track needs custom_mode=true, where style
+                # and title are required ("only style and title are needed").
+                style = (opts.get("style") or prompt or "Upbeat, cinematic instrumental").strip()[:1000]
+                title = (opts.get("title") or prompt or "Background score").strip()[:80] or "Background score"
+                payload = {"style": style, "title": title, "custom_mode": True, "instrumental": True, "mv": mv}
+                if prompt:
+                    payload["prompt"] = prompt[:5000]
+            else:
+                payload = {"prompt": prompt, "custom_mode": False, "instrumental": False, "mv": mv}
     elif req.kind == "voice":
         model = opts.get("model", "elevenlabs-tts-turbo-2-5")
         payload = {"text": req.prompt, **{k: v for k, v in opts.items() if k not in ("model", "use_brand")}}
