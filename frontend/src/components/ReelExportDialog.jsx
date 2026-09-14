@@ -21,6 +21,23 @@ import {
 
 const STAGE_STYLE = { position: "fixed", left: -99999, top: 0, opacity: 0, pointerEvents: "none", zIndex: -1 };
 
+// A captioned scene needs one overlay screenshot per word it highlights —
+// fine for the handful of words a reel line usually has, but a long line
+// (or several scenes' worth of them) can pile up dozens of full-resolution
+// PNGs in memory at once. Desktop browsers shrug that off; iOS Safari's
+// much tighter per-tab memory ceiling can crash the whole page under it.
+// Capping frames per scene bounds the worst case regardless of script
+// length — short lines (the common case) are unaffected, since they never
+// reach the cap.
+const MAX_CAPTION_FRAMES = 6;
+
+function pickCaptionWordIndices(count, max) {
+  if (count <= max) return Array.from({ length: count }, (_, i) => i);
+  const picked = new Set();
+  for (let i = 0; i < max; i += 1) picked.add(Math.round((i * (count - 1)) / (max - 1)));
+  return [...picked];
+}
+
 // Neutralises the card's own background and hides the clip for the overlay
 // pass. A stylesheet rule wins over the inline background VisualCard sets,
 // which is what makes the overlay layer transparent without the card
@@ -84,16 +101,27 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
         // handful of extra screenshots, not hundreds.
         if (words?.length && contentRefs.current[it.index]) {
           const frames = [];
-          for (let w = 0; w < words.length; w += 1) {
+          const indices = pickCaptionWordIndices(words.length, MAX_CAPTION_FRAMES);
+          for (const w of indices) {
             setStageWordIndex((s) => ({ ...s, [it.index]: w }));
             // eslint-disable-next-line no-await-in-loop
             await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-            // eslint-disable-next-line no-await-in-loop
-            const image = await toPng(contentRefs.current[it.index], contentOpts(opts));
-            frames.push({ image, start: words[w].start, end: words[w].end });
+            try {
+              // eslint-disable-next-line no-await-in-loop
+              const image = await toPng(contentRefs.current[it.index], contentOpts(opts));
+              frames.push({ image, start: words[w].start, end: words[w].end });
+            } catch { /* this word's frame is skipped; the scene still uses whichever frames it got */ }
             if (cancelled.current) { setPhase("idle"); return; }
           }
-          layers[it.index] = { bg, contentFrames: frames };
+          if (frames.length) {
+            layers[it.index] = { bg, contentFrames: frames };
+          } else {
+            // Every captioned frame failed to capture — fall back to one
+            // plain (uncaptioned) screenshot rather than losing the scene.
+            // eslint-disable-next-line no-await-in-loop
+            const content = await toPng(contentRefs.current[it.index], contentOpts(opts)).catch(() => null);
+            layers[it.index] = { bg, content };
+          }
         } else {
           const content = contentRefs.current[it.index] ? await toPng(contentRefs.current[it.index], contentOpts(opts)) : null;
           layers[it.index] = { bg, content };
