@@ -29,13 +29,29 @@ const STAGE_STYLE = { position: "fixed", left: -99999, top: 0, opacity: 0, point
 // Capping frames per scene bounds the worst case regardless of script
 // length — short lines (the common case) are unaffected, since they never
 // reach the cap.
-const MAX_CAPTION_FRAMES = 6;
+const MAX_CAPTION_FRAMES = 4;
+
+// The per-scene cap alone still scales with scene count: a six-scene reel
+// at 720p holds six of these sets at once, and each frame is a full-size
+// bitmap (720x1280 decodes to ~3.7MB however small the PNG itself is).
+// That total is what actually crashed a 720p export. This budgets the
+// whole reel instead, so adding scenes divides the caption frames rather
+// than multiplying the memory.
+const MAX_CAPTION_FRAMES_TOTAL = 18;
 
 function pickCaptionWordIndices(count, max) {
   if (count <= max) return Array.from({ length: count }, (_, i) => i);
   const picked = new Set();
   for (let i = 0; i < max; i += 1) picked.add(Math.round((i * (count - 1)) / (max - 1)));
   return [...picked];
+}
+
+// How many caption frames one scene may spend, given how many scenes are
+// competing for the same budget. Always at least one, so a captioned scene
+// never silently loses its caption entirely.
+function captionFrameBudget(captionedSceneCount) {
+  if (captionedSceneCount <= 0) return MAX_CAPTION_FRAMES;
+  return Math.max(1, Math.min(MAX_CAPTION_FRAMES, Math.floor(MAX_CAPTION_FRAMES_TOTAL / captionedSceneCount)));
 }
 
 // Neutralises the card's own background and hides the clip for the overlay
@@ -88,6 +104,10 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
       const dropBackdrop = (node) => !(node instanceof Element && node.hasAttribute("data-export-backdrop"));
       const contentOpts = (opts) => ({ ...opts, backgroundColor: undefined, filter: dropBackdrop });
 
+      const perSceneCaptionFrames = captionFrameBudget(
+        items.filter((it) => it.asset?.spec?.voice?.words?.length).length
+      );
+
       const layers = {};
       for (const it of items) {
         const opts = { pixelRatio: 1, cacheBust: true, width: dims.width, height: dims.height };
@@ -101,7 +121,7 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
         // handful of extra screenshots, not hundreds.
         if (words?.length && contentRefs.current[it.index]) {
           const frames = [];
-          const indices = pickCaptionWordIndices(words.length, MAX_CAPTION_FRAMES);
+          const indices = pickCaptionWordIndices(words.length, perSceneCaptionFrames);
           for (const w of indices) {
             setStageWordIndex((s) => ({ ...s, [it.index]: w }));
             // eslint-disable-next-line no-await-in-loop

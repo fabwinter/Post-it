@@ -102,6 +102,18 @@ const emptySlide = (index, total, theme = "midnight") => ({
 // location.key effect below gets a chance to run.
 const initialPlatform = (state) => state.start?.platform || state.platforms?.[0] || "instagram";
 
+// Everything built here — a reel's scenes, their footage, their recorded
+// takes, the score — lives only in this component's state until someone
+// presses Save. That was fine until export started costing enough memory
+// to take the tab down with it: the page reloads, the Composer remounts
+// empty, and minutes of generation are simply gone with nothing to go back
+// to. This keeps a rolling snapshot in localStorage so a crash (or a
+// closed tab, or a stray refresh) costs nothing — it's offered back on the
+// next visit rather than restored silently, so it can never overwrite
+// whatever someone deliberately opened instead.
+const DRAFT_KEY = "createos:composer-draft";
+const DRAFT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 // One-release compatibility: a browser-history entry created before this
 // deploy (a back button mid-session) still carries the old flat keys
 // instead of a single `start` intent. Translates them into the new shape
@@ -187,6 +199,9 @@ export default function Composer() {
   // a reel-wide choice rather than per scene, since a reel reads as one
   // voice throughout.
   const [voicePreset, setVoicePreset] = useState(VOICE_PRESETS[0].key);
+  // An unsaved snapshot found at mount, offered back rather than applied —
+  // see DRAFT_KEY. Null once it's been taken or dismissed.
+  const [recoverable, setRecoverable] = useState(null);
   const [brief, setBrief] = useState("");
   // Folded in from the old Write page's own tone picker — "Caption only"
   // used to always write as "engaging" with no way to change it.
@@ -682,6 +697,67 @@ export default function Composer() {
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, []);
 
+  // ---- crash-proofing the work in progress (see DRAFT_KEY above) ----
+  // Read once, on mount, before anything has had a chance to overwrite it.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(DRAFT_KEY);
+      if (!raw) return;
+      const snap = JSON.parse(raw);
+      const worthKeeping = snap?.assets?.length || (snap?.content || "").trim();
+      if (!worthKeeping || !snap.savedAt || Date.now() - snap.savedAt > DRAFT_MAX_AGE_MS) {
+        localStorage.removeItem(DRAFT_KEY);
+        return;
+      }
+      setRecoverable(snap);
+    } catch { /* an unreadable snapshot is no worse than no snapshot */ }
+  }, []);
+
+  // And written back on every change, debounced — a reel's assets carry
+  // urls and timings, never the media itself, so a snapshot stays well
+  // inside what localStorage will hold.
+  useEffect(() => {
+    if (!assets.length && !content.trim()) return undefined;
+    const id = setTimeout(() => {
+      try {
+        localStorage.setItem(DRAFT_KEY, JSON.stringify({
+          savedAt: Date.now(), postId, title, content, platforms, format, assets, hashtags,
+          altText, contentByPlatform, mediaUrl, mediaType, music, scheduleAt, brandKitId, voicePreset,
+        }));
+      } catch { /* private mode, or over quota — a safety net that can't itself fail loudly */ }
+    }, 800);
+    return () => clearTimeout(id);
+  }, [postId, title, content, platforms, format, assets, hashtags, altText,
+      contentByPlatform, mediaUrl, mediaType, music, scheduleAt, brandKitId, voicePreset]);
+
+  const discardRecoverable = () => {
+    try { localStorage.removeItem(DRAFT_KEY); } catch { /* nothing to clean up */ }
+    setRecoverable(null);
+  };
+
+  const restoreRecoverable = () => {
+    const s = recoverable;
+    if (!s) return;
+    setPostId(s.postId ?? null);
+    setTitle(s.title || "Untitled post");
+    setContent(s.content || "");
+    setPlatforms(s.platforms?.length ? s.platforms : ["instagram"]);
+    setFormat(s.format || "single");
+    setAssets(s.assets || []);
+    setHashtags(s.hashtags || []);
+    setAltText(s.altText || "");
+    setContentByPlatform(s.contentByPlatform || {});
+    setMediaUrl(s.mediaUrl || "");
+    setMediaType(s.mediaType || "");
+    setMusic(s.music || {});
+    setScheduleAt(s.scheduleAt || "");
+    if (s.brandKitId) setBrandKitId(s.brandKitId);
+    if (s.voicePreset) setVoicePreset(s.voicePreset);
+    setActive(0);
+    setRecoverable(null);
+    toast.success("Picked up where you left off");
+  };
+
   // A "design" intent's own apply (from the Library's Designs tab, not a
   // dropdown pick made here) adopts that design's native format once, so
   // it opens looking the way it was built. After that the format
@@ -1130,6 +1206,10 @@ export default function Composer() {
       const payload = buildPayload(status);
       const res = postId ? await api.put(`/posts/${postId}`, payload) : await api.post("/posts", payload);
       setPostId(res.data.id);
+      // Saved for real now, so the local crash snapshot has nothing left to
+      // rescue — drop it rather than offer stale work back on the next visit.
+      // Editing after this point starts a fresh one on the next keystroke.
+      try { localStorage.removeItem(DRAFT_KEY); } catch { /* nothing to clean up */ }
       toast.success(status === "scheduled" ? "Post scheduled" : status === "published" ? "Marked as published" : "Draft saved");
       if (status !== "draft") navigate("/calendar");
     } catch (e) { toast.error(apiErrorMessage(e, "Save failed.")); } finally { setSaving(false); }
@@ -1202,6 +1282,29 @@ export default function Composer() {
           )}
         </div>
       </div>
+
+      {!!recoverable && (
+        <div className="mt-5 flex flex-wrap items-center gap-3 rounded-xl border border-iris/30 bg-iris/5 p-4"
+          data-testid="composer-recover-banner">
+          <History size={16} className="flex-none text-iris" />
+          <div className="flex-1 min-w-[200px]">
+            <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-iris">Unsaved work</div>
+            <p className="mt-1 text-sm text-zinc-300">
+              {recoverable.title && recoverable.title !== "Untitled post" ? `“${recoverable.title}”` : "A post"}
+              {recoverable.assets?.length ? ` · ${recoverable.assets.length} ${recoverable.format === "reel" ? "scenes" : "slides"}` : ""}
+              {" — left open from a previous session."}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button onClick={restoreRecoverable} data-testid="composer-recover-restore"
+              className="h-8 gap-1.5 rounded-lg bg-iris px-3 text-xs font-semibold text-white hover:bg-iris/80">
+              <Undo2 size={13} /> Pick up where I left off
+            </Button>
+            <Button variant="ghost" onClick={discardRecoverable} data-testid="composer-recover-discard"
+              className="h-8 px-2 text-xs text-zinc-500 hover:text-white">Discard</Button>
+          </div>
+        </div>
+      )}
 
       {editingTemplateId && (
         <div className="mt-5 flex flex-wrap items-center gap-3 rounded-xl border border-lime/30 bg-lime/5 p-4" data-testid="composer-editing-template-banner">

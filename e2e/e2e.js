@@ -697,6 +697,53 @@ async function tap(page, testid) {
      proxyAudioCheck.status === 200 && (proxyAudioCheck.contentType || '').startsWith('audio/'),
      JSON.stringify(proxyAudioCheck));
 
+  // ---------- 11a-viii. a built reel survives a crash or reload ----------
+  // Everything generated here lived only in component state until someone
+  // pressed Save, so an export heavy enough to take the tab down took the
+  // whole reel with it — the page reloaded to an empty Composer with
+  // minutes of generation simply gone. A rolling local snapshot is offered
+  // back instead (offered, not auto-applied, so it can never overwrite
+  // something deliberately opened).
+  await page.waitForTimeout(1200); // the snapshot write is debounced
+  const scenesBefore = await page.getByTestId('composer-slide-strip')
+    .locator('[data-testid^="composer-slide-"]').count();
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.getByTestId('composer-page').waitFor({ timeout: 10000 });
+  await page.getByTestId('composer-recover-banner').waitFor({ timeout: 8000 });
+  ok('a reload offers the unsaved reel back instead of losing it', true);
+  await tap(page, 'composer-recover-restore');
+  await page.waitForTimeout(500);
+  const scenesAfter = await page.getByTestId('composer-slide-strip')
+    .locator('[data-testid^="composer-slide-"]').count();
+  ok('...and restoring brings every scene back', scenesAfter === scenesBefore && scenesAfter > 0,
+     `${scenesBefore} -> ${scenesAfter}`);
+  await page.evaluate(() => localStorage.removeItem('createos:composer-draft'));
+
+  // ---------- 11a-ix. a saved reel design keeps each scene's own footage ----------
+  // Layout is deliberately one representative slide per role — a design is
+  // a reusable look, not a copy of the deck. Footage was keyed the same
+  // way, which for a reel meant only the first scene's clip was ever
+  // stored, then replayed onto every scene with the rest dropped.
+  const designClips = await page.evaluate(async () => {
+    const scene = (url, heading) => ({
+      template: 'slide', heading, body: `${heading} body`,
+      clip: { url, kind: 'video' }, video_url: url,
+    });
+    const r = await fetch('/api/templates/from-composer', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'e2e reel design', format: 'reel', theme: 'midnight',
+        slides: [scene('http://127.0.0.1:8123/one.mp4', 'One'),
+                 scene('http://127.0.0.1:8123/two.mp4', 'Two'),
+                 scene('http://127.0.0.1:8123/three.mp4', 'Three')],
+      }),
+    });
+    return (await r.json()).clips || {};
+  });
+  ok("a saved reel design keeps every scene's own footage, not just the first",
+     designClips['0']?.url?.endsWith('one.mp4') && designClips['1']?.url?.endsWith('two.mp4')
+     && designClips['2']?.url?.endsWith('three.mp4'), JSON.stringify(designClips));
+
   // ---- fonts ----
   // Three of the catalogue's faces we serve ourselves (two from Google, one
   // bundled); the rest of the new ones are licensed elsewhere and only real

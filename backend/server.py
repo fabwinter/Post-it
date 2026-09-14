@@ -2608,7 +2608,10 @@ def _apply_template_layouts(assets: List[Dict[str, Any]], template: dict) -> Lis
             bg = bg_colors.get(key) or bg_colors.get("slide") or bg_colors.get("cover")
             if bg:
                 spec["bg_color"] = bg
-        clip = clips.get(key) or clips.get("slide") or clips.get("cover")
+        # This scene's own saved footage first (see _layouts_from_composer_slides
+        # on why clips are keyed per index as well as per role), falling back to
+        # the role keys for templates saved before that and for carousels.
+        clip = clips.get(str(i)) or clips.get(key) or clips.get("slide") or clips.get("cover")
         if clip:
             spec["clip"] = dict(clip)
             spec["video_url"] = clip.get("url", "")
@@ -2714,8 +2717,19 @@ def _layouts_from_composer_slides(slides: List[Dict[str, Any]]) -> (Dict[str, An
             if s.get("bg_color"):
                 bg_colors[key] = s["bg_color"]
         clip_url = (s.get("clip") or {}).get("url") or s.get("video_url")
-        if clip_url and key not in clips:
-            clips[key] = {**(s.get("clip") or {}), "url": clip_url}
+        if clip_url:
+            clip = {**(s.get("clip") or {}), "url": clip_url}
+            # Layout is deliberately one representative slide per role — a
+            # template is a reusable look, not a copy of this deck. Footage
+            # isn't: a reel's scenes each carry their own clip, and keying
+            # those by role meant only the first scene's survived and then
+            # got replayed on every scene, with the rest dropped outright.
+            # Per-index keys keep each scene's own footage; the role keys
+            # stay alongside them so templates saved before this (and
+            # carousels, which really do want one representative) still
+            # resolve exactly as they did.
+            clips[str(i)] = clip
+            clips.setdefault(key, clip)
     return layouts, bg_colors, clips
 
 

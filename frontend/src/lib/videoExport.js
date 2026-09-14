@@ -254,6 +254,18 @@ export async function prepareScenes(items, layers, { onProgress } = {}) {
       layers[it.index]?.content ? loadImage(layers[it.index].content) : null,
       loadContentFrames(layers[it.index]?.contentFrames),
     ]);
+    // Each of those layers exists twice over at this point: once as the
+    // base64 PNG string the caller screenshotted, and again as the decoded
+    // bitmap just loaded from it. Only the bitmap gets drawn, so dropping
+    // the caller's strings as each scene finishes roughly halves what the
+    // export holds at its peak — which is what a 720p reel with captions
+    // was running out of.
+    const layer = layers[it.index];
+    if (layer) {
+      layer.bg = null;
+      layer.content = null;
+      layer.contentFrames = null;
+    }
     const isStill = clip.url && clip.kind === "image";
     const video = clip.url && !isStill ? await loadVideo(clip.url, { muted: clip.volume === 0 }) : null;
     const clipImage = isStill ? await loadClipImage(clip.url) : null;
