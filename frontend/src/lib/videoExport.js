@@ -62,8 +62,18 @@ export function exportDimensions(aspect, height) {
 }
 
 // Anything cross-origin drawn to a canvas taints it, and a tainted canvas
-// can't be captured at all — so every clip is pulled back through the app's
-// own media proxy, which is exactly what that endpoint exists for.
+// can't be captured at all — so a clip the browser can't read directly is
+// pulled back through the app's own media proxy, which is what that
+// endpoint exists for.
+//
+// It is the FALLBACK, though, not the first choice: the proxy runs as a
+// Vercel serverless function, and those cap their response body at ~4.5MB
+// however large a file the handler itself is willing to fetch. A stock
+// clip is routinely 5-50MB, a voiceover WAV a few MB, a generated music
+// track more — so proxying those never returned them at all, and the
+// export quietly composited what was left (the background and the text,
+// which are local screenshots and never go near the proxy). That is
+// exactly what "renders, but no footage, voiceover or music" looks like.
 export function proxied(url) {
   if (!url) return url;
   if (url.startsWith("blob:") || url.startsWith("data:")) return url;
@@ -72,6 +82,12 @@ export function proxied(url) {
     if (u.origin === window.location.origin) return url;
   } catch { /* not absolute — treat as same-origin */ return url; }
   return `${API}/proxy-image?url=${encodeURIComponent(url)}`;
+}
+
+// Whether a URL would go through the proxy at all — i.e. whether trying the
+// origin directly is even a different request worth making.
+function isProxied(url) {
+  return !!url && proxied(url) !== url;
 }
 
 // object-fit, done by hand: the canvas has no such property, and getting
@@ -168,21 +184,67 @@ function loadImage(src, { crossOrigin } = {}) {
 
 // A still clip loaded the same tolerant way loadVideoSrc is: resolves null
 // on failure rather than rejecting, so one bad image doesn't sink the export.
-function loadClipImage(url) {
+// Direct from its own origin first, proxy second — same reasoning as
+// loadMediaElement below.
+async function loadClipImage(url) {
+  const direct = await loadImage(url, { crossOrigin: "anonymous" }).catch(() => null);
+  if (direct || !isProxied(url)) return direct;
   return loadImage(proxied(url), { crossOrigin: "anonymous" }).catch(() => null);
 }
 
-// Loading a clip/voiceover/score for export means round-tripping it
-// through our own proxy (see /proxy-image's docstring on why) rather than
-// the browser fetching it directly — the server has to pull the whole
-// file from wherever it actually lives before any of it reaches us. A
-// client timeout shorter than the server's own fetch timeout can only
-// ever lose the race, which this used to do at 15s against the server's
-// 45s: nearly every real (not e2e-fake-fast) clip or voice/music track
-// timed out here before the proxy could finish, regardless of what fixed
-// the proxy itself. 55s clears that with room for real network latency
-// on top of the fetch.
+// Going through our own proxy means the server has to pull the whole file
+// from wherever it actually lives before any of it reaches us, so a client
+// timeout shorter than the server's own fetch timeout can only ever lose
+// the race — which this used to do at 15s against the server's 45s. 55s
+// clears that with room for real network latency on top of the fetch.
 const MEDIA_LOAD_TIMEOUT_MS = 55000;
+
+// The direct attempt is a plain CDN fetch with no server in the middle, so
+// it doesn't need anything like the proxy's budget — and when it's going to
+// fail it usually fails immediately (a CORS rejection needs one round trip).
+// Kept short so falling back to the proxy is quick rather than a stall.
+const DIRECT_LOAD_TIMEOUT_MS = 20000;
+
+// Points a media element at one specific URL and reports whether it came
+// back with something playable.
+function attemptMediaLoad(el, src, timeoutMs) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      el.removeEventListener("loadeddata", onLoaded);
+      el.removeEventListener("error", onError);
+      resolve(ok);
+    };
+    const onLoaded = () => finish(true);
+    const onError = () => finish(false);
+    el.addEventListener("loadeddata", onLoaded);
+    el.addEventListener("error", onError);
+    setTimeout(() => finish(el.readyState >= 2), timeoutMs);
+    el.src = src;
+    el.load();
+  });
+}
+
+// Loads a clip/voiceover/score into a media element, trying the source's own
+// origin before the proxy.
+//
+// Direct is the right default and not just an optimisation: the proxy caps
+// out at Vercel's ~4.5MB serverless response limit (see proxied()), which
+// most real footage and plenty of voice/music tracks exceed, so proxying
+// them returns nothing at all. Fetching straight from the CDN has no such
+// ceiling. It does need the origin to send CORS headers — both for canvas
+// drawing and for Web Audio, which silently outputs nothing for a
+// cross-origin element it isn't allowed to read — so when the direct
+// attempt fails for any reason we fall back to exactly what this did
+// before. Worst case is the old behaviour; best case is media that was
+// never going to fit through the proxy now loads.
+async function loadMediaElement(el, url) {
+  if (await attemptMediaLoad(el, url, DIRECT_LOAD_TIMEOUT_MS)) return true;
+  if (!isProxied(url)) return false;
+  return attemptMediaLoad(el, proxied(url), MEDIA_LOAD_TIMEOUT_MS);
+}
 
 // A bare <video> element with no source yet. Split from actually loading a
 // clip (loadVideoSrc, below) so the element itself — the object identity
@@ -200,19 +262,13 @@ function createVideoEl({ muted }) {
 }
 
 // Points an already-created <video> element at a real clip and waits for
-// its first frame. Resolves the element either way — on a load failure it's
-// simply left without a source, which drawScene already treats as "nothing
-// to draw here" rather than an error, so one bad clip doesn't lose the reel.
+// its first frame. Resolves true/false rather than throwing — a clip that
+// won't load leaves drawScene with nothing to draw for that layer, which it
+// already handles, so one bad clip doesn't lose the reel. The caller records
+// the false so the export can say what's missing instead of just shipping a
+// reel with holes in it.
 function loadVideoSrc(el, url) {
-  return new Promise((resolve) => {
-    let settled = false;
-    const done = () => { if (!settled) { settled = true; resolve(el); } };
-    el.addEventListener("loadeddata", done, { once: true });
-    el.addEventListener("error", done, { once: true });
-    setTimeout(done, MEDIA_LOAD_TIMEOUT_MS);
-    el.src = proxied(url);
-    el.load();
-  });
+  return loadMediaElement(el, url);
 }
 
 // Drops a clip's source so the browser can free whatever decoder it was
@@ -232,19 +288,11 @@ function releaseVideoSrc(el) {
 // and the reel's one background score; nothing about loading it differs.
 // Kept eager (unlike clip video, see prepareScenes) — audio decode has none
 // of a video decoder's resource ceiling, so there's nothing to bound here.
-function loadAudioClip(url) {
-  return new Promise((resolve) => {
-    const el = document.createElement("audio");
-    el.crossOrigin = "anonymous";
-    el.preload = "auto";
-    el.src = proxied(url);
-    let settled = false;
-    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
-    el.addEventListener("loadeddata", () => done(el), { once: true });
-    el.addEventListener("error", () => done(null), { once: true });
-    setTimeout(() => done(el.readyState >= 2 ? el : null), MEDIA_LOAD_TIMEOUT_MS);
-    el.load();
-  });
+async function loadAudioClip(url) {
+  const el = document.createElement("audio");
+  el.crossOrigin = "anonymous";
+  el.preload = "auto";
+  return (await loadMediaElement(el, url)) ? el : null;
 }
 
 // Loads the reel's background score ahead of recording — public because it
@@ -305,6 +353,10 @@ export async function prepareScenes(items, layers, { onProgress } = {}) {
     const voice = voiceUrl ? await loadAudioClip(voiceUrl) : null;
     scenes[it.index] = {
       bgImage, contentImage, contentFrames, video, clipImage, clip, voice, item: it,
+      // What this scene was supposed to have but couldn't load, so the
+      // export can report holes rather than quietly shipping them.
+      clipFailed: !!(isStill && clip.url && !clipImage),
+      voiceFailed: !!(voiceUrl && !voice),
       videoUrl: clip.url && !isStill ? clip.url : null,
       videoState: "idle", // idle | loading | loaded
     };
@@ -334,8 +386,23 @@ const CLIP_RELEASE_MARGIN_S = 3.5;
 function ensureVideoLoaded(scene) {
   if (!scene?.video || !scene.videoUrl || scene.videoState !== "idle") return scene?.videoLoadPromise || Promise.resolve();
   scene.videoState = "loading";
-  scene.videoLoadPromise = loadVideoSrc(scene.video, scene.videoUrl).then(() => { scene.videoState = "loaded"; });
+  scene.videoLoadPromise = loadVideoSrc(scene.video, scene.videoUrl).then((ok) => {
+    scene.videoState = "loaded";
+    if (!ok) scene.clipFailed = true;
+  });
   return scene.videoLoadPromise;
+}
+
+// What the finished reel is missing, for the dialog to report. Collected
+// after recording rather than before, because a clip only finds out it
+// can't load at the point the window actually reaches for it.
+export function missingMedia(scenes, { musicWanted, musicEl } = {}) {
+  const list = scenes.filter(Boolean);
+  return {
+    clips: list.filter((s) => s.clipFailed).length,
+    voices: list.filter((s) => s.voiceFailed).length,
+    music: !!musicWanted && !musicEl,
+  };
 }
 
 // Kicks off loading for whichever scenes are coming up soon, and releases
@@ -400,6 +467,14 @@ function syncScenes(scenes, items, t, playing) {
 // scene), and the reel's one background score at whatever level it was set
 // to. Wrapped in its own try/catch because a browser refusing the audio
 // graph should cost the soundtrack, not the export.
+//
+// The context this creates starts SUSPENDED whenever it's built without a
+// live user gesture behind it — which is always, here: preparing the scenes
+// takes seconds of fetching and screenshotting, so by the time recording
+// starts the click on "Render video" is long gone. A suspended context's
+// destination stream is pure silence, so every take and the score would be
+// mixed into a track that records nothing. recordReel resumes it before
+// starting; see there.
 function buildAudioTrack(scenes, musicEl, musicVolume) {
   const withClipSound = scenes.filter((s) => s?.video && s.clip.volume > 0);
   const withVoice = scenes.filter((s) => s?.voice);
@@ -488,6 +563,13 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
         items.filter((it) => it.start <= CLIP_LOOKAHEAD_S).map((it) => ensureVideoLoaded(scenes[it.index]))
       );
       if (isCancelled?.()) return;
+      // An AudioContext built this far from a user gesture starts suspended,
+      // and a suspended context feeds its destination stream silence — so
+      // without this the recording gets a soundtrack of nothing regardless of
+      // whether the voiceovers and score themselves loaded fine.
+      if (audioCtx && audioCtx.state !== "running") {
+        try { await audioCtx.resume(); } catch { /* recorded without sound */ }
+      }
       drawFrame(ctx, scenes, items, 0, W, H);
       syncScenes(scenes, items, 0, false);
       // The score isn't scene-synced — it just loops under the whole thing,
