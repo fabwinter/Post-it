@@ -1,6 +1,6 @@
 """Local end-to-end stack: real backend + real built frontend, with D1 backed by
 sqlite and PoYo faked so no network or keys are needed."""
-import json, os, sqlite3, struct, sys, threading, time, itertools, tempfile
+import json, os, re, sqlite3, struct, sys, threading, time, itertools, tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 sys.path.insert(0, os.path.join(ROOT, "backend"))
@@ -103,6 +103,18 @@ def fake_post(url, headers=None, json=None, timeout=None, **kw):
         elif "ideator" in sysmsg: txt = IDEAS
         elif "coach" in sysmsg: txt = '{"score": 72, "strengths": ["clear hook"], "improvements": ["cut the last line"], "hook_rewrite": "Week 6 is where everyone quits."}'
         elif "elite editor" in sysmsg: txt = "Nobody remembers safe. Ship the ugly version today."
+        # Saving a deck as a design normally reworks its copy into generic
+        # instructions, so the design is reusable for a new topic. Answering
+        # that for real (rather than letting the unparseable default fall
+        # back to the literal text) is what lets the suite tell the two
+        # apart: a carousel design should come back abstracted, a reel
+        # design should come back word-for-word.
+        elif "reusable content template" in sysmsg:
+            usermsg = " ".join(m.get("content", "") for m in msgs if m.get("role") == "user")
+            n = len(re.findall(r"Slide \d+:", usermsg)) or 1
+            # `json` is this function's own request-body parameter, not the
+            # module — same reason the plan branch above reaches for it this way.
+            txt = __import__("json").dumps({"slides": [{"heading": "ABSTRACTED", "body": "ABSTRACTED"} for _ in range(n)]})
         elif "carousel" in sysmsg or "infographic" in sysmsg or "quote" in sysmsg or "tweet" in sysmsg:
             txt = '{"quote":"Consistency compounds.","author":"CreateOS","title":"Ship weekly","points":["a","b","c"],"name":"Creator","handle":"@creator","text":"tweet text","slides":[{"heading":"H1","body":"B1"},{"heading":"H2","body":"B2"},{"heading":"H3","body":"B3"}]}'
         else: txt = "Here is a post about shipping weekly. It compounds."
