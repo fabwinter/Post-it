@@ -8,6 +8,7 @@ import { reelTimeline, formatSeconds } from "@/lib/videoClip";
 import {
   EXPORT_PRESETS, exportDimensions, exportSupported, pickRecorderMime,
   prepareScenes, recordReel, downloadBlob, loadMusic, missingMedia,
+  noteExportRun, lastExportRun, clearExportRun, describeExportRun,
 } from "@/lib/videoExport";
 
 // Renders the reel to a real video file.
@@ -126,6 +127,11 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
   // a slow prep and a stalled render looked exactly alike — including to
   // someone trying to tell us which one they were watching.
   const [prepStep, setPrepStep] = useState(0);
+  // What the last export was doing if it never finished. iOS kills a tab for
+  // memory without an error, an unload event or a console — the page just
+  // reloads empty — so the only account of a death like that is the trail the
+  // render leaves behind as it goes. Shown here so it can be read back to us.
+  const [lastRun, setLastRun] = useState(null);
 
   const bgRefs = useRef({});
   const contentRefs = useRef({});
@@ -138,10 +144,13 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
   const dims = exportDimensions(aspect, height);
 
   useEffect(() => {
-    if (!open) {
-      setPhase("idle"); setProgress(0); setError(""); setResult(null); setMissing(null);
-      cancelled.current = false; setStageWordIndex({}); setStageIndex(-1); setPrepStep(0);
+    if (open) {
+      const run = lastExportRun();
+      setLastRun(run && run.stage !== "done" ? run : null);
+      return;
     }
+    setPhase("idle"); setProgress(0); setError(""); setResult(null); setMissing(null);
+    cancelled.current = false; setStageWordIndex({}); setStageIndex(-1); setPrepStep(0);
   }, [open]);
 
   const run = useCallback(async () => {
@@ -162,6 +171,7 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
     } catch { audioContext = null; }
     let handedToRecorder = false;
     setError(""); setResult(null); setMissing(null); setProgress(0); setPrepStep(0); setPhase("preparing");
+    setLastRun(null);
     try {
       // Webfonts have to be resolved before rasterising or the overlay layer
       // bakes in a fallback face that the preview never showed.
@@ -201,6 +211,10 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
         // reads.
         setStageIndex(it.index);
         setPrepStep(items.indexOf(it) + 1);
+        noteExportRun({
+          stage: "preparing", scene: items.indexOf(it) + 1, scenes: items.length,
+          width: dims.width, height: dims.height,
+        });
         // Capturing is the long pole of an export, so it owns most of the
         // preparing bar; decoding those shots into bitmaps gets the rest.
         setProgress(((items.indexOf(it)) / Math.max(1, items.length)) * 0.3);
@@ -304,6 +318,10 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
       setError(e?.message || "Export failed");
       setPhase("error");
     } finally {
+      // Reaching here at all means JavaScript is still running, so whatever
+      // happened, the tab was not killed — close the breadcrumb out so the
+      // next open doesn't report a crash that didn't happen.
+      noteExportRun({ stage: "done" });
       // An export abandoned before recording began still opened a context,
       // and iOS only allows a handful at a time — so a few cancelled runs
       // would otherwise leave the next one unable to open one at all.
@@ -380,6 +398,21 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
                     ? `Preparing scene ${Math.max(1, prepStep)} of ${items.length}…`
                     : `Recording… ${Math.round(progress * 100)}%`}
                 </div>
+              </div>
+            )}
+
+            {phase === "idle" && lastRun && (
+              <div className="mt-4 flex gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-200"
+                data-testid="reel-export-lastrun">
+                <AlertTriangle size={14} className="mt-0.5 flex-none" />
+                <span className="min-w-0">
+                  The last render stopped without finishing, at{" "}
+                  <span className="font-mono break-words text-amber-100">{describeExportRun(lastRun)}</span>.
+                  A lower resolution is the quickest thing to try.{" "}
+                  <button type="button" className="underline underline-offset-2"
+                    onClick={() => { clearExportRun(); setLastRun(null); }}
+                    data-testid="reel-export-lastrun-dismiss">Dismiss</button>
+                </span>
               </div>
             )}
 
