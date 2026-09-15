@@ -575,6 +575,34 @@ async function tap(page, testid) {
     ok('...and the stock footage is actually composited into it, not just the text',
        footage.magenta > footage.pixels * 0.05, JSON.stringify(footage));
 
+    // Frames are now pushed into the recording by the draw loop itself
+    // (captureStream(0) + requestFrame) rather than sampled off a timer, so
+    // "a file of the right length" is no longer evidence the picture moved —
+    // one frame held for the whole duration would pass every check above.
+    // The clip fixture has a band travelling across it, so two moments that
+    // are genuinely different frames cannot be identical.
+    const moves = await page.evaluate(async () => {
+      const v = document.createElement('video');
+      v.muted = true; v.playsInline = true; v.src = window.__lastBlobUrl;
+      await new Promise((res) => { v.onloadeddata = res; v.onerror = res; setTimeout(res, 8000); });
+      const c = document.createElement('canvas');
+      c.width = v.videoWidth; c.height = v.videoHeight;
+      const g = c.getContext('2d');
+      const sampleAt = async (time) => {
+        await new Promise((res) => { v.onseeked = res; v.currentTime = time; setTimeout(res, 4000); });
+        g.drawImage(v, 0, 0);
+        const { data } = g.getImageData(0, 0, c.width, c.height);
+        let sum = 0;
+        for (let i = 0; i < data.length; i += 4000) sum += data[i] + data[i + 1] * 3 + data[i + 2] * 7;
+        return sum;
+      };
+      const a = await sampleAt(0.15);
+      const b = await sampleAt(Math.max(0.5, (v.duration || 1) * 0.7));
+      return { a, b };
+    });
+    ok('...and the picture advances rather than holding one frame',
+       moves.a !== moves.b, JSON.stringify(moves));
+
     // A scene's flat background is filled straight onto the canvas now
     // rather than screenshotted into a full-resolution bitmap and held for
     // the whole render — six scenes at 720p were spending ~22MB of a phone's
