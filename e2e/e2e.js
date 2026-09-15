@@ -1368,8 +1368,25 @@ async function confirmReel(page) {
     const v = document.querySelector('[data-testid="composer-visuals"] video');
     return v ? (v.currentSrc || v.src) : null;
   });
+  const sceneVideoOpacity = () => page.evaluate(() => {
+    const v = document.querySelector('[data-testid="composer-visuals"] video');
+    return v ? Number(getComputedStyle(v).opacity).toFixed(2) : null;
+  });
   const savedClipUrl = await sceneVideoUrl();
   ok('the stock video landed on the scene', !!savedClipUrl, savedClipUrl);
+  // Bumped off the 0.45 default a fresh auto-fill always produces (see
+  // fillSceneVisual/normalizeClip) — the one property this fake stock
+  // search can't coincidentally reproduce, since every result comes back
+  // through the exact same "brand new clip" path with no opacity of its
+  // own. Whether the template's OWN saved opacity — not a fresh default —
+  // survives being reused for a new build is what makes the design-reuse
+  // check below meaningful rather than a URL the fake happens to always
+  // return the same way regardless of what actually built the scene.
+  await setRange('clip-opacity', 1);
+  await page.waitForTimeout(200);
+  const savedClipOpacity = await sceneVideoOpacity();
+  ok("the clip's own opacity is customized before saving, not left at the auto-fill default",
+     savedClipOpacity === '1.00', savedClipOpacity);
   await tap(page, 'composer-save-template');
   await page.waitForTimeout(2000);
 
@@ -1383,6 +1400,41 @@ async function confirmReel(page) {
      await page.getByTestId('clip-editor').count() === 1);
   ok('the clip itself survives save and reopen instead of being dropped',
      (await sceneVideoUrl()) === savedClipUrl, { savedClipUrl, reopened: await sceneVideoUrl() });
+
+  // ---- that design's clip actually lands on a FRESH reel built from it ----
+  // Different from the reopen check above: this is _apply_template_layouts
+  // (server side) putting the design's saved clip onto a brand-new build,
+  // not the editor loading the design's own saved deck back up. Two bugs
+  // used to erase it here even though reopening the design itself looked
+  // fine: the review step rebuilt every scene from just {heading, body,
+  // video_prompt}, dropping elements/bg_color/clip entirely; and the
+  // auto-footage-fill that runs right after building overwrote ANY clip —
+  // template-supplied or not — with a fresh stock search regardless.
+  await page.goto(B + '/composer', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(400);
+  await tap(page, 'composer-format-reel');
+  await page.waitForTimeout(300);
+  const templateOptions = await page.getByTestId('composer-custom-template-select').locator('option').allTextContents();
+  const clipTemplateIdx = templateOptions.findIndex((t) => t.includes('E2E Reel Clip Template'));
+  ok('the saved reel design is offered to build a fresh post from',
+     clipTemplateIdx > 0, JSON.stringify(templateOptions));
+  await page.getByTestId('composer-custom-template-select').selectOption({ index: clipTemplateIdx });
+  await page.getByTestId('composer-brief').fill('shipping weekly, e2e design reuse');
+  await tap(page, 'composer-autobuild');
+  await confirmReel(page);
+  await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
+  await page.waitForTimeout(1000);
+  ok("building a fresh reel from a saved design keeps that design's own clip on the scene",
+     (await sceneVideoUrl()) === savedClipUrl, { savedClipUrl, built: await sceneVideoUrl() });
+  // The URL check above can't tell "the design's clip survived" apart from
+  // "a fresh auto-fill happened to land on the same fixture" — this fake
+  // stock search always returns the one clip either way. Opacity can:
+  // savedClipOpacity was bumped off the 0.45 every fresh auto-fill produces,
+  // so seeing that SAME non-default value here means the design's own
+  // customization made it through review and wasn't then overwritten by
+  // the auto-fill that runs right after building.
+  ok("...and that clip's own customization (not a fresh auto-fill's default) survives too",
+     (await sceneVideoOpacity()) === savedClipOpacity, { savedClipOpacity, built: await sceneVideoOpacity() });
 
   // Leave on a different URL than the next block's own goto target: Playwright's
   // page.goto() to the exact URL already loaded (this block's last navigation
