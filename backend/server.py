@@ -509,6 +509,16 @@ class GenerateRequest(BaseModel):
     options: Optional[Dict[str, Any]] = Field(default_factory=dict)
 
 
+# Shared by every "delete several rows at once" endpoint — generations,
+# library elements, posts. Declared here (not next to its first user)
+# because a route defined earlier in the file still needs the name resolved
+# at import time: FastAPI/Pydantic evaluate a parameter's type annotation
+# when the function is DEFINED, not when it's called, so this has to exist
+# before the first `req: BulkDeleteRequest` appears, not just before it runs.
+class BulkDeleteRequest(BaseModel):
+    ids: List[str]
+
+
 class PostContent(BaseModel):
     text: str = ""
 
@@ -1402,6 +1412,16 @@ async def delete_library_element(element_id: str):
     if not rows:
         raise HTTPException(status_code=404, detail="Library element not found")
     return {"ok": True}
+
+
+@api_router.post("/library/elements/bulk-delete")
+async def bulk_delete_library_elements(req: BulkDeleteRequest):
+    await ensure_schema()
+    if not req.ids:
+        return {"deleted": 0}
+    placeholders = ",".join(["?"] * len(req.ids))
+    rows, _ = await d1_query(f"DELETE FROM library_elements WHERE id IN ({placeholders}) RETURNING id", req.ids)
+    return {"deleted": len(rows)}
 
 
 # ---------------- Content extraction (brand analysis + file-to-template) ----------------
@@ -4082,10 +4102,6 @@ async def search_knowledge(req: KnowledgeSearch):
 
 
 # ---------------- Generation history ----------------
-class BulkDeleteRequest(BaseModel):
-    ids: List[str]
-
-
 class GenerationUpdate(BaseModel):
     title: Optional[str] = None
     prompt: Optional[str] = None

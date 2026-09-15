@@ -330,10 +330,12 @@ async function confirmReel(page) {
   // Batch, Content Studio, Visual Studio and Repurpose all folded into the
   // Composer as modes (see the Composer-modes section below), and
   // Connections folded into Brand Kit as a tab — none of them has its own
-  // nav entry left to check. Five screens now: Home, Create, Plan,
-  // Library, Brand.
-  ok('the nav lists exactly the five collapsed screens',
-     (await page.locator('[data-testid^="mobile-nav-"]').count()) === 5,
+  // nav entry left to check. Six screens now: Home, Create, Projects, Plan,
+  // Library, Brand — Projects earned its own screen once "find and reopen
+  // something you already built" stopped being a thing Home could do in
+  // passing (see the Projects section below).
+  ok('the nav lists exactly the six collapsed screens',
+     (await page.locator('[data-testid^="mobile-nav-"]').count()) === 6,
      await page.locator('[data-testid^="mobile-nav-"]').allTextContents());
 
   // ---------- 9. every route is usable on a phone ----------
@@ -1665,6 +1667,132 @@ async function confirmReel(page) {
   const preset = await page.getByTestId('composer-schedule-time').inputValue();
   ok('clicking a calendar day pre-fills the schedule with that day',
      preset.length > 0 && Number(preset.slice(8, 10)) === Number(clickedDay), `clicked ${clickedDay}, got "${preset}"`);
+
+  // ---------- 12. Projects — the page, the "open project" start mode, and library-elements bulk select ----------
+  // Self-contained: builds and saves its own draft rather than reusing one
+  // from an earlier section, so it isn't fragile against those tests'
+  // ordering or later mutating/deleting the post it depends on.
+  const projectTitle = `E2E project ${Date.now()}`;
+  await page.goto(B + '/composer', { waitUntil: 'domcontentloaded' });
+  await page.getByTestId('composer-page').waitFor({ timeout: 10000 });
+  await page.getByTestId('composer-title').fill(projectTitle);
+  // Project cards show the caption when there is one (projectSummary
+  // prefers content over title, same as every other post preview in the
+  // app) — so the marker the test searches/filters by has to be IN the
+  // text that's actually rendered, not just in the title field.
+  await page.getByTestId('composer-content').fill(`Body for ${projectTitle} — no AI needed for this one.`);
+  await tap(page, 'composer-save-draft');
+  await page.waitForTimeout(800);
+  ok('a fresh draft actually saved', (await page.getByTestId('composer-title').inputValue()) === projectTitle);
+
+  // The Projects page lists it.
+  await page.goto(B + '/projects', { waitUntil: 'domcontentloaded' });
+  await page.getByTestId('projects-page').waitFor({ timeout: 8000 });
+  await page.waitForTimeout(400);
+  const projectCard = page.locator('[data-testid^="project-card-"]', { hasText: projectTitle });
+  await projectCard.waitFor({ timeout: 5000 });
+  ok('the Projects page lists a freshly saved draft', await projectCard.isVisible());
+
+  // Search narrows the list; a term that matches nothing shows the empty state.
+  await page.getByTestId('projects-search').fill('no such project exists anywhere');
+  await page.waitForTimeout(200);
+  ok('searching for nothing shows the empty state, not a stale list',
+     (await page.locator('[data-testid^="project-card-"]').count()) === 0);
+  await page.getByTestId('projects-search').fill('');
+  await page.waitForTimeout(200);
+
+  // The status filter actually filters — a fresh save is a draft, so it
+  // should show under Drafts and disappear from a Published-only view.
+  await tap(page, 'projects-filter-draft');
+  await page.waitForTimeout(200);
+  ok('the Drafts filter includes a freshly saved draft', await projectCard.isVisible());
+  await tap(page, 'projects-filter-published');
+  await page.waitForTimeout(200);
+  ok('the Published filter excludes a draft', (await projectCard.count()) === 0);
+  await tap(page, 'projects-filter-all');
+  await page.waitForTimeout(200);
+
+  // "Open project" from the Composer's own start menu — a fifth way in,
+  // reusing the exact same reload mechanism History's "Use" and Home's
+  // draft rows already rely on (navigate with a fresh start intent; Composer
+  // re-reads it because location.key changed, not because the path did).
+  await page.goto(B + '/composer', { waitUntil: 'domcontentloaded' });
+  await page.getByTestId('composer-page').waitFor({ timeout: 8000 });
+  await tap(page, 'composer-start-project');
+  await page.getByTestId('composer-project-panel').waitFor({ timeout: 5000 });
+  await page.getByTestId('composer-project-search').fill(projectTitle);
+  await page.waitForTimeout(300);
+  const projectRow = page.locator('[data-testid^="composer-project-row-"]', { hasText: projectTitle });
+  await projectRow.waitFor({ timeout: 5000 });
+  await projectRow.click({ force: true });
+  await page.getByTestId('composer-page').waitFor({ timeout: 8000 });
+  await page.waitForTimeout(500);
+  ok("opening a project from the create menu loads it for editing, not a blank post",
+     (await page.getByTestId('composer-title').inputValue()) === projectTitle,
+     await page.getByTestId('composer-title').inputValue());
+
+  // Bulk select + delete on the Projects page — the same shape as the
+  // library-elements one just below, and the thing neither had before:
+  // deleting more than one at a time meant one confirm dialog per item.
+  await page.goto(B + '/projects', { waitUntil: 'domcontentloaded' });
+  await page.getByTestId('projects-page').waitFor({ timeout: 8000 });
+  await projectCard.waitFor({ timeout: 5000 });
+  await tap(page, 'projects-select-mode');
+  await page.waitForTimeout(150);
+  await projectCard.click({ force: true });
+  await page.waitForTimeout(150);
+  ok('selecting a project card in select mode counts it',
+     (await page.getByTestId('projects-delete-selected').innerText()).includes('(1)'));
+  page.once('dialog', (d) => d.accept());
+  const bulkDeleteResp = page.waitForResponse((r) => r.url().includes('/api/posts/bulk-delete'), { timeout: 5000 }).catch(() => null);
+  await tap(page, 'projects-delete-selected');
+  const bulkDr = await bulkDeleteResp;
+  await projectCard.waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
+  ok('bulk-deleting a project actually removes it',
+     !!bulkDr && bulkDr.status() === 200 && (await projectCard.count()) === 0);
+
+  // ---------- 12a. library elements — always-visible delete + bulk select ----------
+  await page.goto(B + '/library', { waitUntil: 'domcontentloaded' });
+  await page.getByTestId('library-page').waitFor({ timeout: 8000 });
+  await tap(page, 'library-tab-elements');
+  await page.getByTestId('library-elements-panel').waitFor({ timeout: 5000 });
+  await page.waitForTimeout(400);
+
+  // Upload two, so there is something real to multi-select.
+  const uploadOne = async () => {
+    const resp = page.waitForResponse((r) => r.url().includes('/api/library/elements') && r.request().method() === 'POST', { timeout: 8000 });
+    await page.getByTestId('library-elements-upload-input').setInputFiles(require('path').join(__dirname, 'fixtures/photo.png'));
+    const saved = await resp;
+    const id = (await saved.json()).id;
+    await page.getByTestId(`library-elements-item-${id}`).waitFor({ timeout: 8000 });
+    return id;
+  };
+  const elId1 = await uploadOne();
+  const elId2 = await uploadOne();
+
+  // A hover-only delete affordance is invisible on a touch screen — this is
+  // most of this app's real use — so the button has to actually be visible
+  // (non-zero opacity) sitting at rest, not just present in the DOM.
+  const restOpacity = await page.getByTestId(`library-elements-delete-${elId1}`).evaluate((el) => getComputedStyle(el).opacity);
+  ok('an element\'s delete button is visible at rest, not hover-only',
+     Number(restOpacity) > 0, restOpacity);
+
+  await tap(page, 'library-elements-select-mode');
+  await page.waitForTimeout(150);
+  await tap(page, `library-elements-item-${elId1}`);
+  await tap(page, `library-elements-item-${elId2}`);
+  await page.waitForTimeout(150);
+  ok('selecting two elements counts both',
+     (await page.getByTestId('library-elements-delete-selected').innerText()).includes('(2)'));
+  page.once('dialog', (d) => d.accept());
+  const elBulkResp = page.waitForResponse((r) => r.url().includes('/api/library/elements/bulk-delete'), { timeout: 5000 }).catch(() => null);
+  await tap(page, 'library-elements-delete-selected');
+  const elBulkDr = await elBulkResp;
+  await page.getByTestId(`library-elements-item-${elId1}`).waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
+  ok('bulk-deleting library elements removes both, in one request',
+     !!elBulkDr && elBulkDr.status() === 200
+     && (await page.getByTestId(`library-elements-item-${elId1}`).count()) === 0
+     && (await page.getByTestId(`library-elements-item-${elId2}`).count()) === 0);
 
   // html-to-image reaches for the Google Fonts stylesheet while rasterising
   // the overlay layer; this harness blocks every off-origin request, so those
