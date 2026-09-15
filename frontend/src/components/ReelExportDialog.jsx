@@ -121,6 +121,11 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
   // Which scene is currently mounted on the off-screen stage. Only one is,
   // and only while it's being captured — see the capture loop in `run()`.
   const [stageIndex, setStageIndex] = useState(-1);
+  // How far through capturing the scenes we are. Preparing used to say only
+  // "Preparing scenes…" with a bar stuck at zero for its whole duration, so
+  // a slow prep and a stalled render looked exactly alike — including to
+  // someone trying to tell us which one they were watching.
+  const [prepStep, setPrepStep] = useState(0);
 
   const bgRefs = useRef({});
   const contentRefs = useRef({});
@@ -135,13 +140,13 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
   useEffect(() => {
     if (!open) {
       setPhase("idle"); setProgress(0); setError(""); setResult(null); setMissing(null);
-      cancelled.current = false; setStageWordIndex({}); setStageIndex(-1);
+      cancelled.current = false; setStageWordIndex({}); setStageIndex(-1); setPrepStep(0);
     }
   }, [open]);
 
   const run = useCallback(async () => {
     cancelled.current = false;
-    setError(""); setResult(null); setMissing(null); setProgress(0); setPhase("preparing");
+    setError(""); setResult(null); setMissing(null); setProgress(0); setPrepStep(0); setPhase("preparing");
     try {
       // Webfonts have to be resolved before rasterising or the overlay layer
       // bakes in a fallback face that the preview never showed.
@@ -180,6 +185,10 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
         // phone's memory spent on DOM that only one screenshot at a time ever
         // reads.
         setStageIndex(it.index);
+        setPrepStep(items.indexOf(it) + 1);
+        // Capturing is the long pole of an export, so it owns most of the
+        // preparing bar; decoding those shots into bitmaps gets the rest.
+        setProgress(((items.indexOf(it)) / Math.max(1, items.length)) * 0.3);
         // eslint-disable-next-line no-await-in-loop
         await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
         // eslint-disable-next-line no-await-in-loop
@@ -253,7 +262,7 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 
       const [scenes, musicEl] = await Promise.all([
-        prepareScenes(items, layers, { onProgress: (p) => setProgress(p * 0.4) }),
+        prepareScenes(items, layers, { onProgress: (p) => setProgress(0.3 + p * 0.1) }),
         loadMusic(music?.url),
       ]);
       if (cancelled.current) { setPhase("idle"); return; }
@@ -345,7 +354,9 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
                     style={{ width: `${Math.round(progress * 100)}%` }} data-testid="reel-export-bar" />
                 </div>
                 <div className="mt-1.5 font-mono text-[10px] text-zinc-500" data-testid="reel-export-phase">
-                  {phase === "preparing" ? "Preparing scenes…" : `Recording… ${Math.round(progress * 100)}%`}
+                  {phase === "preparing"
+                    ? `Preparing scene ${Math.max(1, prepStep)} of ${items.length}…`
+                    : `Recording… ${Math.round(progress * 100)}%`}
                 </div>
               </div>
             )}
