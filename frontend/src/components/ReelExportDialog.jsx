@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { toPng } from "html-to-image";
+import { toPng, getFontEmbedCSS } from "html-to-image";
 import { Download, Loader2, X, Film, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { VisualCard, themeFor } from "@/components/VisualCard";
@@ -88,6 +88,22 @@ const STAGE_CSS = `
 .reel-export-content [data-export-backdrop] { display: none !important; }
 `;
 
+// Waits for a just-mounted card's images to actually be decodable. The stage
+// now mounts one scene at a time (see the stage below), so a capture can
+// otherwise beat its own logo to the screen — when every scene was mounted up
+// front they had the whole run to load.
+function waitForImages(node, timeoutMs = 8000) {
+  const imgs = Array.from(node?.querySelectorAll?.("img") || []);
+  return Promise.all(imgs.map((img) => (img.complete && img.naturalWidth
+    ? Promise.resolve()
+    : new Promise((resolve) => {
+      const done = () => resolve();
+      img.addEventListener("load", done, { once: true });
+      img.addEventListener("error", done, { once: true });
+      setTimeout(done, timeoutMs);
+    }))));
+}
+
 export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, music }) {
   const [preset, setPreset] = useState("720");
   const [phase, setPhase] = useState("idle"); // idle | preparing | recording | done | error
@@ -102,6 +118,9 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
   // Which word the off-screen stage should highlight for a given scene while
   // capturing that scene's per-word caption frames — see `run()`.
   const [stageWordIndex, setStageWordIndex] = useState({});
+  // Which scene is currently mounted on the off-screen stage. Only one is,
+  // and only while it's being captured — see the capture loop in `run()`.
+  const [stageIndex, setStageIndex] = useState(-1);
 
   const bgRefs = useRef({});
   const contentRefs = useRef({});
@@ -116,7 +135,7 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
   useEffect(() => {
     if (!open) {
       setPhase("idle"); setProgress(0); setError(""); setResult(null); setMissing(null);
-      cancelled.current = false; setStageWordIndex({});
+      cancelled.current = false; setStageWordIndex({}); setStageIndex(-1);
     }
   }, [open]);
 
@@ -142,9 +161,44 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
         dims.width, dims.height,
       );
 
+      // Resolve the page's web fonts ONCE and hand the result to every
+      // capture. Left to itself, html-to-image re-walks every stylesheet and
+      // re-inlines every @font-face on each call — and this app's custom faces
+      // carry the whole font file as a base64 data URL, so that is megabytes
+      // of parsing and re-encoding per screenshot. On a seven-scene reel that
+      // repeated work is most of the minutes an export spends before it ever
+      // starts recording, which is where a phone was giving up.
+      // undefined = not tried yet, null = tried and failed (fall back to
+      // html-to-image's own per-call embedding rather than lose the faces).
+      let fontEmbedCSS;
+
       const layers = {};
       for (const it of items) {
-        const opts = { pixelRatio: 1, cacheBust: true, width: dims.width, height: dims.height };
+        // One scene on the stage at a time. Every scene used to be mounted at
+        // the full output size for the whole export — seven live 720x1280
+        // cards, each with its own backdrop element and logo, is a lot of a
+        // phone's memory spent on DOM that only one screenshot at a time ever
+        // reads.
+        setStageIndex(it.index);
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        // eslint-disable-next-line no-await-in-loop
+        await waitForImages(contentRefs.current[it.index]);
+        if (cancelled.current) { setPhase("idle"); setStageIndex(-1); return; }
+
+        if (fontEmbedCSS === undefined) {
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            fontEmbedCSS = await getFontEmbedCSS(contentRefs.current[it.index] || bgRefs.current[it.index]);
+          } catch { fontEmbedCSS = null; }
+        }
+
+        // cacheBust appends a unique query to every source, which defeats the
+        // browser cache and refetches the same logo once per screenshot.
+        const opts = {
+          pixelRatio: 1, width: dims.width, height: dims.height,
+          ...(fontEmbedCSS ? { fontEmbedCSS } : {}),
+        };
         // A scene whose background is one flat colour does not need a
         // full-resolution screenshot to say so. Every one of those decoded to
         // a bitmap the size of the output (~3.7MB at 720p) and was held for
@@ -191,8 +245,12 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
           const content = contentRefs.current[it.index] ? await toPng(contentRefs.current[it.index], contentOpts(opts)) : null;
           layers[it.index] = { bg, bgColor, content };
         }
-        if (cancelled.current) { setPhase("idle"); return; }
+        if (cancelled.current) { setPhase("idle"); setStageIndex(-1); return; }
       }
+      // Nothing left to screenshot, so give the stage's DOM back before the
+      // recording — which needs every megabyte it can get — begins.
+      setStageIndex(-1);
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 
       const [scenes, musicEl] = await Promise.all([
         prepareScenes(items, layers, { onProgress: (p) => setProgress(p * 0.4) }),
@@ -216,6 +274,7 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
       setMissing(missingMedia(scenes, { musicWanted: !!music?.url, musicEl }));
       setPhase("done");
     } catch (e) {
+      setStageIndex(-1);
       setError(e?.message || "Export failed");
       setPhase("error");
     }
@@ -343,10 +402,14 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
 
       {/* The off-screen stage the two layers are rasterised from. Rendered at
           the real output size so text is sharp at 1080p rather than an
-          upscaled preview. */}
+          upscaled preview — and ONE scene at a time, because at that size it
+          is not a cheap thing to have lying around. Mounting the whole reel
+          meant a phone holding seven live 720x1280 cards, each with its own
+          backdrop element and logo, for the entire export, when only the
+          scene being screenshotted is ever read. */}
       <div style={STAGE_STYLE} aria-hidden data-testid="reel-export-stage">
         <style>{STAGE_CSS}</style>
-        {items.map((it) => {
+        {items.filter((it) => it.index === stageIndex).map((it) => {
           const spec = it.asset.spec;
           const bg = spec.bg_color || themeFor(spec.theme, brand).bg;
           return (

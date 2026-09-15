@@ -502,9 +502,29 @@ async function tap(page, testid) {
     });
     await tap(page, 'reel-export-preset-480');
     await page.waitForTimeout(200);
+    // Watch how much of the off-screen stage is alive at once. Every scene
+    // used to be mounted there at the full output size for the whole export,
+    // so a seven-slide reel on a phone held seven live 720x1280 cards — each
+    // with its own backdrop element and logo — while only one was ever being
+    // screenshotted. Now it mounts one at a time, and this is what keeps it
+    // that way as the reel gets longer.
+    await page.evaluate(() => {
+      window.__maxStageScenes = 0;
+      window.__stageSampler = setInterval(() => {
+        const n = document.querySelectorAll('[data-testid="reel-export-stage"] > div').length;
+        if (n > window.__maxStageScenes) window.__maxStageScenes = n;
+      }, 25);
+    });
     await tap(page, 'reel-export-start');
     await page.getByTestId('reel-export-done').waitFor({ timeout: 60000 });
     ok('the reel renders to a file', true, (await page.getByTestId('reel-export-done').innerText()).trim());
+
+    const maxStage = await page.evaluate(() => {
+      clearInterval(window.__stageSampler);
+      return window.__maxStageScenes;
+    });
+    ok('the export stage holds one scene at a time, however many the reel has',
+       maxStage === 1, `max mounted = ${maxStage}`);
 
     const file = await page.evaluate(async () => {
       const el = document.querySelector('[data-testid="reel-export-download"]');
