@@ -29,6 +29,8 @@ import { ComposerFromSource } from "@/components/ComposerFromSource";
 import { ComposerVisualPanel } from "@/components/ComposerVisualPanel";
 import { ComposerBatchPanel } from "@/components/ComposerBatchPanel";
 import { ComposerIdeaPanel } from "@/components/ComposerIdeaPanel";
+import { ComposerReelOptions } from "@/components/ComposerReelOptions";
+import { ComposerReelReview } from "@/components/ComposerReelReview";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
@@ -51,6 +53,24 @@ import {
 // Either way, picking one only steers what a scene records next (a fresh
 // build, or a per-scene retake); it never silently re-records takes
 // already sitting on the reel.
+
+// Every reel build used to make these choices silently — platform-default
+// scene count, no intro/outro, voiceover+music+footage always on, footage
+// always stock video. `sceneCount: null` means "use the platform's own
+// default," resolved against pspec.slides at build time rather than baked
+// in here, since that default differs per platform.
+const DEFAULT_REEL_OPTIONS = {
+  sceneCount: null,
+  intro: false,
+  outro: false,
+  includeVoiceover: true,
+  includeMusic: true,
+  includeFootage: true,
+  visualSource: "stock-video", // stock-video | stock-image | ai-video | ai-image
+  visualStyle: "",
+  musicStyle: "",
+};
+
 const VOICE_PRESETS = [
   { key: "Rachel", label: "Rachel", desc: "Warm, professional — the default" },
   { key: "Aria", label: "Aria", desc: "Bright, expressive" },
@@ -199,6 +219,18 @@ export default function Composer() {
   // a reel-wide choice rather than per scene, since a reel reads as one
   // voice throughout.
   const [voicePreset, setVoicePreset] = useState(VOICE_PRESETS[0].key);
+  // Every choice ComposerReelOptions offers, set before a reel is even
+  // scripted — scene structure, which of voiceover/music/footage to spend a
+  // generation on at all, and where footage and its look come from. This
+  // used to be zero choices: every reel always got a script, a full take per
+  // scene, stock footage and generated music, with the default scene count,
+  // and the only way to change any of it was after the fact, scene by scene.
+  const [reelOptions, setReelOptions] = useState(DEFAULT_REEL_OPTIONS);
+  // The raw script (data.assets, still on-screen-text/voiceover per scene)
+  // waiting on a look before anything gets recorded or shot for it — see
+  // buildFromTopic and confirmReelReview. Null once confirmed or discarded.
+  const [reelReviewPlan, setReelReviewPlan] = useState(null);
+  const [reelReviewBuilding, setReelReviewBuilding] = useState(false);
   // An unsaved snapshot found at mount, offered back rather than applied —
   // see DRAFT_KEY. Null once it's been taken or dismissed.
   const [recoverable, setRecoverable] = useState(null);
@@ -291,8 +323,13 @@ export default function Composer() {
   const anyVisualError = Object.values(sceneVisualError).some(Boolean);
 
   // Applying a plan is the whole idea→post shortcut landing: copy, hashtags,
-  // format and every slide arrive together, already on-brand.
-  const applyPlan = (plan) => {
+  // format and every slide arrive together, already on-brand. `ro` is a
+  // ComposerReelOptions snapshot — defaults to whatever's currently set so
+  // every OTHER caller (repurpose, batch, a saved draft) keeps working
+  // exactly as before; only the reel review step below ever passes one
+  // explicitly, since that's the one place the choices are actually fresh.
+  const applyPlan = (plan, ro) => {
+    const opts = ro || reelOptions;
     setTitle(plan.title || "Untitled post");
     setContent(plan.caption || "");
     setHashtags(plan.hashtags || []);
@@ -304,14 +341,21 @@ export default function Composer() {
     if (plan.platform) setPlatforms([plan.platform]);
     // A fresh reel script has a line for every scene and no way to say it
     // yet, and a shot idea with no shot — give it both automatically, the
-    // same click that wrote the script. The two run side by side (voice
-    // sets clip.hold and spec.voice; visuals sets clip.url) rather than one
-    // after the other, since they touch different fields on the same scene.
+    // same click that wrote the script (unless the options said not to).
+    // The three run side by side (voice sets clip.hold and spec.voice;
+    // visuals sets clip.url; music is reel-wide) rather than one after the
+    // other, since they touch different fields on the same scene.
     setMusic({});
     if (plan.format === "reel" && (plan.assets || []).some((a) => a.type === "scene")) {
-      synthesizeReelVoices(plan.assets);
-      autoFillReelVisuals(plan.assets);
-      synthesizeReelMusic(plan.title || plan.hook || plan.caption || "");
+      if (opts.includeVoiceover) synthesizeReelVoices(plan.assets);
+      if (opts.includeFootage) {
+        autoFillReelVisuals(plan.assets, {
+          source: opts.visualSource.startsWith("ai") ? "generate" : "stock",
+          kind: opts.visualSource.endsWith("image") ? "image" : "video",
+          style: opts.visualStyle,
+        });
+      }
+      if (opts.includeMusic) synthesizeReelMusic(plan.title || plan.hook || plan.caption || "", opts.musicStyle);
     }
   };
 
@@ -430,27 +474,54 @@ export default function Composer() {
     }
   };
 
-  // One scene's footage search — shared the same way synthesizeSceneVoice is,
-  // so a scene whose search came up empty gets its own retry instead of
-  // waiting on the whole reel to be rebuilt.
-  const fillSceneVisual = async (index, query) => {
+  // One scene's footage — shared the same way synthesizeSceneVoice is, so a
+  // scene whose search (or generation) came up empty gets its own retry
+  // instead of waiting on the whole reel to be rebuilt.
+  //
+  // `source` picks where the footage comes from (ComposerReelOptions):
+  // "stock" searches free stock the same way a manual pick already does;
+  // "generate" spends a real image/video generation on the scene's own shot
+  // idea instead, for a reel that needs a look stock can't supply. `kind`
+  // picks video vs a still either way — a still still uses every clip
+  // control (opacity/fit/effects/transition), it's just not moving.
+  const fillSceneVisual = async (index, query, opts = {}) => {
     const asset = assets[index];
     const q = (query ?? asset?.spec?.video_prompt ?? asset?.spec?.heading ?? "").trim();
     if (!q) return false;
+    const kind = opts.kind === "image" ? "image" : "video";
+    const source = opts.source === "generate" ? "generate" : "stock";
+    const style = (opts.style || "").trim();
     setSceneVisualLoading((s) => ({ ...s, [index]: true }));
     setSceneVisualError((s) => ({ ...s, [index]: false }));
     try {
-      const orientation = orientationFor(aspectFor(specs, primary, "reel"));
-      const { data } = await api.get("/stock/search", { params: { q, type: "video", per_page: 1, orientation } });
-      const pick = (data.results || []).find((r) => r.url);
-      if (!pick) throw new Error("No footage found");
+      let url = "";
+      let credit = "";
+      if (source === "stock") {
+        const orientation = orientationFor(aspectFor(specs, primary, "reel"));
+        const { data } = await api.get("/stock/search", { params: { q, type: kind, per_page: 1, orientation } });
+        const pick = (data.results || []).find((r) => r.url);
+        if (!pick) throw new Error("No footage found");
+        url = pick.url; credit = pick.credit || "";
+      } else {
+        const prompt = style ? `${q}. Style: ${style}.` : q;
+        const { data } = await api.post("/ai/generate", {
+          kind,
+          prompt,
+          options: kind === "video"
+            ? { model: "seedance-2-fast", duration: 5, resolution: "720p", aspect_ratio: "9:16", generate_audio: false }
+            : { model: "gpt-image-2.5-sunburst", size: "9:16" },
+        });
+        const result = await pollTask(data.task_id);
+        url = (result.files || []).find((f) => f.file_url)?.file_url || "";
+        if (!url) throw new Error("Nothing came back");
+      }
       setAssets((s) => s.map((a, idx) => {
         if (idx !== index) return a;
         const clip = normalizeClip({
-          ...a.spec.clip, url: pick.url, credit: pick.credit || "", kind: "video",
+          ...a.spec.clip, url, credit, kind,
           natural: null, start: 0, end: null,
         });
-        return { ...a, spec: { ...a.spec, video_url: pick.url, video_credit: pick.credit || "", clip } };
+        return { ...a, spec: { ...a.spec, video_url: url, video_credit: credit, clip } };
       }));
       return true;
     } catch {
@@ -461,8 +532,8 @@ export default function Composer() {
     }
   };
 
-  const retrySceneVisual = async (index) => {
-    const ok = await fillSceneVisual(index);
+  const retrySceneVisual = async (index, opts) => {
+    const ok = await fillSceneVisual(index, undefined, opts);
     if (ok) toast.success(`Scene ${index + 1}'s footage updated`);
     else toast.error(`Couldn't find footage for scene ${index + 1}.`);
   };
@@ -472,18 +543,24 @@ export default function Composer() {
   // straight in, the same shape a manual "Stock video" pick already
   // produces — a search is a fetch, not a generation, so a whole reel's
   // worth of footage lands about as fast as its voice recordings do.
+  // `opts` (source/kind/style) comes straight from ComposerReelOptions —
+  // "generate" spends real image/video jobs per scene instead, so it runs
+  // exactly the same shape, just costs more and takes longer.
   // Preserves whatever hold synthesizeReelVoices has already set (or will
   // set moments later): only the footage changes here, never the timing.
-  const autoFillReelVisuals = async (sceneAssets) => {
+  const autoFillReelVisuals = async (sceneAssets, opts = {}) => {
     const withPrompt = sceneAssets.filter((a) => (a.spec?.video_prompt || a.spec?.heading || "").trim());
     if (!withPrompt.length) return;
     setVisualFilling(true);
     try {
-      const results = await Promise.all(sceneAssets.map((a, i) => fillSceneVisual(i, a.spec?.video_prompt || a.spec?.heading)));
+      const results = await Promise.all(
+        sceneAssets.map((a, i) => fillSceneVisual(i, a.spec?.video_prompt || a.spec?.heading, opts))
+      );
       const done = results.filter(Boolean).length;
-      if (done === withPrompt.length) toast.success("Footage found for every scene");
-      else if (done > 0) toast.error(`Footage found for ${done} of ${withPrompt.length} scenes`);
-      else toast.error("Couldn't find footage — scenes kept their themed background.");
+      const noun = opts.source === "generate" ? "Visuals generated" : "Footage found";
+      if (done === withPrompt.length) toast.success(`${noun} for every scene`);
+      else if (done > 0) toast.error(`${noun} for ${done} of ${withPrompt.length} scenes`);
+      else toast.error("Couldn't get any footage — scenes kept their themed background.");
     } finally {
       setVisualFilling(false);
     }
@@ -496,16 +573,19 @@ export default function Composer() {
   // plain seed string rather than a plan object so it can be re-triggered
   // — a failed generation's retry, or "give me a different one" — from
   // whatever the post is titled/captioned right now, not just at build time.
-  const synthesizeReelMusic = async (seedText) => {
+  const synthesizeReelMusic = async (seedText, styleOverride) => {
     const seed = (seedText || "").slice(0, 80).trim();
-    const prompt = `Upbeat, unobtrusive instrumental background music for a short vertical video${seed ? ` about: ${seed}` : ""}.`;
+    const style = (styleOverride || "").trim();
+    const prompt = style
+      ? `${style} instrumental background music for a short vertical video${seed ? ` about: ${seed}` : ""}.`
+      : `Upbeat, unobtrusive instrumental background music for a short vertical video${seed ? ` about: ${seed}` : ""}.`;
     setMusicLoading(true);
     setMusicError(false);
     setMusicErrorMessage("");
     try {
       const { data } = await api.post("/ai/generate", {
         kind: "music", prompt,
-        options: { instrumental: true, style: "Upbeat, cinematic, unobtrusive instrumental", title: seed || "Background score" },
+        options: { instrumental: true, style: style || "Upbeat, cinematic, unobtrusive instrumental", title: seed || "Background score" },
       });
       // Music renders slower than the other kinds under load — the generic
       // 6-minute default (shared with image/video) was cutting off takes
@@ -831,20 +911,63 @@ export default function Composer() {
   // Shared by "Build whole post" (the brief in the box) and the Idea
   // panel's per-idea Build (a topic that never touches the brief field) —
   // ideaIndex distinguishes which button shows the loading spinner.
+  // A reel never used to have a moment between "write the script" and
+  // "start recording, shooting and scoring it" — the two happened in the
+  // same request. For a reel this now stops one step short: the script
+  // comes back and waits in reelReviewPlan for confirmReelReview (or
+  // discardReelReview) instead of being applied straight away. Every other
+  // format is unaffected — applyPlan runs immediately, exactly as before.
   const buildFromTopic = async (topic, ideaIndex = null) => {
     if (!topic.trim()) { toast.error("Give it a topic or a brief first."); return; }
     if (ideaIndex !== null) setBuildingIdeaIndex(ideaIndex); else setBuilding(true);
     try {
       const { data } = await api.post("/ai/build-post", {
-        topic, platform: primary, format, slides: pspec.slides?.default, model: model || defaultModel,
+        topic, platform: primary, format, model: model || defaultModel,
+        slides: format === "reel" ? (reelOptions.sceneCount || pspec.slides?.default) : pspec.slides?.default,
         custom_template_id: customTemplateId || undefined, brand_kit_id: brandKitId || undefined,
+        ...(format === "reel" ? {
+          reel_intro: reelOptions.intro, reel_outro: reelOptions.outro,
+          include_voiceover: reelOptions.includeVoiceover,
+        } : {}),
       });
-      applyPlan({ ...data, platform: primary });
-      toast.success(`Built a ${FORMAT_LABEL[data.format] || data.format} for ${pspec.label}.`);
+      if (data.format === "reel" && (data.assets || []).some((a) => a.type === "scene")) {
+        setReelReviewPlan({ ...data, platform: primary });
+        toast.success("Script's ready — review it before it records or shoots anything.");
+      } else {
+        applyPlan({ ...data, platform: primary });
+        toast.success(`Built a ${FORMAT_LABEL[data.format] || data.format} for ${pspec.label}.`);
+      }
     } catch (e) { toast.error(apiErrorMessage(e, "Couldn't build the post.")); }
     finally { if (ideaIndex !== null) setBuildingIdeaIndex(null); else setBuilding(false); }
   };
   const autoBuild = () => buildFromTopic(brief || content || title);
+
+  // The review step's own two exits. Confirming rebuilds every scene's
+  // asset fresh from the (possibly hand-edited, hand-reordered, added-to or
+  // trimmed) rows rather than trying to merge them back into the server's
+  // original array by position — a scene removed from the middle would
+  // otherwise leave every scene after it carrying the wrong one's number.
+  // Every scene shares the same template/theme/coverCounts regardless
+  // (_plan_to_assets never varies them per scene), so nothing is lost by
+  // rebuilding rather than patching. THEN runs applyPlan, which is what
+  // actually starts recording, shooting and scoring. Discarding just drops
+  // the draft; nothing was ever applied, so there's nothing to undo.
+  const confirmReelReview = (rows) => {
+    if (!reelReviewPlan) return;
+    setReelReviewBuilding(true);
+    const total = rows.length;
+    const assets = rows.map((r, i) => ({
+      type: "scene", caption: r.body || "",
+      spec: {
+        template: "slide", theme: reelReviewPlan.theme || "midnight", index: i + 1, total, coverCounts: false,
+        heading: r.heading || "", body: r.body || "", video_prompt: r.video_prompt || "",
+      },
+    }));
+    applyPlan({ ...reelReviewPlan, assets }, reelOptions);
+    setReelReviewPlan(null);
+    setReelReviewBuilding(false);
+  };
+  const discardReelReview = () => setReelReviewPlan(null);
 
   const runCoach = async () => {
     if (!content.trim()) { toast.error("Write something first."); return; }
@@ -1536,7 +1659,11 @@ export default function Composer() {
                   ))}
                 </div>
                 {isReel && (
-                  <VoicePresetPicker value={voicePreset} onChange={setVoicePreset} idPrefix="composer-voice-preset-pre" />
+                  <>
+                    <VoicePresetPicker value={voicePreset} onChange={setVoicePreset} idPrefix="composer-voice-preset-pre" />
+                    <ComposerReelOptions options={reelOptions} onChange={setReelOptions}
+                      sceneRange={pspec.slides || { min: 3, max: 8, default: 5 }} />
+                  </>
                 )}
                 <div className="mt-2 flex flex-wrap gap-2">
                   <Button onClick={autoBuild} disabled={building} data-testid="composer-autobuild"
@@ -2071,6 +2198,15 @@ export default function Composer() {
           library (z-50 sheets) still open over the top of it. */}
       <ReelExportDialog open={exportOpen} onClose={() => setExportOpen(false)}
         assets={assets} brand={brand} aspect={aspect} title={title} music={music} />
+
+      {reelReviewPlan && (
+        <ComposerReelReview title={reelReviewPlan.title}
+          scenes={(reelReviewPlan.assets || []).map((a) => ({
+            heading: a.spec?.heading || "", body: a.spec?.body || "", video_prompt: a.spec?.video_prompt || "",
+          }))}
+          includeVoiceover={reelOptions.includeVoiceover}
+          onConfirm={confirmReelReview} onCancel={discardReelReview} confirming={reelReviewBuilding} />
+      )}
 
       {canvasOpen && activeAsset && (
         <CanvasEditor

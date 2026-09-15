@@ -4296,6 +4296,13 @@ class BuildPostRequest(BaseModel):
     custom_template_id: Optional[str] = None
     brand_kit_id: Optional[str] = None
     use_knowledge: bool = True
+    # Reel-only build controls (ComposerReelOptions) — ignored for every
+    # other format, and only honored when the CALLER asked for "reel"
+    # explicitly rather than leaving format on "auto" for the model to pick,
+    # since these shape the script prompt itself before the model has run.
+    reel_intro: bool = False
+    reel_outro: bool = False
+    include_voiceover: bool = True
 
 
 @api_router.get("/platform-specs")
@@ -4435,6 +4442,29 @@ async def ai_build_post(req: BuildPostRequest):
     if "reel" in allowed:
         craft_notes += SHORTFORM_SCRIPT_GUIDE
 
+    # ComposerReelOptions' own structure controls — only meaningful once the
+    # caller has committed to "reel" rather than leaving it to "auto", since
+    # they change the scene COUNT itself, before the model has run.
+    reel_structure_note = ""
+    if fmt == "reel":
+        if req.reel_intro:
+            n += 1
+            reel_structure_note += (
+                " Scene 1 is a distinct cold-open hook — direct address or a bold claim, no context yet, "
+                "nothing about the rest of the arc below leaks into it."
+            )
+        if req.reel_outro:
+            n += 1
+            reel_structure_note += (
+                " The LAST scene is a distinct outro — a one-line recap or a direct call to action, "
+                "separate from the payoff scene before it."
+            )
+        if not req.include_voiceover:
+            reel_structure_note += (
+                " This reel has no voiceover — omit the \"voiceover\" key entirely and make on_screen_text "
+                "alone carry the full point of every scene, not a fragment of a longer spoken line."
+            )
+
     system = (
         f"You are a senior social creative director producing a finished, ready-to-publish "
         f"{spec['label']} post. Tone: {tone}. Platform rules: {spec['notes']} "
@@ -4442,7 +4472,7 @@ async def ai_build_post(req: BuildPostRequest):
         f"{format_rule} "
         f"If the format is carousel, thread or reel, produce exactly {n} slides/scenes (a carousel's cover "
         f"is separate and does not count). "
-        f"{craft_notes} "
+        f"{craft_notes}{reel_structure_note} "
         f"{brand_note}{template_note}"
         "Return ONLY JSON with this exact shape:\n"
         '{"format": "one of ' + "|".join(allowed) + '", '

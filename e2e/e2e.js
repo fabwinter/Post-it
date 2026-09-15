@@ -19,6 +19,16 @@ async function tap(page, testid) {
   await el.click({ force: true });
 }
 
+// A reel build now stops at the script review step instead of applying
+// straight away (ComposerReelReview) — every test that builds a reel has to
+// clear it before the slide strip (or anything downstream of it) exists.
+// Confirming with the script exactly as it came back is the common case;
+// tests of the review step itself interact with it directly instead.
+async function confirmReel(page) {
+  await page.getByTestId('composer-reel-review').waitFor({ timeout: 20000 });
+  await tap(page, 'composer-reel-review-confirm');
+}
+
 (async () => {
   // Some sandboxes pre-install a Chromium build that a fresh
   // `playwright install` can't reach the network to fetch — use it when
@@ -368,6 +378,7 @@ async function tap(page, testid) {
   await page.waitForTimeout(300);
   await page.getByTestId('composer-brief').fill('shipping weekly');
   await tap(page, 'composer-autobuild');
+  await confirmReel(page);
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForTimeout(1000);
 
@@ -478,6 +489,7 @@ async function tap(page, testid) {
   await tap(page, 'composer-format-reel');
   await page.getByTestId('composer-brief').fill('shipping weekly');
   await tap(page, 'composer-autobuild');
+  await confirmReel(page);
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForTimeout(900);
   for (let i = 0; i < 3; i += 1) {
@@ -693,6 +705,112 @@ async function tap(page, testid) {
   await tap(page, 'reel-export-close');
   await page.waitForTimeout(300);
 
+  // ---------- 11a-review. Reel build options + script review ----------
+  // "Build whole post" for a reel used to go straight from a topic to a
+  // fully recorded, fully shot reel — no way to see the script, fix a line,
+  // drop or add a scene, or say which of voiceover/music/footage to bother
+  // with, before three API calls per scene had already spent themselves.
+  // This is that chance, exercised end to end: change an option, edit the
+  // returned script, and prove the edits (not the original AI text) are
+  // what actually gets built.
+  await page.goto(B + '/composer', { waitUntil: 'domcontentloaded' });
+  await page.getByTestId('composer-page').waitFor({ timeout: 10000 });
+  await tap(page, 'composer-format-reel');
+  await page.getByTestId('composer-reel-options').waitFor({ timeout: 5000 });
+
+  const stepperBefore = Number(await page.getByTestId('composer-reel-scenes-count').innerText());
+  await tap(page, 'composer-reel-scenes-plus');
+  const stepperAfter = Number(await page.getByTestId('composer-reel-scenes-count').innerText());
+  ok('the scene-count stepper changes the count', stepperAfter === stepperBefore + 1,
+     `${stepperBefore} -> ${stepperAfter}`);
+  await tap(page, 'composer-reel-scenes-minus'); // back to the platform default for the rest of this test
+
+  // Turning an "include" off hides its own follow-up controls (a style
+  // input with nothing to apply to is just noise) rather than leaving them
+  // sitting there uselessly enabled.
+  await tap(page, 'composer-reel-include-music');
+  ok('turning an "include" off hides its own options',
+     (await page.getByTestId('composer-reel-music-style').count()) === 0);
+  await tap(page, 'composer-reel-include-music'); // back on
+
+  await page.getByTestId('composer-brief').fill('shipping weekly, e2e review step');
+  await tap(page, 'composer-autobuild');
+  await page.getByTestId('composer-reel-review').waitFor({ timeout: 20000 });
+
+  // The whole point of the step: nothing has recorded, shot or scored
+  // anything while this is up.
+  ok('the review step blocks recording/shooting until confirmed',
+     (await page.getByTestId('composer-slide-strip').count()) === 0);
+
+  const reviewRowsBefore = await page.locator('[data-testid^="composer-reel-review-scene-"]').count();
+  ok('the review step shows one row per scripted scene', reviewRowsBefore === 3, String(reviewRowsBefore));
+
+  // Edit a line, drop the last scripted scene, add a fresh one of our own.
+  await page.getByTestId('composer-reel-review-heading-0').fill('E2E edited heading');
+  await tap(page, `composer-reel-review-remove-${reviewRowsBefore - 1}`);
+  await tap(page, 'composer-reel-review-add');
+  const reviewRowsAfter = await page.locator('[data-testid^="composer-reel-review-scene-"]').count();
+  ok('removing one scene and adding one keeps the count the same', reviewRowsAfter === reviewRowsBefore,
+     String(reviewRowsAfter));
+  const addedIdx = reviewRowsAfter - 1;
+  await page.getByTestId(`composer-reel-review-heading-${addedIdx}`).fill('E2E added scene');
+  await page.getByTestId(`composer-reel-review-visual-${addedIdx}`).fill('a rocket launch at dawn');
+
+  await tap(page, 'composer-reel-review-confirm');
+  await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
+  // The strip's own +1 "add slide" button sits alongside the scene buttons.
+  const builtScenes = (await page.getByTestId('composer-slide-strip').locator('button').count()) - 1;
+  ok('confirming the review builds exactly the edited scene list', builtScenes === reviewRowsAfter,
+     String(builtScenes));
+
+  // The edited text landed on the actual built scene, not just the review
+  // form — read it back off the same field a hand edit would use.
+  await tap(page, 'composer-reel-view-canvas');
+  await page.waitForTimeout(200);
+  await tap(page, 'composer-slide-0');
+  await page.waitForTimeout(200);
+  const builtHeading = await page.getByTestId('composer-slide-heading').inputValue();
+  ok("an edit made in review is what actually gets built, not the AI's original text",
+     builtHeading === 'E2E edited heading', builtHeading);
+
+  // Discarding the review applies nothing at all — proven by going straight
+  // from a fresh build back to the empty state, not just "no error shown".
+  await page.goto(B + '/composer', { waitUntil: 'domcontentloaded' });
+  await page.getByTestId('composer-page').waitFor({ timeout: 10000 });
+  await tap(page, 'composer-format-reel');
+  await page.getByTestId('composer-brief').fill('shipping weekly, e2e discard check');
+  await tap(page, 'composer-autobuild');
+  await page.getByTestId('composer-reel-review').waitFor({ timeout: 20000 });
+  await tap(page, 'composer-reel-review-discard');
+  await page.waitForTimeout(300);
+  ok('discarding the review leaves nothing built',
+     (await page.getByTestId('composer-reel-review').count()) === 0
+     && (await page.getByTestId('composer-slide-strip').count()) === 0);
+
+  // ---------- 11a-visuals. Reel options — AI-generated visuals, not stock ----------
+  // "Perhaps we want to generate images rather than use stock" — this is
+  // that path exercised end to end: the footage fill goes through
+  // /ai/generate (kind: image) instead of /stock/search, and the scene ends
+  // up holding a real still exactly the way a manually-attached one does.
+  await page.goto(B + '/composer', { waitUntil: 'domcontentloaded' });
+  await page.getByTestId('composer-page').waitFor({ timeout: 10000 });
+  await tap(page, 'composer-format-reel');
+  await tap(page, 'composer-reel-visual-ai-image');
+  const aiImageActive = await page.evaluate(() =>
+    document.querySelector('[data-testid="composer-reel-visual-ai-image"]')?.className.includes('border-lime'));
+  ok('the AI-image visual source can be selected', !!aiImageActive);
+  await page.getByTestId('composer-reel-visual-style').fill('watercolor illustration');
+
+  await page.getByTestId('composer-brief').fill('shipping weekly, e2e ai visuals');
+  await tap(page, 'composer-autobuild');
+  await confirmReel(page);
+  await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
+  await page.waitForSelector('[data-testid="composer-visual-filling"]', { state: 'hidden', timeout: 15000 });
+  ok('a scene built with an AI-generated visual holds a real still',
+     (await page.getByTestId('clip-editor').innerText()).includes('Photo attached'));
+  ok('...and renders as a real <img>, not a broken <video>',
+     await page.evaluate(() => !!document.querySelector('[data-testid="composer-visuals"] img[data-export-backdrop]')));
+
   // ---------- 11a. Auto Reel — a scene holds as long as its own take runs ----------
   // Every reel scene used to hold the screen for a flat DEFAULT_CLIP_SECONDS
   // regardless of what it said. Build whole post now records a real take of
@@ -718,6 +836,7 @@ async function tap(page, testid) {
 
   await page.getByTestId('composer-brief').fill('shipping weekly no matter what');
   await tap(page, 'composer-autobuild');
+  await confirmReel(page);
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForSelector('[data-testid="composer-voice-synthesizing"]', { state: 'hidden', timeout: 15000 });
   const postActive = await page.evaluate(() =>
@@ -1087,6 +1206,7 @@ async function tap(page, testid) {
   await page.waitForTimeout(300);
   await page.getByTestId('composer-brief').fill('shipping weekly, e2e still-image reel');
   await tap(page, 'composer-autobuild');
+  await confirmReel(page);
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForTimeout(1000);
 
@@ -1189,6 +1309,7 @@ async function tap(page, testid) {
   await page.waitForTimeout(300);
   await page.getByTestId('composer-brief').fill('shipping weekly, e2e clip template');
   await tap(page, 'composer-autobuild');
+  await confirmReel(page);
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForTimeout(1000);
   ok('a fresh reel scene has no freeform elements yet', await page.getByTestId('composer-element-panel').count() === 0);
