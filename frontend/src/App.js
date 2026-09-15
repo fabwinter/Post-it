@@ -11,6 +11,7 @@ import Composer from "@/pages/Composer";
 import CalendarPage from "@/pages/CalendarPage";
 import Library from "@/pages/Library";
 import BrandKit from "@/pages/BrandKit";
+import Projects from "@/pages/Projects";
 
 // Gates the whole app behind the shared access code — but only if the
 // backend actually asks for one. A lightweight authenticated call decides:
@@ -125,6 +126,7 @@ function App() {
                   <Route path="/designs" element={<RedirectToLibraryTab tab="designs" />} />
                   <Route path="/connections" element={<RedirectToBrandTab tab="connections" />} />
                   <Route path="/composer" element={<Composer />} />
+                  <Route path="/projects" element={<Projects />} />
                   <Route path="/calendar" element={<CalendarPage />} />
                   <Route path="/library" element={<Library />} />
                   <Route path="/brand" element={<BrandKit />} />

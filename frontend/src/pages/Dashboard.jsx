@@ -69,7 +69,10 @@ export default function Dashboard() {
         <section className="min-w-0 rounded-xl border border-white/10 bg-[#121212] p-5">
           <div className="flex items-center justify-between">
             <h3 className="font-display text-lg font-semibold">Recent drafts</h3>
-            <button onClick={() => navigate("/composer")} className="font-mono text-[11px] uppercase tracking-[0.15em] text-lime hover:underline" data-testid="new-draft-link">+ New</button>
+            <div className="flex items-center gap-3">
+              <button onClick={() => navigate("/projects?status=draft")} className="font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500 hover:text-white" data-testid="view-all-drafts-link">All</button>
+              <button onClick={() => navigate("/composer")} className="font-mono text-[11px] uppercase tracking-[0.15em] text-lime hover:underline" data-testid="new-draft-link">+ New</button>
+            </div>
           </div>
           <div className="mt-4 space-y-2">
             {drafts.length === 0 && <EmptyRow label="No drafts yet — start in the Composer." />}
@@ -93,7 +96,10 @@ export default function Dashboard() {
         <section className="min-w-0 rounded-xl border border-white/10 bg-[#121212] p-5">
           <div className="flex items-center justify-between">
             <h3 className="font-display text-lg font-semibold">Next scheduled</h3>
-            <button onClick={() => navigate("/calendar")} className="font-mono text-[11px] uppercase tracking-[0.15em] text-lime hover:underline" data-testid="view-calendar-link">Calendar</button>
+            <div className="flex items-center gap-3">
+              <button onClick={() => navigate("/projects?status=scheduled")} className="font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500 hover:text-white" data-testid="view-all-scheduled-link">All</button>
+              <button onClick={() => navigate("/calendar")} className="font-mono text-[11px] uppercase tracking-[0.15em] text-lime hover:underline" data-testid="view-calendar-link">Calendar</button>
+            </div>
           </div>
           <div className="mt-4 space-y-2">
             {scheduled.length === 0 && <EmptyRow label="Nothing queued — schedule from the Composer." />}

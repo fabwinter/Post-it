@@ -28,6 +28,7 @@ import { ElementsLibrary } from "@/components/ElementsLibrary";
 import { ComposerFromSource } from "@/components/ComposerFromSource";
 import { ComposerVisualPanel } from "@/components/ComposerVisualPanel";
 import { ComposerBatchPanel } from "@/components/ComposerBatchPanel";
+import { ComposerProjectPanel } from "@/components/ComposerProjectPanel";
 import { ComposerIdeaPanel } from "@/components/ComposerIdeaPanel";
 import { ComposerReelOptions } from "@/components/ComposerReelOptions";
 import { ComposerReelReview } from "@/components/ComposerReelReview";
@@ -39,7 +40,7 @@ import {
   Search, Wand, Palette, Upload, FileText, Image as ImageIcon, Presentation,
   Type, Square, LayoutTemplate, Undo2, Redo2, Copy, ChevronsUp, ChevronsDown, AlignLeft, AlignCenter, AlignRight,
   Shapes, CopyPlus, BookmarkPlus, Maximize2, PlayCircle, SquarePen, Lightbulb, Repeat, LayoutGrid,
-  Music, Volume2, VolumeX, RefreshCw, Mic,
+  Music, Volume2, VolumeX, RefreshCw, Mic, FolderOpen,
 } from "lucide-react";
 
 // The first four are the ones PoYo's TTS model schema documents as its own
@@ -91,6 +92,7 @@ const START_MODES = [
   { key: "source", label: "Source", icon: Repeat },
   { key: "visual", label: "Visual", icon: Shapes },
   { key: "batch", label: "Batch", icon: LayoutGrid },
+  { key: "project", label: "Open project", icon: FolderOpen },
 ];
 
 // Pexels only accepts these three; map a platform's aspect onto the closest one
@@ -1716,6 +1718,11 @@ export default function Composer() {
             {startMode === "batch" && (
               <div className="mt-3 rounded-lg border border-white/10 bg-[#0A0A0A] p-4">
                 <ComposerBatchPanel onApply={applyDraft} />
+              </div>
+            )}
+            {startMode === "project" && (
+              <div className="mt-3 rounded-lg border border-white/10 bg-[#0A0A0A] p-4">
+                <ComposerProjectPanel />
               </div>
             )}
 

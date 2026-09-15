@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import {
   Images, Send, Download, Trash2, Image as ImageIcon, Video, Music, Mic, Upload, Sparkles, Plus, Loader2,
   LayoutTemplate, Wand, Pencil, FileText, Presentation, Shapes, Type as TypeIcon, Square as ShapeIcon, Film,
+  CheckSquare, Circle, X,
 } from "lucide-react";
 
 const KIND_ICON = { image: ImageIcon, video: Video, music: Music, voice: Mic, audio: Music, file: Upload };
@@ -371,6 +372,12 @@ function ElementsPanel() {
   const [uploads, setUploads] = useState([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  // Select mode is its own state rather than "any items selected" — an
+  // empty selection while the mode is on still shows the checkbox grid and
+  // the Cancel button, so turning it on and tapping nothing back out isn't
+  // indistinguishable from it never having turned on.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState(() => new Set());
   const fileRef = useRef(null);
 
   const loadUploads = useCallback(() => {
@@ -411,15 +418,56 @@ function ElementsPanel() {
     catch (e) { toast.error(apiErrorMessage(e, "Delete failed.")); setUploads(prev); }
   };
 
+  const toggleSelectMode = () => { setSelectMode((s) => !s); setSelected(new Set()); };
+  const toggleSelected = (id) => setSelected((s) => {
+    const next = new Set(s);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  const removeSelected = async () => {
+    const ids = [...selected];
+    if (!ids.length) return;
+    if (!window.confirm(`Remove ${ids.length} item${ids.length === 1 ? "" : "s"} from your library? This can't be undone.`)) return;
+    const prev = uploads;
+    setUploads((s) => s.filter((u) => !selected.has(u.id)));
+    setSelectMode(false); setSelected(new Set());
+    try {
+      await api.post("/library/elements/bulk-delete", { ids });
+      toast.success(`Removed ${ids.length} item${ids.length === 1 ? "" : "s"}`);
+    } catch (e) { toast.error(apiErrorMessage(e, "Delete failed.")); setUploads(prev); }
+  };
+
   return (
     <div data-testid="library-elements-panel">
-      <input ref={fileRef} type="file" accept="image/*,video/mp4,video/quicktime,video/webm"
-        className="hidden" data-testid="library-elements-upload-input"
-        onChange={(e) => uploadNew(e.target.files?.[0])} />
-      <Button onClick={() => fileRef.current?.click()} disabled={uploading} data-testid="library-elements-upload-button"
-        className="gap-2 rounded-lg bg-lime font-semibold text-[#0A0A0A] hover:bg-lime-hover">
-        {uploading ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />} Upload a logo, image or video
-      </Button>
+      <div className="flex flex-wrap items-center gap-2">
+        <input ref={fileRef} type="file" accept="image/*,video/mp4,video/quicktime,video/webm"
+          className="hidden" data-testid="library-elements-upload-input"
+          onChange={(e) => uploadNew(e.target.files?.[0])} />
+        <Button onClick={() => fileRef.current?.click()} disabled={uploading} data-testid="library-elements-upload-button"
+          className="gap-2 rounded-lg bg-lime font-semibold text-[#0A0A0A] hover:bg-lime-hover">
+          {uploading ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />} Upload a logo, image or video
+        </Button>
+        {uploads.length > 0 && (
+          selectMode ? (
+            <>
+              <Button onClick={removeSelected} disabled={selected.size === 0} data-testid="library-elements-delete-selected"
+                className="gap-1.5 rounded-lg bg-magic font-semibold text-white hover:bg-magic/90 disabled:opacity-40">
+                <Trash2 size={14} /> Delete {selected.size > 0 ? `(${selected.size})` : ""}
+              </Button>
+              <Button variant="secondary" onClick={toggleSelectMode} data-testid="library-elements-select-cancel"
+                className="gap-1.5 rounded-lg border border-white/10 bg-white/5 text-white hover:bg-white/10">
+                <X size={14} /> Cancel
+              </Button>
+            </>
+          ) : (
+            <Button variant="secondary" onClick={toggleSelectMode} data-testid="library-elements-select-mode"
+              className="gap-1.5 rounded-lg border border-white/10 bg-white/5 text-white hover:bg-white/10">
+              <CheckSquare size={14} /> Select
+            </Button>
+          )
+        )}
+      </div>
 
       {loading && <div className="mt-6 flex justify-center"><Loader2 className="animate-spin text-zinc-600" /></div>}
       {!loading && uploads.length === 0 && (
@@ -429,46 +477,64 @@ function ElementsPanel() {
         </div>
       )}
       <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-6" data-testid="library-elements-list">
-        {uploads.map((u) => (
-          <div key={u.id} className="group relative aspect-square overflow-hidden rounded-lg border border-white/10 bg-[#121212]" data-testid={`library-elements-item-${u.id}`} title={u.name}>
-            {u.element?.type === "video" ? (
-              u.element.url && (
-                <>
-                  <video src={u.element.url} muted loop playsInline preload="metadata"
-                    className="h-full w-full object-cover"
-                    onMouseEnter={(e) => e.currentTarget.play().catch(() => {})}
-                    onMouseLeave={(e) => { e.currentTarget.pause(); e.currentTarget.currentTime = 0; }} />
-                  <span className="pointer-events-none absolute bottom-1 left-1 flex items-center gap-1 rounded bg-black/70 px-1 py-0.5 text-[9px] text-white">
-                    <Film size={9} /> clip
+        {uploads.map((u) => {
+          const isSelected = selected.has(u.id);
+          return (
+            <div key={u.id}
+              onClick={() => (selectMode ? toggleSelected(u.id) : null)}
+              role={selectMode ? "checkbox" : undefined} aria-checked={selectMode ? isSelected : undefined} tabIndex={selectMode ? 0 : undefined}
+              onKeyDown={selectMode ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleSelected(u.id); } } : undefined}
+              className={`group relative aspect-square overflow-hidden rounded-lg border bg-[#121212] ${selectMode ? "cursor-pointer" : ""} ${isSelected ? "border-lime" : "border-white/10"}`}
+              data-testid={`library-elements-item-${u.id}`} title={u.name}>
+              {u.element?.type === "video" ? (
+                u.element.url && (
+                  <>
+                    <video src={u.element.url} muted loop playsInline preload="metadata"
+                      className="h-full w-full object-cover"
+                      onMouseEnter={(e) => e.currentTarget.play().catch(() => {})}
+                      onMouseLeave={(e) => { e.currentTarget.pause(); e.currentTarget.currentTime = 0; }} />
+                    <span className="pointer-events-none absolute bottom-1 left-1 flex items-center gap-1 rounded bg-black/70 px-1 py-0.5 text-[9px] text-white">
+                      <Film size={9} /> clip
+                    </span>
+                  </>
+                )
+              ) : u.element?.type === "image" ? (
+                u.element.url && <img src={u.element.url} alt="" className="h-full w-full object-contain p-2" />
+              ) : u.element?.type === "text" ? (
+                <div className="flex h-full w-full flex-col items-center justify-center gap-1 p-1.5">
+                  <TypeIcon size={16} className="text-zinc-500" />
+                  <span className="line-clamp-2 text-center text-[9px] leading-tight text-zinc-400" style={{ color: u.element.color }}>
+                    {u.element.text || "Text"}
                   </span>
-                </>
-              )
-            ) : u.element?.type === "image" ? (
-              u.element.url && <img src={u.element.url} alt="" className="h-full w-full object-contain p-2" />
-            ) : u.element?.type === "text" ? (
-              <div className="flex h-full w-full flex-col items-center justify-center gap-1 p-1.5">
-                <TypeIcon size={16} className="text-zinc-500" />
-                <span className="line-clamp-2 text-center text-[9px] leading-tight text-zinc-400" style={{ color: u.element.color }}>
-                  {u.element.text || "Text"}
+                </div>
+              ) : u.element?.type === "shape" ? (
+                <div className="flex h-full w-full items-center justify-center">
+                  <div style={{
+                    width: 28, height: u.element.shape === "ellipse" ? 28 : 16,
+                    background: u.element.color || "#E2FF3D",
+                    borderRadius: u.element.shape === "ellipse" ? "50%" : 4,
+                  }} />
+                </div>
+              ) : (
+                <div className="flex h-full w-full items-center justify-center text-zinc-700"><ShapeIcon size={18} /></div>
+              )}
+              {selectMode ? (
+                <span className={`absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-md ${isSelected ? "bg-lime text-[#0A0A0A]" : "bg-black/60 text-white"}`}>
+                  {isSelected ? <CheckSquare size={13} /> : <Circle size={13} />}
                 </span>
-              </div>
-            ) : u.element?.type === "shape" ? (
-              <div className="flex h-full w-full items-center justify-center">
-                <div style={{
-                  width: 28, height: u.element.shape === "ellipse" ? 28 : 16,
-                  background: u.element.color || "#E2FF3D",
-                  borderRadius: u.element.shape === "ellipse" ? "50%" : 4,
-                }} />
-              </div>
-            ) : (
-              <div className="flex h-full w-full items-center justify-center text-zinc-700"><ShapeIcon size={18} /></div>
-            )}
-            <button onClick={() => removeUpload(u)} data-testid={`library-elements-delete-${u.id}`}
-              className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-md bg-black/60 text-white opacity-0 transition-opacity hover:text-magic group-hover:opacity-100">
-              <Trash2 size={12} />
-            </button>
-          </div>
-        ))}
+              ) : (
+                // Always visible, not hover-revealed — a hover-only affordance
+                // is invisible on a touch screen, which is most of this app's
+                // real use, so there was effectively no way to delete a single
+                // element on a phone.
+                <button type="button" onClick={(e) => { e.stopPropagation(); removeUpload(u); }} data-testid={`library-elements-delete-${u.id}`}
+                  className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-md bg-black/60 text-white/80 transition-colors hover:text-magic">
+                  <Trash2 size={12} />
+                </button>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
