@@ -572,18 +572,28 @@ export default function Composer() {
   // exactly the same shape, just costs more and takes longer.
   // Preserves whatever hold synthesizeReelVoices has already set (or will
   // set moments later): only the footage changes here, never the timing.
+  // Only ever fills a scene that's actually missing footage. It used to run
+  // unconditionally for every scene with a prompt/heading — which is nearly
+  // every scene — so a clip that was already there, from a chosen design's
+  // own saved clips (_apply_template_layouts, server side) or carried over
+  // from an earlier edit, got silently bulldozed by a fresh stock search
+  // moments after the reel was built. A design applying its footage and then
+  // immediately losing it to an auto-fill is indistinguishable from the
+  // design never having applied at all.
   const autoFillReelVisuals = async (sceneAssets, opts = {}) => {
-    const withPrompt = sceneAssets.filter((a) => (a.spec?.video_prompt || a.spec?.heading || "").trim());
-    if (!withPrompt.length) return;
+    const needsFootage = sceneAssets
+      .map((a, i) => ({ a, i }))
+      .filter(({ a }) => !a.spec?.clip?.url && (a.spec?.video_prompt || a.spec?.heading || "").trim());
+    if (!needsFootage.length) return;
     setVisualFilling(true);
     try {
       const results = await Promise.all(
-        sceneAssets.map((a, i) => fillSceneVisual(i, a.spec?.video_prompt || a.spec?.heading, opts))
+        needsFootage.map(({ a, i }) => fillSceneVisual(i, a.spec?.video_prompt || a.spec?.heading, opts))
       );
       const done = results.filter(Boolean).length;
       const noun = opts.source === "generate" ? "Visuals generated" : "Footage found";
-      if (done === withPrompt.length) toast.success(`${noun} for every scene`);
-      else if (done > 0) toast.error(`${noun} for ${done} of ${withPrompt.length} scenes`);
+      if (done === needsFootage.length) toast.success(`${noun} for every scene that needed it`);
+      else if (done > 0) toast.error(`${noun} for ${done} of ${needsFootage.length} scenes`);
       else toast.error("Couldn't get any footage — scenes kept their themed background.");
     } finally {
       setVisualFilling(false);
@@ -980,13 +990,27 @@ export default function Composer() {
     if (!reelReviewPlan) return;
     setReelReviewBuilding(true);
     const total = rows.length;
-    const assets = rows.map((r, i) => ({
-      type: "scene", caption: r.body || "",
-      spec: {
-        template: "slide", theme: reelReviewPlan.theme || "midnight", index: i + 1, total, coverCounts: false,
-        heading: r.heading || "", body: r.body || "", video_prompt: r.video_prompt || "",
-      },
-    }));
+    const serverAssets = reelReviewPlan.assets || [];
+    // A row that started as one of the server's own scenes (_origIndex set —
+    // see the scenes prop below) keeps that scene's asset — elements,
+    // bg_color, clip, video_url, everything _apply_template_layouts (server
+    // side, at build time) put there from the chosen design — and only its
+    // text fields get overwritten. This used to rebuild every scene from
+    // scratch with just {heading, body, video_prompt}, which is a bare spec
+    // with none of that: since the review step is now mandatory for every
+    // reel, that meant no reel ever kept its chosen design past this step.
+    // A row added IN review has no such asset to extend — those still get a
+    // fresh minimal spec, same shape as before.
+    const assets = rows.map((r, i) => {
+      const base = r._origIndex != null ? serverAssets[r._origIndex] : null;
+      const spec = base
+        ? { ...base.spec, index: i + 1, total, heading: r.heading || "", body: r.body || "", video_prompt: r.video_prompt || "" }
+        : {
+            template: "slide", theme: reelReviewPlan.theme || "midnight", index: i + 1, total, coverCounts: false,
+            heading: r.heading || "", body: r.body || "", video_prompt: r.video_prompt || "",
+          };
+      return { type: "scene", caption: r.body || "", spec };
+    });
     applyPlan({ ...reelReviewPlan, assets }, reelOptions);
     setReelReviewPlan(null);
     setReelReviewBuilding(false);
@@ -2270,8 +2294,13 @@ export default function Composer() {
 
       {reelReviewPlan && (
         <ComposerReelReview title={reelReviewPlan.title}
-          scenes={(reelReviewPlan.assets || []).map((a) => ({
+          scenes={(reelReviewPlan.assets || []).map((a, i) => ({
             heading: a.spec?.heading || "", body: a.spec?.body || "", video_prompt: a.spec?.video_prompt || "",
+            // Which server-built asset this row started as — confirmReelReview
+            // needs it to keep that asset's template-applied layout/background/
+            // clip alive rather than rebuilding a bare spec from just these
+            // three text fields. A row added in review has none (undefined).
+            _origIndex: i,
           }))}
           includeVoiceover={reelOptions.includeVoiceover}
           onConfirm={confirmReelReview} onCancel={discardReelReview} confirming={reelReviewBuilding} />
