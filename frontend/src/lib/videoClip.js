@@ -297,6 +297,32 @@ export function durationFromAlignment(alignment) {
   return Number.isFinite(last) && last > 0 ? last : null;
 }
 
+// Cuts an alignment down to the characters from `charOffset` on, keeping
+// each one's own absolute timestamp.
+//
+// A scene's take is now the on-screen headline AND the caption line spoken
+// together as one recording (see synthesizeSceneVoice), so the alignment
+// that comes back covers both. The word-sync highlight only ever belongs to
+// the caption half — the headline sits on screen the whole time regardless,
+// it was never a caption to begin with — so the caption's own words need
+// timing that starts wherever the caption's own text starts in that
+// recording, not from zero. Slicing rather than re-deriving keeps every
+// character's REAL spoken time, so the highlight lands exactly when that
+// word is actually said, silence for the headline included.
+export function alignmentSlice(alignment, charOffset) {
+  const chars = alignment?.characters;
+  const starts = alignment?.character_start_times_seconds;
+  const ends = alignment?.character_end_times_seconds;
+  if (!Array.isArray(chars) || !Array.isArray(starts) || !Array.isArray(ends)) return alignment;
+  if (charOffset <= 0) return alignment;
+  if (charOffset >= chars.length) return null;
+  return {
+    characters: chars.slice(charOffset),
+    character_start_times_seconds: starts.slice(charOffset),
+    character_end_times_seconds: ends.slice(charOffset),
+  };
+}
+
 export function deriveCaptionWords(text, duration, alignment) {
   const words = (text || "").trim().split(/\s+/).filter(Boolean);
   if (!words.length) return [];

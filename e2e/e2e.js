@@ -734,12 +734,14 @@ async function tap(page, testid) {
   await page.waitForSelector('[data-testid="composer-visual-filling"]', { state: 'hidden', timeout: 15000 });
   const votedLabel = await page.getByTestId('composer-reel-duration').innerText();
   const votedTotal = toSeconds(votedLabel);
-  // Fixture scenes read "You publish. Nobody claps." (4 words), "Three
-  // people reply." (3) and "It compounds." (2) — real, different-length
-  // takes, so the total should land well under the old flat 9.0s (3 x 3.0)
-  // and above the floor three near-silent takes plus padding would give.
+  // Each take is now the heading read together with the caption line (see
+  // synthesizeSceneVoice) — "Week 1. You publish. Nobody claps." (6 words),
+  // "Week 6. Three people reply." (5), "Week 20. It compounds." (4) — real,
+  // different-length takes, so the total should land well under the old
+  // flat 9.0s (3 x 3.0) and above the floor three near-silent takes plus
+  // padding would give.
   ok('recording a take per scene sets a real, non-flat length',
-     votedTotal > 2 && votedTotal < 8, votedLabel);
+     votedTotal > 2 && votedTotal < 10, votedLabel);
 
   // Footage search ran alongside it — every scene should have picked up
   // real footage instead of sitting on its themed background. The
