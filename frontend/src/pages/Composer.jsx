@@ -23,7 +23,7 @@ import { elementsFromSpec, newElement, useCardScale, clampPos } from "@/lib/slid
 import { materializeTemplateSlides } from "@/lib/templateEdit";
 import { groupFontsByCategory, fontStack, useAllFontsLoaded, useFontCatalog } from "@/lib/fonts";
 import { FontNotice } from "@/components/CustomFonts";
-import { reelTimeline, normalizeClip, formatSeconds, withLength, deriveCaptionWords } from "@/lib/videoClip";
+import { reelTimeline, normalizeClip, formatSeconds, withLength, deriveCaptionWords, durationFromAlignment } from "@/lib/videoClip";
 import { ElementsLibrary } from "@/components/ElementsLibrary";
 import { ComposerFromSource } from "@/components/ComposerFromSource";
 import { ComposerVisualPanel } from "@/components/ComposerVisualPanel";
@@ -316,15 +316,39 @@ export default function Composer() {
   };
 
   // Loads a URL into a throwaway <audio> element just long enough to read
-  // its real duration — the only way to know how long a spoken line
-  // actually runs. Resolves null (never rejects) so one bad take can't sink
-  // the rest of the reel; the scene just keeps its previous/default hold.
+  // its real duration — the fallback for whatever synthesizeSceneVoice can't
+  // get from the alignment (no timestamps, a manually attached take with no
+  // alignment at all). Resolves null (never rejects) so one bad take can't
+  // sink the rest of the reel; the scene just keeps its previous/default hold.
+  //
+  // This was the actual reason every voiceover got cut off partway through,
+  // on every slide, from the day auto-recording shipped. A synthesized MP3
+  // with no duration atom in its header — which is what streamed TTS output
+  // usually is — reports `duration: Infinity` at loadedmetadata in Chrome and
+  // Safari alike, a well-known quirk of the format rather than a broken file.
+  // `Number.isFinite(Infinity)` is false, so this returned null every single
+  // time, the scene fell back to whatever length it already had — the stock
+  // clip's own, nothing to do with how long the line takes to say — and the
+  // scene cut away before the (correctly, fully recorded) take finished. It
+  // read as "only the start of the line plays," identically on every reel,
+  // because the failure was in the format, not any one take. Seeking past
+  // the true end is the standard way to make the browser go find it.
   const probeAudioDuration = (url) => new Promise((resolve) => {
     const el = document.createElement("audio");
     el.preload = "metadata";
     let settled = false;
     const done = (v) => { if (!settled) { settled = true; resolve(v); } };
-    el.addEventListener("loadedmetadata", () => done(Number.isFinite(el.duration) && el.duration > 0 ? el.duration : null), { once: true });
+    const resolveReal = () => {
+      if (el.duration === Infinity) {
+        el.addEventListener("durationchange", () => {
+          done(Number.isFinite(el.duration) && el.duration > 0 ? el.duration : null);
+        }, { once: true });
+        try { el.currentTime = 1e7; } catch { done(null); }
+        return;
+      }
+      done(Number.isFinite(el.duration) && el.duration > 0 ? el.duration : null);
+    };
+    el.addEventListener("loadedmetadata", resolveReal, { once: true });
     el.addEventListener("error", () => done(null), { once: true });
     setTimeout(() => done(null), 15000);
     el.src = url;
@@ -345,7 +369,7 @@ export default function Composer() {
       const result = await pollTask(data.task_id);
       const url = (result.files || []).find((f) => f.file_url)?.file_url;
       if (!url) throw new Error("No voice file came back");
-      const duration = await probeAudioDuration(url);
+      const duration = durationFromAlignment(result.alignment) ?? await probeAudioDuration(url);
       const words = deriveCaptionWords(body, duration, result.alignment);
       setAssets((s) => s.map((asset, idx) => {
         if (idx !== index) return asset;

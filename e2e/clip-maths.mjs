@@ -54,5 +54,19 @@ ok("speed is applied before the loop wraps",
 ok("an unknown source length falls back to playing straight through",
    near(clipSourceTime(normalizeClip({ url: "x" }), 3, 0), 3));
 
+
+// A take's real duration comes from its own alignment, not from asking a
+// browser <audio> element what it thinks — see durationFromAlignment's own
+// comment for why that element cannot be trusted for a synthesized file.
+const durationFromAlignment = mod.durationFromAlignment;
+ok("a take's duration is read from its own alignment, not guessed",
+   near(durationFromAlignment({ character_end_times_seconds: [0.1, 0.3, 0.9, 4.7] }), 4.7),
+   String(durationFromAlignment({ character_end_times_seconds: [0.1, 0.3, 0.9, 4.7] })));
+ok("...and falls back cleanly when there's no alignment to read",
+   durationFromAlignment(null) === null && durationFromAlignment({}) === null
+   && durationFromAlignment({ character_end_times_seconds: [] }) === null);
+ok("...and never returns a bogus non-positive number",
+   durationFromAlignment({ character_end_times_seconds: [0.1, 0] }) === null);
+
 console.log(failed ? `\n${failed} failed` : "\nall passed");
 process.exit(failed ? 1 : 0);

@@ -278,6 +278,25 @@ export function frameAt(items, t) {
 // speak, which text normalization (numbers, abbreviations) can cause — this
 // falls back to splitting the clip's duration across words by their length,
 // which reads close enough without needing real timing at all.
+// A take's real duration, straight from ElevenLabs' own character alignment
+// — the last character's end time IS how long the line runs.
+//
+// This exists because the audio element's own `duration` cannot be trusted
+// for a synthesized take. A streamed MP3 with no duration atom in its
+// header — which is what TTS output usually is — reports `duration:
+// Infinity` at loadedmetadata in Chrome and Safari alike; that's a quirk of
+// the format, not a broken file, but code that treated it as "unknown"
+// (Number.isFinite(Infinity) is false) fell back to whatever length the
+// scene already had, unrelated to how long the line actually takes to say,
+// and the scene cut away mid-sentence. Every take, every reel — the alignment
+// path sidesteps the browser for this number entirely.
+export function durationFromAlignment(alignment) {
+  const ends = alignment?.character_end_times_seconds;
+  if (!Array.isArray(ends) || !ends.length) return null;
+  const last = ends[ends.length - 1];
+  return Number.isFinite(last) && last > 0 ? last : null;
+}
+
 export function deriveCaptionWords(text, duration, alignment) {
   const words = (text || "").trim().split(/\s+/).filter(Boolean);
   if (!words.length) return [];
