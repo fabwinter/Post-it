@@ -146,6 +146,21 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
 
   const run = useCallback(async () => {
     cancelled.current = false;
+    // Open the audio context HERE, synchronously, before the first await —
+    // this runs inside the tap that started the export, and that tap is the
+    // only moment iOS will let a context start. Preparing the scenes takes
+    // long enough that by the time recording begins the activation is long
+    // gone, and a resume() the autoplay policy refuses there never settles
+    // at all: it hangs, taking the whole export with it.
+    let audioContext = null;
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) {
+        audioContext = new AudioCtx();
+        audioContext.resume?.().catch(() => {});
+      }
+    } catch { audioContext = null; }
+    let handedToRecorder = false;
     setError(""); setResult(null); setMissing(null); setProgress(0); setPrepStep(0); setPhase("preparing");
     try {
       // Webfonts have to be resolved before rasterising or the overlay layer
@@ -272,8 +287,10 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
       canvas.height = dims.height;
 
       setPhase("recording");
+      // From here recordReel owns the context and closes it when it cleans up.
+      handedToRecorder = true;
       const out = await recordReel({
-        canvas, scenes, items, total, fps: 30,
+        canvas, scenes, items, total, fps: 30, audioContext,
         onProgress: (p) => setProgress(p),
         isCancelled: () => cancelled.current,
         musicEl, musicVolume: music?.volume,
@@ -286,6 +303,11 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
       setStageIndex(-1);
       setError(e?.message || "Export failed");
       setPhase("error");
+    } finally {
+      // An export abandoned before recording began still opened a context,
+      // and iOS only allows a handful at a time — so a few cancelled runs
+      // would otherwise leave the next one unable to open one at all.
+      if (!handedToRecorder && audioContext) audioContext.close().catch(() => {});
     }
   }, [items, total, dims.width, dims.height, brand, music?.url, music?.volume]);
 
