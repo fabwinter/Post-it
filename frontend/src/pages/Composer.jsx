@@ -39,7 +39,7 @@ import {
   Search, Wand, Palette, Upload, FileText, Image as ImageIcon, Presentation,
   Type, Square, LayoutTemplate, Undo2, Redo2, Copy, ChevronsUp, ChevronsDown, AlignLeft, AlignCenter, AlignRight,
   Shapes, CopyPlus, BookmarkPlus, Maximize2, PlayCircle, SquarePen, Lightbulb, Repeat, LayoutGrid,
-  Music, Volume2, VolumeX, RefreshCw,
+  Music, Volume2, VolumeX, RefreshCw, Mic,
 } from "lucide-react";
 
 // The first four are the ones PoYo's TTS model schema documents as its own
@@ -321,6 +321,8 @@ export default function Composer() {
   const isReel = format === "reel";
   const anyVoiceError = Object.values(sceneVoiceError).some(Boolean);
   const anyVisualError = Object.values(sceneVisualError).some(Boolean);
+  const voiceableScenes = assets.filter((a) => a.type === "scene" && (a.spec?.body || "").trim());
+  const scenesWithVoice = voiceableScenes.filter((a) => a.spec?.voice?.url).length;
 
   // Applying a plan is the whole idea→post shortcut landing: copy, hashtags,
   // format and every slide arrive together, already on-brand. `ro` is a
@@ -410,10 +412,21 @@ export default function Composer() {
   // was in the bold heading was never spoken at all: not truncated, simply
   // never asked for. Recording them together, in the order they're read on
   // screen, is what "the voiceover covers the whole slide" actually means.
-  const synthesizeSceneVoice = async (index, text) => {
+  //
+  // `headingText` is optional and exists for exactly one caller
+  // (synthesizeReelVoices, right after a build/review confirms): it calls
+  // this for every scene in the SAME tick setAssets(plan.assets) runs in,
+  // so the `assets` state closed over here is still last render's value —
+  // often empty, on a first build. Reading `text` (body) from the caller's
+  // own array already dodged that; heading didn't, which is why the very
+  // first recording of a reel would drop the headline and a manual retry
+  // moments later (assets now current) would not. A per-scene retry has no
+  // such race — the reel is already on screen, state is current — so it
+  // omits this and reads state same as ever.
+  const synthesizeSceneVoice = async (index, text, headingText) => {
     const body = (text ?? assets[index]?.spec?.body ?? "").trim();
     if (!body) return false;
-    const heading = (assets[index]?.spec?.heading ?? "").trim();
+    const heading = (headingText ?? assets[index]?.spec?.heading ?? "").trim();
     const spoken = heading ? `${heading}${/[.?!…]$/.test(heading) ? "" : "."} ${body}` : body;
     setSceneVoiceLoading((s) => ({ ...s, [index]: true }));
     setSceneVoiceError((s) => ({ ...s, [index]: false }));
@@ -464,7 +477,9 @@ export default function Composer() {
     if (!lines.length) return;
     setVoiceSynthesizing(true);
     try {
-      const results = await Promise.all(sceneAssets.map((a, i) => synthesizeSceneVoice(i, a.spec?.body)));
+      const results = await Promise.all(
+        sceneAssets.map((a, i) => synthesizeSceneVoice(i, a.spec?.body, a.spec?.heading))
+      );
       const done = results.filter(Boolean).length;
       if (done === lines.length) toast.success("Voiceover recorded for every scene");
       else if (done > 0) toast.error(`Voiceover recorded for ${done} of ${lines.length} scenes`);
@@ -473,6 +488,13 @@ export default function Composer() {
       setVoiceSynthesizing(false);
     }
   };
+
+  // "Rerun voiceover for all slides, not just one" — the per-scene retry
+  // button next to each line, widened to the whole reel. Reads straight off
+  // the CURRENT assets (a user-initiated click, well after any build-time
+  // race), so a hand-edited line gets re-recorded with its edit, not the
+  // original AI draft.
+  const reRecordAllVoices = () => synthesizeReelVoices(assets);
 
   // One scene's footage — shared the same way synthesizeSceneVoice is, so a
   // scene whose search (or generation) came up empty gets its own retry
@@ -1823,6 +1845,29 @@ export default function Composer() {
               </div>
             )}
 
+            {/* Reel-wide voiceover row — the same prominence the score
+                already had (icon, label, a real button) and voiceover
+                didn't: a scene's own retry was a small text link buried
+                inside the heading/body editor, easy to miss and, until the
+                fix just above, liable to vanish entirely once that scene's
+                layout was edited. "Re-record all" is the bulk version of
+                that same per-scene retry — every scene, its current text,
+                not the AI's original draft. */}
+            {isReel && voiceableScenes.length > 0 && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2" data-testid="composer-voice-row">
+                <Mic size={13} className="flex-none text-zinc-400" />
+                <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">Voiceover</span>
+                <span className="text-xs text-zinc-400" data-testid="composer-voice-row-count">
+                  {scenesWithVoice} of {voiceableScenes.length} scene{voiceableScenes.length === 1 ? "" : "s"}
+                </span>
+                <button onClick={reRecordAllVoices} disabled={voiceSynthesizing} data-testid="composer-voice-regenerate-all"
+                  title="Re-record every scene's line" className="ml-auto flex flex-none items-center gap-1.5 text-zinc-500 hover:text-white disabled:opacity-50">
+                  {voiceSynthesizing ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+                  <span className="hidden sm:inline">Re-record all</span>
+                </button>
+              </div>
+            )}
+
             {isReel && !!music.url && (
               <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2" data-testid="composer-music-row">
                 <Music size={13} className="flex-none text-zinc-400" />
@@ -1994,20 +2039,37 @@ export default function Composer() {
                               testid="composer-slide-heading" onChange={(v) => patchSlide(active, { heading: v })} />
                             <SlideField label={activeAsset.type === "scene" ? "Voiceover" : "Body"} value={activeAsset.spec.body} rows={3}
                               testid="composer-slide-body" onChange={(v) => patchSlide(active, { body: v })} />
-                            {activeAsset.type === "scene" && !!activeAsset.spec.body?.trim() && (
-                              <div className="-mt-2 flex items-center gap-1.5 text-[11px] text-zinc-500">
-                                {sceneVoiceLoading[active] ? (
-                                  <span className="flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> Recording take…</span>
-                                ) : sceneVoiceError[active] ? (
-                                  <button onClick={() => retrySceneVoice(active)} data-testid="composer-scene-voice-retry"
-                                    className="flex items-center gap-1 text-magic hover:text-white"><RefreshCw size={11} /> Take failed — retry</button>
-                                ) : activeAsset.spec.voice?.url ? (
-                                  <button onClick={() => retrySceneVoice(active)} data-testid="composer-scene-voice-retry"
-                                    className="flex items-center gap-1 hover:text-white"><RefreshCw size={11} /> Re-record this line</button>
-                                ) : null}
-                              </div>
-                            )}
                           </>
+                        )}
+
+                        {/* Voiceover status/retry — its own block, outside the
+                            three-way switch above, because "Edit layout" swaps
+                            that switch over to ElementPropertyPanel permanently
+                            for this slide (spec.elements now exists), and this
+                            used to live inside the branch it replaced: editing
+                            a scene's layout once was enough to make its
+                            voiceover controls disappear for good, with no
+                            error and no way back short of undoing the layout
+                            edit. spec.body itself is untouched by entering
+                            layout edit (elementsFromSpec COPIES it into a text
+                            element rather than moving it), so re-recording
+                            still works — it just has to be visible to use. */}
+                        {activeAsset.type === "scene" && !!activeAsset.spec.body?.trim() && (
+                          <div className="mt-2 flex items-center gap-1.5 text-[11px] text-zinc-500">
+                            <Mic size={11} className="flex-none" />
+                            {sceneVoiceLoading[active] ? (
+                              <span className="flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> Recording take…</span>
+                            ) : sceneVoiceError[active] ? (
+                              <button onClick={() => retrySceneVoice(active)} data-testid="composer-scene-voice-retry"
+                                className="flex items-center gap-1 text-magic hover:text-white"><RefreshCw size={11} /> Take failed — retry</button>
+                            ) : activeAsset.spec.voice?.url ? (
+                              <button onClick={() => retrySceneVoice(active)} data-testid="composer-scene-voice-retry"
+                                className="flex items-center gap-1 hover:text-white"><RefreshCw size={11} /> Re-record this line</button>
+                            ) : (
+                              <button onClick={() => retrySceneVoice(active)} data-testid="composer-scene-voice-retry"
+                                className="flex items-center gap-1 hover:text-white"><RefreshCw size={11} /> Record this line</button>
+                            )}
+                          </div>
                         )}
 
                         {activeAsset.type === "scene" && (

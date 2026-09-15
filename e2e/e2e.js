@@ -756,12 +756,29 @@ async function confirmReel(page) {
   await page.getByTestId(`composer-reel-review-heading-${addedIdx}`).fill('E2E added scene');
   await page.getByTestId(`composer-reel-review-visual-${addedIdx}`).fill('a rocket launch at dawn');
 
+  // Capture every voice request this confirm triggers — this IS the exact
+  // race that used to drop the headline: synthesizeReelVoices runs in the
+  // same tick applyPlan calls setAssets(plan.assets) in, so a heading read
+  // back off React state (rather than off the scene array already in hand)
+  // would still be reading last render's — usually empty, on a first
+  // build. Scene 0's edited heading only proves the fix if it shows up in
+  // THIS recording, not a later retry once state has caught up.
+  const voicePrompts = [];
+  await page.route('**/api/ai/generate', async (route) => {
+    const body = route.request().postDataJSON();
+    if (body?.kind === 'voice') voicePrompts.push(body.prompt);
+    await route.continue();
+  });
   await tap(page, 'composer-reel-review-confirm');
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
+  await page.waitForSelector('[data-testid="composer-voice-synthesizing"]', { state: 'hidden', timeout: 15000 });
+  await page.unroute('**/api/ai/generate');
   // The strip's own +1 "add slide" button sits alongside the scene buttons.
   const builtScenes = (await page.getByTestId('composer-slide-strip').locator('button').count()) - 1;
   ok('confirming the review builds exactly the edited scene list', builtScenes === reviewRowsAfter,
      String(builtScenes));
+  ok("the very first recording after confirming includes the edited heading, not just the caption",
+     voicePrompts.some((p) => p.includes('E2E edited heading')), JSON.stringify(voicePrompts));
 
   // The edited text landed on the actual built scene, not just the review
   // form — read it back off the same field a hand edit would use.
@@ -772,6 +789,31 @@ async function confirmReel(page) {
   const builtHeading = await page.getByTestId('composer-slide-heading').inputValue();
   ok("an edit made in review is what actually gets built, not the AI's original text",
      builtHeading === 'E2E edited heading', builtHeading);
+
+  // ---------- 11a-voicerow. Voiceover survives layout edit + bulk re-record ----------
+  // "Edit layout" used to permanently swap the whole controls panel over to
+  // ElementPropertyPanel for that scene — including the voiceover
+  // retry/status block, which lived inside the very branch that got
+  // replaced. Once edited, a scene's voiceover became unreachable with no
+  // error and no way back short of resetting the layout.
+  await tap(page, 'composer-slide-edit-layout');
+  await page.waitForTimeout(200);
+  ok('editing a scene\'s layout no longer hides its voiceover controls',
+     (await page.getByTestId('composer-scene-voice-retry').count()) === 1);
+
+  // The reel-wide row (parity with the score's own row) — count of scenes
+  // with a real take, and a bulk retry beside the score's own regenerate.
+  await page.getByTestId('composer-voice-row').waitFor({ timeout: 5000 });
+  const voiceRowText = await page.getByTestId('composer-voice-row-count').innerText();
+  ok('the reel-wide voiceover row reports how many scenes have a take',
+     /\d+ of \d+/.test(voiceRowText), voiceRowText);
+
+  await tap(page, 'composer-voice-regenerate-all');
+  await page.waitForSelector('[data-testid="composer-voice-synthesizing"]', { state: 'hidden', timeout: 15000 });
+  const voiceRowTextAfter = await page.getByTestId('composer-voice-row-count').innerText();
+  const [gotAfter, ofAfter] = voiceRowTextAfter.match(/(\d+) of (\d+)/).slice(1, 3);
+  ok('"re-record all" re-records every voiceable scene, not just the active one',
+     gotAfter === ofAfter, voiceRowTextAfter);
 
   // Discarding the review applies nothing at all — proven by going straight
   // from a fresh build back to the empty state, not just "no error shown".
