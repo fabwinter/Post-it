@@ -23,7 +23,7 @@ import { elementsFromSpec, newElement, useCardScale, clampPos } from "@/lib/slid
 import { materializeTemplateSlides } from "@/lib/templateEdit";
 import { groupFontsByCategory, fontStack, useAllFontsLoaded, useFontCatalog } from "@/lib/fonts";
 import { FontNotice } from "@/components/CustomFonts";
-import { reelTimeline, normalizeClip, formatSeconds, withLength, deriveCaptionWords, durationFromAlignment } from "@/lib/videoClip";
+import { reelTimeline, normalizeClip, formatSeconds, withLength, deriveCaptionWords, durationFromAlignment, alignmentSlice } from "@/lib/videoClip";
 import { ElementsLibrary } from "@/components/ElementsLibrary";
 import { ComposerFromSource } from "@/components/ComposerFromSource";
 import { ComposerVisualPanel } from "@/components/ComposerVisualPanel";
@@ -359,18 +359,34 @@ export default function Composer() {
   // hand-edited line) never means redoing every other scene's take too.
   // Resolves true/false rather than throwing: the caller decides what a
   // failure means (a silent count for the bulk fill, a toast for a retry).
+  //
+  // Records the headline (on-screen text) and the caption line (voiceover)
+  // as ONE take, headline first — not just the caption. It used to be only
+  // the caption's own text that ever reached the TTS request, so whatever
+  // was in the bold heading was never spoken at all: not truncated, simply
+  // never asked for. Recording them together, in the order they're read on
+  // screen, is what "the voiceover covers the whole slide" actually means.
   const synthesizeSceneVoice = async (index, text) => {
     const body = (text ?? assets[index]?.spec?.body ?? "").trim();
     if (!body) return false;
+    const heading = (assets[index]?.spec?.heading ?? "").trim();
+    const spoken = heading ? `${heading}${/[.?!…]$/.test(heading) ? "" : "."} ${body}` : body;
     setSceneVoiceLoading((s) => ({ ...s, [index]: true }));
     setSceneVoiceError((s) => ({ ...s, [index]: false }));
     try {
-      const { data } = await api.post("/ai/generate", { kind: "voice", prompt: body, options: { timestamps: true, voice: voicePreset } });
+      const { data } = await api.post("/ai/generate", { kind: "voice", prompt: spoken, options: { timestamps: true, voice: voicePreset } });
       const result = await pollTask(data.task_id);
       const url = (result.files || []).find((f) => f.file_url)?.file_url;
       if (!url) throw new Error("No voice file came back");
       const duration = durationFromAlignment(result.alignment) ?? await probeAudioDuration(url);
-      const words = deriveCaptionWords(body, duration, result.alignment);
+      // The on-screen caption (CaptionBody, word-highlighted as it plays)
+      // only ever shows the body half — the heading is always on screen,
+      // never a caption to begin with — so its word timing has to start
+      // from wherever body's own text starts in the combined recording, not
+      // from zero. `spoken` always ends with `body` verbatim (see above),
+      // so that index is just the length difference.
+      const bodyAlignment = alignmentSlice(result.alignment, spoken.length - body.length);
+      const words = deriveCaptionWords(body, duration, bodyAlignment);
       setAssets((s) => s.map((asset, idx) => {
         if (idx !== index) return asset;
         const clip = duration ? withLength(asset.spec.clip, duration + VOICE_PAD_SECONDS) : asset.spec.clip;

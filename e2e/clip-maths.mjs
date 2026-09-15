@@ -68,5 +68,28 @@ ok("...and falls back cleanly when there's no alignment to read",
 ok("...and never returns a bogus non-positive number",
    durationFromAlignment({ character_end_times_seconds: [0.1, 0] }) === null);
 
+// A scene's take now records its heading and its caption line together, so
+// the caption's own word-highlight has to start timing from wherever the
+// caption's text begins in that combined recording, not from zero — see
+// alignmentSlice's own comment.
+const alignmentSlice = mod.alignmentSlice;
+const combined = {
+  // "Hi. Bye" — 7 characters, offset 3 is where "Bye" starts.
+  characters: ["H", "i", ".", " ", "B", "y", "e"],
+  character_start_times_seconds: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+  character_end_times_seconds: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7],
+};
+const sliced = alignmentSlice(combined, 4);
+ok("slicing keeps only the characters from the offset on",
+   sliced.characters.join("") === "Bye", JSON.stringify(sliced));
+ok("...and keeps each one's REAL absolute time, not renormalized to zero",
+   near(sliced.character_start_times_seconds[0], 0.4), JSON.stringify(sliced));
+ok("a zero offset returns the alignment untouched",
+   alignmentSlice(combined, 0) === combined);
+ok("an offset past the end returns nothing to highlight, not a crash",
+   alignmentSlice(combined, 99) === null);
+ok("no alignment at all passes through as-is (the caller's own fallback path)",
+   alignmentSlice(null, 4) === null);
+
 console.log(failed ? `\n${failed} failed` : "\nall passed");
 process.exit(failed ? 1 : 0);

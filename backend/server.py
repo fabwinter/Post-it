@@ -453,7 +453,9 @@ SHORTFORM_SCRIPT_GUIDE = (
     " Short-form video script rules: the hook must land in the first 1-2 seconds — no logo intro, no \"hey guys\", "
     "spoken word and on-screen text both start at scene 1. Cut every 1-3 seconds of screen time rather than one long "
     "static shot. On-screen text must carry the point with sound off. Arc: hook, then the problem, then the "
-    "payoff/answer, then a one-line CTA."
+    "payoff/answer, then a one-line CTA. Every scene's on_screen_text and voiceover are recorded and read aloud "
+    "TOGETHER, on_screen_text first — write them as one continuous spoken thought (on_screen_text the punchy "
+    "opening clause, voiceover the sentence it leads into), never as two separate, unrelated ideas."
 )
 
 # Cover/thumbnail image-generation prompt rules: what a viewer actually
