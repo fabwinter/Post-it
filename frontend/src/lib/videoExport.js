@@ -584,9 +584,23 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
       if (audioCtx) audioCtx.close().catch(() => {});
     };
 
-    recorder.onstop = () => {
+    // Finishing has to happen exactly once, and it has to happen even if the
+    // recorder never tells us it stopped. Safari does sometimes swallow that
+    // event, and the old code simply waited for it forever — holding every
+    // clip, bitmap and recorded chunk resident the whole time, which is a
+    // hang that turns into a dead tab rather than a file. The data already
+    // collected is a perfectly good video, so use it.
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
       cleanup();
       resolve({ blob: new Blob(chunks, { type: picked.mime }), ext: picked.ext, mime: picked.mime });
+    };
+    recorder.onstop = finish;
+    const stopRecorder = () => {
+      try { recorder.stop(); } catch { finish(); return; }
+      setTimeout(finish, 4000);
     };
 
     const begin = async () => {
@@ -619,13 +633,13 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
         const t0 = performance.now();
         const tick = (now) => {
           const t = (now - t0) / 1000;
-          if (isCancelled?.()) { recorder.stop(); return; }
+          if (isCancelled?.()) { stopRecorder(); return; }
           if (t >= total) {
             drawFrame(ctx, scenes, items, Math.max(0, total - 0.001), W, H);
             onProgress?.(1);
             // One extra beat so the final frame is definitely in the stream
             // before the recorder is told to stop.
-            setTimeout(() => recorder.stop(), 120);
+            setTimeout(stopRecorder, 120);
             return;
           }
           manageSceneWindow(scenes, items, t);
