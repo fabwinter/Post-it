@@ -500,13 +500,16 @@ function syncScenes(scenes, items, t, playing) {
 // destination stream is pure silence, so every take and the score would be
 // mixed into a track that records nothing. recordReel resumes it before
 // starting; see there.
-function buildAudioTrack(scenes, musicEl, musicVolume) {
+function buildAudioTrack(scenes, musicEl, musicVolume, provided) {
   const withClipSound = scenes.filter((s) => s?.video && s.clip.volume > 0);
   const withVoice = scenes.filter((s) => s?.voice);
   if (!withClipSound.length && !withVoice.length && !musicEl) return { track: null, ctx: null };
   try {
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    const actx = new AudioCtx();
+    // Prefer a context the caller already unlocked inside the click that
+    // started this export (see the dialog). One built here instead is born
+    // minutes after that tap, with no user activation left to start it.
+    const actx = provided || new AudioCtx();
     const dest = actx.createMediaStreamDestination();
     withClipSound.forEach((s) => {
       const src = actx.createMediaElementSource(s.video);
@@ -548,7 +551,7 @@ function bitrateFor(width, height) {
 // Records the reel in real time. MediaRecorder captures a live stream, so
 // this takes as long as the reel runs — the progress callback is what makes
 // that legible rather than a frozen dialog.
-export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress, isCancelled, musicEl, musicVolume }) {
+export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress, isCancelled, musicEl, musicVolume, audioContext }) {
   return new Promise((resolve, reject) => {
     const picked = pickRecorderMime();
     if (!picked) { reject(new Error("This browser can't record video.")); return; }
@@ -576,7 +579,7 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
       stream.removeTrack(videoTrack);
       canvas.captureStream(fps).getVideoTracks().forEach((tr) => stream.addTrack(tr));
     }
-    const { track: audioTrack, ctx: audioCtx } = buildAudioTrack(scenes, musicEl, musicVolume);
+    const { track: audioTrack, ctx: audioCtx } = buildAudioTrack(scenes, musicEl, musicVolume, audioContext);
     if (audioTrack) stream.addTrack(audioTrack);
 
     let recorder;
@@ -633,12 +636,21 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
         items.filter((it) => it.start <= CLIP_LOOKAHEAD_S).map((it) => ensureVideoLoaded(scenes[it.index]))
       );
       if (isCancelled?.()) return;
-      // An AudioContext built this far from a user gesture starts suspended,
-      // and a suspended context feeds its destination stream silence — so
-      // without this the recording gets a soundtrack of nothing regardless of
-      // whether the voiceovers and score themselves loaded fine.
+      // A suspended context feeds its destination stream silence, so it has
+      // to be woken before recording — but NEVER by waiting on it. On iOS a
+      // resume() that the autoplay policy won't allow returns a promise that
+      // simply never settles: it doesn't reject, it hangs, and it hung here,
+      // before the recorder was ever started, with the progress bar frozen on
+      // whatever preparing had left it showing. That is a deadlock this code
+      // introduced, and it outranks the soundtrack: a silent video is a bad
+      // export, an export that never starts is no export at all. The dialog
+      // now unlocks the context inside the click instead, which is the only
+      // moment iOS will honour; this is just a backstop that cannot block.
       if (audioCtx && audioCtx.state !== "running") {
-        try { await audioCtx.resume(); } catch { /* recorded without sound */ }
+        await Promise.race([
+          Promise.resolve(audioCtx.resume()).catch(() => {}),
+          new Promise((r) => { setTimeout(r, 1500); }),
+        ]);
       }
       drawFrame(ctx, scenes, items, 0, W, H);
       syncScenes(scenes, items, 0, false);
