@@ -19,16 +19,26 @@ import { normalizeClip, filterCss, frameAt, transitionFrame, clipSourceTime } fr
 // negotiated at runtime. H.264 in MP4 is worth asking for first because
 // it's what every social platform wants; WebM is the honest fallback on a
 // browser without the proprietary codec.
+//
+// Ordered so that nothing which can only carry PICTURE ever outranks
+// something that can carry sound. A `codecs=` list is a request, not a hint:
+// asking for "video/mp4;codecs=avc1" asks for a file containing avc1 and
+// nothing else, so the recorder obliges and writes no audio track at all —
+// and those two video-only strings used to sit second and third in this
+// list, above the bare container. On a browser that refused the explicit
+// avc1+mp4a pair but accepted avc1 alone, every export came out silent no
+// matter how correct the audio graph feeding it was. The video-only entries
+// are kept, because a silent reel beats no reel, but only as a last resort.
 const MIME_CANDIDATES = [
   { mime: "video/mp4;codecs=avc1.42E01E,mp4a.40.2", ext: "mp4" },
-  { mime: "video/mp4;codecs=avc1.42E01E", ext: "mp4" },
-  { mime: "video/mp4;codecs=avc1", ext: "mp4" },
   { mime: "video/mp4", ext: "mp4" },
   { mime: "video/webm;codecs=vp9,opus", ext: "webm" },
-  { mime: "video/webm;codecs=vp9", ext: "webm" },
   { mime: "video/webm;codecs=vp8,opus", ext: "webm" },
-  { mime: "video/webm;codecs=vp8", ext: "webm" },
   { mime: "video/webm", ext: "webm" },
+  { mime: "video/mp4;codecs=avc1.42E01E", ext: "mp4" },
+  { mime: "video/mp4;codecs=avc1", ext: "mp4" },
+  { mime: "video/webm;codecs=vp9", ext: "webm" },
+  { mime: "video/webm;codecs=vp8", ext: "webm" },
 ];
 
 export function pickRecorderMime() {
@@ -298,12 +308,62 @@ async function loadAudioClip(url) {
   return (await loadMediaElement(el, url)) ? el : null;
 }
 
+// Decodes an audio URL into real samples, rather than loading it into an
+// element and hoping the element will play.
+//
+// An <audio> element is the wrong instrument for an export. Playing one needs
+// permission — on iOS, an unmuted element that play()s outside a user gesture
+// is simply refused, and the rejection is a promise nobody can act on by the
+// time recording starts, minutes after the tap. Routing it through
+// createMediaElementSource adds a second silent failure: a cross-origin
+// element the page isn't allowed to read feeds the graph pure silence with no
+// error at all. And even when it does work, an element is synced by writing
+// currentTime and tolerating a third of a second of drift, which is audible
+// on a voiceover meant to land with its own words on screen.
+//
+// An AudioBuffer has none of those problems. It needs no activation beyond
+// the context the dialog already unlocks inside the tap, it is scheduled to
+// the sample, and a failure to fetch or decode is something this function can
+// see and report. The element path stays as the fallback for anything that
+// won't decode.
+async function loadAudioBuffer(url, actx) {
+  if (!url || !actx) return null;
+  const bytesFrom = async (u) => {
+    const res = await fetch(u, { mode: "cors" });
+    return res.ok ? res.arrayBuffer() : null;
+  };
+  let bytes = null;
+  try { bytes = await bytesFrom(url); } catch { bytes = null; }
+  // Same direct-then-proxy order as the element path, for the same reason:
+  // the proxy caps at Vercel's ~4.5MB response limit, the origin doesn't.
+  if (!bytes && isProxied(url)) {
+    try { bytes = await bytesFrom(proxied(url)); } catch { bytes = null; }
+  }
+  if (!bytes) return null;
+  // Safari only grew the promise form of decodeAudioData recently and still
+  // answers the callback form everywhere, so accept whichever arrives first.
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (buf) => { if (!settled) { settled = true; resolve(buf || null); } };
+    try {
+      const p = actx.decodeAudioData(bytes, done, () => done(null));
+      if (p && typeof p.then === "function") p.then(done, () => done(null));
+    } catch { done(null); }
+    setTimeout(() => done(null), 20000);
+  });
+}
+
 // Loads the reel's background score ahead of recording — public because it
 // isn't scoped to a scene the way prepareScenes's own loads are, so the
 // export dialog calls it directly rather than threading a music URL
 // through prepareScenes's per-scene loop.
-export function loadMusic(url) {
-  return url ? loadAudioClip(url) : Promise.resolve(null);
+// Returns whichever form the score could be had in: decoded samples for
+// preference, an element if it wouldn't decode, neither if it wouldn't load.
+export async function loadMusic(url, actx) {
+  if (!url) return { el: null, buffer: null };
+  const buffer = await loadAudioBuffer(url, actx);
+  if (buffer) return { el: null, buffer };
+  return { el: await loadAudioClip(url), buffer: null };
 }
 
 // A captioned scene's per-word overlay screenshots, loaded into real
@@ -319,7 +379,7 @@ function loadContentFrames(frames) {
   })));
 }
 
-export async function prepareScenes(items, layers, { onProgress } = {}) {
+export async function prepareScenes(items, layers, { onProgress, audioContext } = {}) {
   const scenes = [];
   for (let i = 0; i < items.length; i += 1) {
     const it = items[i];
@@ -353,14 +413,16 @@ export async function prepareScenes(items, layers, { onProgress } = {}) {
     const video = clip.url && !isStill ? createVideoEl({ muted: clip.volume === 0 }) : null;
     const clipImage = isStill ? await loadClipImage(clip.url) : null;
     const voiceUrl = it.asset?.spec?.voice?.url || "";
-    const voice = voiceUrl ? await loadAudioClip(voiceUrl) : null;
+    // Decoded samples for preference; an element only if it wouldn't decode.
+    const voiceBuffer = voiceUrl ? await loadAudioBuffer(voiceUrl, audioContext) : null;
+    const voice = voiceUrl && !voiceBuffer ? await loadAudioClip(voiceUrl) : null;
     scenes[it.index] = {
       bgImage, bgColor: layers[it.index]?.bgColor || null,
-      contentImage, contentFrames, video, clipImage, clip, voice, item: it,
+      contentImage, contentFrames, video, clipImage, clip, voice, voiceBuffer, item: it,
       // What this scene was supposed to have but couldn't load, so the
       // export can report holes rather than quietly shipping them.
       clipFailed: !!(isStill && clip.url && !clipImage),
-      voiceFailed: !!(voiceUrl && !voice),
+      voiceFailed: !!(voiceUrl && !voice && !voiceBuffer),
       videoUrl: clip.url && !isStill ? clip.url : null,
       videoState: "idle", // idle | loading | loaded
     };
@@ -400,12 +462,12 @@ function ensureVideoLoaded(scene) {
 // What the finished reel is missing, for the dialog to report. Collected
 // after recording rather than before, because a clip only finds out it
 // can't load at the point the window actually reaches for it.
-export function missingMedia(scenes, { musicWanted, musicEl } = {}) {
+export function missingMedia(scenes, { musicWanted, musicEl, musicBuffer } = {}) {
   const list = scenes.filter(Boolean);
   return {
     clips: list.filter((s) => s.clipFailed).length,
     voices: list.filter((s) => s.voiceFailed).length,
-    music: !!musicWanted && !musicEl,
+    music: !!musicWanted && !musicEl && !musicBuffer,
   };
 }
 
@@ -498,10 +560,25 @@ function syncScenes(scenes, items, t, playing) {
 // destination stream is pure silence, so every take and the score would be
 // mixed into a track that records nothing. recordReel resumes it before
 // starting; see there.
-function buildAudioTrack(scenes, musicEl, musicVolume, provided) {
+function buildAudioTrack({ scenes, items, musicEl, musicBuffer, musicVolume, provided }) {
   const withClipSound = scenes.filter((s) => s?.video && s.clip.volume > 0);
-  const withVoice = scenes.filter((s) => s?.voice);
-  if (!withClipSound.length && !withVoice.length && !musicEl) return { track: null, ctx: null };
+  const withVoiceEl = scenes.filter((s) => s?.voice);
+  const withVoiceBuf = scenes.filter((s) => s?.voiceBuffer);
+  const silent = !withClipSound.length && !withVoiceEl.length
+    && !withVoiceBuf.length && !musicEl && !musicBuffer;
+  // How the soundtrack was sourced, in the export's own words. A silent
+  // export is impossible to diagnose from the file alone — it looks the same
+  // whether nothing was wired up, the wiring produced no track, or the track
+  // was there and carried silence — and this has already cost a round, so the
+  // render says which of those it was.
+  const sourcing = {
+    takesDecoded: withVoiceBuf.length,
+    takesFromElements: withVoiceEl.length,
+    score: musicBuffer ? "decoded" : musicEl ? "element" : "none",
+    clipSound: withClipSound.length,
+  };
+  if (silent) return { track: null, ctx: null, startAudio: () => {}, sourcing, hasTrack: false };
+  const level = Number.isFinite(musicVolume) ? musicVolume : 0.18;
   try {
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     // Prefer a context the caller already unlocked inside the click that
@@ -509,6 +586,8 @@ function buildAudioTrack(scenes, musicEl, musicVolume, provided) {
     // minutes after that tap, with no user activation left to start it.
     const actx = provided || new AudioCtx();
     const dest = actx.createMediaStreamDestination();
+
+    // Element sources: a clip's own sound, and anything that wouldn't decode.
     withClipSound.forEach((s) => {
       const src = actx.createMediaElementSource(s.video);
       const gain = actx.createGain();
@@ -516,7 +595,7 @@ function buildAudioTrack(scenes, musicEl, musicVolume, provided) {
       src.connect(gain).connect(dest);
       s.video.muted = false;
     });
-    withVoice.forEach((s) => {
+    withVoiceEl.forEach((s) => {
       const src = actx.createMediaElementSource(s.voice);
       src.connect(dest);
       s.voice.muted = false;
@@ -524,15 +603,43 @@ function buildAudioTrack(scenes, musicEl, musicVolume, provided) {
     if (musicEl) {
       const src = actx.createMediaElementSource(musicEl);
       const gain = actx.createGain();
-      gain.gain.value = Number.isFinite(musicVolume) ? musicVolume : 0.18;
+      gain.gain.value = level;
       src.connect(gain).connect(dest);
       musicEl.muted = false;
     }
-    return { track: dest.stream.getAudioTracks()[0] || null, ctx: actx };
+
+    // Decoded sources, placed on the timeline rather than chased with
+    // currentTime: a take starts exactly where its scene starts, to the
+    // sample, and needs no permission to begin.
+    const startAt = new Map(items.map((it) => [it.index, it.start]));
+    const cues = withVoiceBuf.map((s) => ({
+      buffer: s.voiceBuffer, at: startAt.get(s.item.index) || 0, gain: 1, loop: false,
+    }));
+    if (musicBuffer) cues.push({ buffer: musicBuffer, at: 0, gain: level, loop: true });
+
+    const started = [];
+    const startAudio = (when) => {
+      cues.forEach((cue) => {
+        try {
+          const src = actx.createBufferSource();
+          src.buffer = cue.buffer;
+          src.loop = cue.loop;
+          const gain = actx.createGain();
+          gain.gain.value = cue.gain;
+          src.connect(gain).connect(dest);
+          src.start(when + cue.at);
+          started.push(src);
+        } catch { /* one take that won't schedule shouldn't silence the rest */ }
+      });
+    };
+    const stopAudio = () => started.forEach((src) => { try { src.stop(); } catch { /* already done */ } });
+
+    const track = dest.stream.getAudioTracks()[0] || null;
+    return { track, ctx: actx, startAudio, stopAudio, sourcing, hasTrack: !!track };
   } catch {
     // Hand a caller-provided context back even on failure, so recordReel's
     // cleanup still closes it rather than leaving it open for the tab's life.
-    return { track: null, ctx: provided || null };
+    return { track: null, ctx: provided || null, startAudio: () => {}, sourcing, hasTrack: false };
   }
 }
 
@@ -594,7 +701,7 @@ export function describeExportRun(run) {
 // Records the reel in real time. MediaRecorder captures a live stream, so
 // this takes as long as the reel runs — the progress callback is what makes
 // that legible rather than a frozen dialog.
-export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress, isCancelled, musicEl, musicVolume, audioContext }) {
+export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress, isCancelled, musicEl, musicBuffer, musicVolume, audioContext }) {
   return new Promise((resolve, reject) => {
     const picked = pickRecorderMime();
     if (!picked) { reject(new Error("This browser can't record video.")); return; }
@@ -622,8 +729,11 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
       stream.removeTrack(videoTrack);
       canvas.captureStream(fps).getVideoTracks().forEach((tr) => stream.addTrack(tr));
     }
-    const { track: audioTrack, ctx: audioCtx } = buildAudioTrack(scenes, musicEl, musicVolume, audioContext);
+    const { track: audioTrack, ctx: audioCtx, startAudio, stopAudio, sourcing, hasTrack } = buildAudioTrack({
+      scenes, items, musicEl, musicBuffer, musicVolume, provided: audioContext,
+    });
     if (audioTrack) stream.addTrack(audioTrack);
+    const audioReport = { ...sourcing, track: hasTrack, recorded: false };
 
     let recorder;
     try {
@@ -646,6 +756,7 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
         if (s?.voice && !s.voice.paused) s.voice.pause();
       });
       if (musicEl && !musicEl.paused) musicEl.pause();
+      stopAudio?.();
       stream.getTracks().forEach((tr) => tr.stop());
       if (audioCtx) audioCtx.close().catch(() => {});
     };
@@ -664,7 +775,10 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
       // Reached the end under its own power — so whatever the breadcrumb was
       // last saying, this run is not the one that died.
       noteExportRun({ stage: "done" });
-      resolve({ blob: new Blob(chunks, { type: picked.mime }), ext: picked.ext, mime: picked.mime });
+      resolve({
+        blob: new Blob(chunks, { type: picked.mime }), ext: picked.ext, mime: picked.mime,
+        audio: audioReport,
+      });
     };
     recorder.onstop = finish;
     const stopRecorder = () => {
@@ -710,6 +824,11 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
         // Nothing is captured until asked for now, so the opening frame has
         // to be handed over explicitly or the file starts on black.
         pushFrame?.();
+        // Everything that was decoded is scheduled here, against the clock
+        // the recording itself starts on, so a take lands on its own scene
+        // rather than within a third of a second of it.
+        if (audioCtx) { startAudio?.(audioCtx.currentTime); audioReport.recorded = hasTrack; }
+        audioReport.contextState = audioCtx ? audioCtx.state : "none";
         if (musicEl) musicEl.play().catch(() => {});
         const t0 = performance.now();
         // The capture rate is a target, not a promise. A phone that is also

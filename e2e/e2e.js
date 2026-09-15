@@ -603,6 +603,35 @@ async function tap(page, testid) {
     ok('...and the picture advances rather than holding one frame',
        moves.a !== moves.b, JSON.stringify(moves));
 
+    // The soundtrack is in the file too. Nothing here has ever checked that,
+    // and the voice fixture was a WAV of pure silence, so a reel whose
+    // voiceover and score never reached the recording passed every assertion
+    // above exactly as happily as one whose did — which is how a completely
+    // silent export shipped. The fixture is a real tone now and this decodes
+    // the exported container back to samples and looks at the level.
+    const sound = await page.evaluate(async () => {
+      const bytes = await (await fetch(window.__lastBlobUrl)).arrayBuffer();
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      let audio = null;
+      try { audio = await new Ctx().decodeAudioData(bytes.slice(0)); }
+      catch (e) { return { error: String((e && e.message) || e) }; }
+      const ch = audio.getChannelData(0);
+      let peak = 0;
+      let energy = 0;
+      for (let i = 0; i < ch.length; i += 1) { const v = Math.abs(ch[i]); if (v > peak) peak = v; energy += v; }
+      return {
+        duration: Number(audio.duration.toFixed(2)),
+        peak: Number(peak.toFixed(4)),
+        mean: Number((energy / Math.max(1, ch.length)).toFixed(5)),
+      };
+    });
+    ok('...and the reel has sound in it, not just picture',
+       !!sound && !sound.error && sound.peak > 0.01, JSON.stringify(sound));
+    // Peak alone can be one stray click. A take that really played leaves
+    // energy across the whole thing, which silence cannot fake.
+    ok('...and that sound is a real take, not a single blip in silence',
+       !!sound && !sound.error && sound.mean > 0.002, JSON.stringify(sound));
+
     // A scene's flat background is filled straight onto the canvas now
     // rather than screenshotted into a full-resolution bitmap and held for
     // the whole render — six scenes at 720p were spending ~22MB of a phone's
