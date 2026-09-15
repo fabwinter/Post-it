@@ -290,9 +290,9 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
       setStageIndex(-1);
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 
-      const [scenes, musicEl] = await Promise.all([
-        prepareScenes(items, layers, { onProgress: (p) => setProgress(0.3 + p * 0.1) }),
-        loadMusic(music?.url),
+      const [scenes, score] = await Promise.all([
+        prepareScenes(items, layers, { onProgress: (p) => setProgress(0.3 + p * 0.1), audioContext }),
+        loadMusic(music?.url, audioContext),
       ]);
       if (cancelled.current) { setPhase("idle"); return; }
 
@@ -307,11 +307,13 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
         canvas, scenes, items, total, fps: 30, audioContext,
         onProgress: (p) => setProgress(p),
         isCancelled: () => cancelled.current,
-        musicEl, musicVolume: music?.volume,
+        musicEl: score.el, musicBuffer: score.buffer, musicVolume: music?.volume,
       });
       if (cancelled.current) { setPhase("idle"); return; }
       setResult(out);
-      setMissing(missingMedia(scenes, { musicWanted: !!music?.url, musicEl }));
+      setMissing(missingMedia(scenes, {
+        musicWanted: !!music?.url, musicEl: score.el, musicBuffer: score.buffer,
+      }));
       setPhase("done");
     } catch (e) {
       setStageIndex(-1);
@@ -333,6 +335,22 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
 
   const busy = phase === "preparing" || phase === "recording";
   const safeName = (title || "reel").replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 60) || "reel";
+  // What the file's soundtrack was made of. A silent export looks identical
+  // from the outside whether nothing was wired up, the wiring produced no
+  // track, or the track was recorded and carried silence — so the render says
+  // which, rather than leaving the next report to guess again.
+  const soundSummary = (() => {
+    const a = result?.audio;
+    if (!a) return "";
+    const parts = [];
+    const takes = (a.takesDecoded || 0) + (a.takesFromElements || 0);
+    if (takes) parts.push(`${takes} ${takes === 1 ? "take" : "takes"}${a.takesFromElements ? " (elements)" : ""}`);
+    if (a.score !== "none") parts.push(`score (${a.score})`);
+    if (a.clipSound) parts.push(`${a.clipSound} clip${a.clipSound === 1 ? "" : "s"} audible`);
+    if (!parts.length) return "no sound in this reel";
+    return `sound: ${parts.join(", ")}${a.recorded ? "" : " — NOT recorded"}`;
+  })();
+
   const missingSummary = (() => {
     if (!missing) return "";
     const parts = [];
@@ -425,6 +443,7 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
             {phase === "done" && result && (
               <div className="mt-4 rounded-lg border border-lime/30 bg-lime/5 p-3 text-xs text-lime" data-testid="reel-export-done">
                 Done — {(result.blob.size / (1024 * 1024)).toFixed(1)}MB {result.ext.toUpperCase()}
+                {soundSummary && <span className="text-lime/70"> · {soundSummary}</span>}
               </div>
             )}
 

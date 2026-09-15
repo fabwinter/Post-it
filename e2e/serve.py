@@ -1,6 +1,6 @@
 """Local end-to-end stack: real backend + real built frontend, with D1 backed by
 sqlite and PoYo faked so no network or keys are needed."""
-import json, os, re, sqlite3, struct, sys, threading, time, itertools, tempfile
+import json, math, os, re, sqlite3, struct, sys, threading, time, itertools, tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 sys.path.insert(0, os.path.join(ROOT, "backend"))
@@ -38,9 +38,16 @@ IDEAS = "1. Why consistency beats virality\n2. The 20-week compounding curve\n3.
 # supposed to size each scene from the ACTUAL duration of its take, and a
 # fake that always returned the same file couldn't tell that logic apart
 # from one that just kept the old flat default.
-def _wav_bytes(seconds, rate=8000):
+def _wav_bytes(seconds, rate=8000, freq=440.0):
     n = max(1, int(rate * seconds))
-    data = b"\x00\x00" * n
+    # An actual tone, not silence. This used to be n frames of \x00 — a valid
+    # WAV of nothing at all — which meant no test could ever tell a reel whose
+    # voiceover and score reached the exported file from one whose didn't, and
+    # a silent export shipped. Same blind spot the 14-byte clip.mp4 had.
+    data = b"".join(
+        struct.pack("<h", int(12000 * math.sin(2 * math.pi * freq * i / rate)))
+        for i in range(n)
+    )
     block_align = 2
     return struct.pack(
         "<4sI4s4sIHHIIHH4sI", b"RIFF", 36 + len(data), b"WAVE",
@@ -132,7 +139,7 @@ def fake_post(url, headers=None, json=None, timeout=None, **kw):
             # different lengths, not one fixed "voice clip" duration.
             seconds = max(0.5, min(14.0, len(text.split()) / 2.5))
             file_url = f"/e2e-voice-{task_id}.wav"
-            BLOB_STORE[f"http://127.0.0.1:8123{file_url}"] = _wav_bytes(seconds)
+            BLOB_STORE[f"http://127.0.0.1:8123{file_url}"] = _wav_bytes(seconds, freq=440.0)
             TASK_FILES[task_id] = file_url
             if input_payload.get("timestamps") and text:
                 chars = list(text)
@@ -156,7 +163,7 @@ def fake_post(url, headers=None, json=None, timeout=None, **kw):
             if music_input.get("custom_mode") and not (music_input.get("style") and music_input.get("title")):
                 return Resp({"code": 400, "message": "custom_mode=true requires style and title"}, 400)
             file_url = f"/e2e-music-{task_id}.wav"
-            BLOB_STORE[f"http://127.0.0.1:8123{file_url}"] = _wav_bytes(8.0)
+            BLOB_STORE[f"http://127.0.0.1:8123{file_url}"] = _wav_bytes(8.0, freq=220.0)
             TASK_FILES[task_id] = file_url
         return Resp({"data": {"task_id": task_id, "status": "running"}})
     return Resp({"error": "unhandled"}, 500)
