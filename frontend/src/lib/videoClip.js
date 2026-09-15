@@ -155,6 +155,31 @@ export function clipSeconds(clip) {
   return clamp(trimmed / c.speed, MIN_CLIP_SECONDS, MAX_CLIP_SECONDS);
 }
 
+// Where in the source a clip should be at `elapsed` seconds into its scene.
+//
+// A scene holds the timeline for as long as its length says, which is very
+// often LONGER than the footage behind it: a 5s slide over a 4s stock clip is
+// the ordinary case for an auto-built reel, and any hand-set `hold` can do it
+// deliberately. The old answer was to pin at the last frame — min(want, cap)
+// — which reads as a freeze, and, much worse, thrashes. The element plays
+// past the pin and fires `ended`; the next tick sees it paused and calls
+// play(), which rewinds an ended element to 0; the tick after that sees it
+// 4 seconds away from the pin and seeks it back; it ends again. That is a
+// seek and a play every frame for the whole tail of the scene, and every one
+// of those seeks tears down and refills a decode pipeline.
+//
+// Looping the trim window instead costs one seek per lap, keeps motion under
+// the text, and is identical to the old maths for any clip long enough to
+// fill its scene.
+export function clipSourceTime(clip, elapsed, sourceDuration) {
+  const dur = Number.isFinite(sourceDuration) && sourceDuration > 0 ? sourceDuration : null;
+  const end = clip.end ?? dur;
+  const played = Math.max(0, num(elapsed, 0)) * clip.speed;
+  if (!Number.isFinite(end)) return clip.start + played;
+  const span = Math.max(MIN_CLIP_SECONDS, end - clip.start);
+  return clip.start + (played % span);
+}
+
 // Setting a length by hand pins `hold`, so later trimming doesn't silently
 // undo it — the editor shows the pin and offers to drop it.
 export function withLength(clip, seconds) {

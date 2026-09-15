@@ -11,6 +11,10 @@ if [ ! -d "$ROOT/frontend/build" ]; then
   (cd "$ROOT/frontend" && npm run build)
 fi
 
+# Pure-maths checks first — they need no server, and a timeline model that is
+# already wrong makes every browser failure below harder to read.
+(cd "$ROOT" && node e2e/clip-maths.mjs)
+
 RUN_DIR="$(mktemp -d)"
 export E2E_RUN_DIR="$RUN_DIR"
 python3 serve.py > "$RUN_DIR/serve.log" 2>&1 &

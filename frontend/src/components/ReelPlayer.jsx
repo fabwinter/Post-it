@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { Play, Pause, SkipBack, Repeat } from "lucide-react";
 import { VisualCard } from "@/components/VisualCard";
 import { useCardScale } from "@/lib/slideElements";
-import { reelTimeline, transitionFrame, frameAt, formatSeconds, wordIndexAt } from "@/lib/videoClip";
+import { reelTimeline, transitionFrame, frameAt, formatSeconds, wordIndexAt, clipSourceTime } from "@/lib/videoClip";
 
 // Plays a reel the way it will actually be watched: scenes end to end at
 // their real lengths, each clip graded and trimmed as set, transitions
@@ -93,9 +93,9 @@ export function ReelPlayer({ assets, brand, aspectCls, music, activeIndex, onSel
         return;
       }
       const c = it.clip;
-      const want = c.start + Math.max(0, time - it.start) * c.speed;
-      const cap = c.end ?? (el.duration || Infinity);
-      const target = Math.min(want, cap - 0.05);
+      // Loops the trim window rather than pinning to the last frame — see
+      // clipSourceTime for why pinning is both a freeze and a seek storm.
+      const target = clipSourceTime(c, time - it.start, el.duration);
       if (Number.isFinite(target) && Math.abs(el.currentTime - target) > 0.25) {
         try { el.currentTime = Math.max(0, target); } catch { /* not seekable yet */ }
       }

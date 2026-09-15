@@ -1,6 +1,6 @@
 import { API } from "@/lib/api";
 import { ASPECT_RATIO } from "@/components/VisualCard";
-import { normalizeClip, filterCss, frameAt, transitionFrame } from "@/lib/videoClip";
+import { normalizeClip, filterCss, frameAt, transitionFrame, clipSourceTime } from "@/lib/videoClip";
 
 // Turning an edited reel into a file you can actually post.
 //
@@ -459,9 +459,7 @@ function syncScenes(scenes, items, t, playing) {
       if (!onScreen) { if (!s.video.paused) s.video.pause(); }
       else {
         const c = s.clip;
-        const want = c.start + Math.max(0, t - it.start) * c.speed;
-        const cap = c.end ?? (s.video.duration || Infinity);
-        const target = Math.min(want, cap - 0.05);
+        const target = clipSourceTime(c, t - it.start, s.video.duration);
         if (Number.isFinite(target) && Math.abs(s.video.currentTime - target) > 0.3) {
           try { s.video.currentTime = Math.max(0, target); } catch { /* not seekable yet */ }
         }
@@ -532,7 +530,9 @@ function buildAudioTrack(scenes, musicEl, musicVolume, provided) {
     }
     return { track: dest.stream.getAudioTracks()[0] || null, ctx: actx };
   } catch {
-    return { track: null, ctx: null };
+    // Hand a caller-provided context back even on failure, so recordReel's
+    // cleanup still closes it rather than leaving it open for the tab's life.
+    return { track: null, ctx: provided || null };
   }
 }
 
@@ -546,6 +546,49 @@ function buildAudioTrack(scenes, musicEl, musicVolume, provided) {
 function bitrateFor(width, height) {
   const perSecond = Math.round(width * height * 4.3);
   return Math.max(1_200_000, Math.min(perSecond, 8_000_000));
+}
+
+// A breadcrumb for an export that never got to tell us how it went.
+//
+// When iOS kills a tab for memory there is no error, no unload event and no
+// console left to read — the page is simply gone and reloads empty. Every
+// round of this bug so far has been diagnosed from a screenshot of a progress
+// bar, which is why it has taken several. So the export now writes where it
+// is to localStorage as it goes, and marks itself done when it finishes: a
+// record left behind in any other state is a render that died, and it says
+// exactly how far in, at what size, holding how much.
+const RUN_KEY = "createos.reelExport.lastRun";
+
+export function noteExportRun(patch) {
+  try { localStorage.setItem(RUN_KEY, JSON.stringify({ ...patch, at: Date.now() })); }
+  catch { /* private mode or quota — diagnostics never cost an export */ }
+}
+
+export function lastExportRun() {
+  try {
+    const raw = localStorage.getItem(RUN_KEY);
+    const run = raw ? JSON.parse(raw) : null;
+    return run && typeof run === "object" ? run : null;
+  } catch { return null; }
+}
+
+export function clearExportRun() {
+  try { localStorage.removeItem(RUN_KEY); } catch { /* nothing to clear */ }
+}
+
+// The one-line summary of a died-mid-render breadcrumb, for the dialog to
+// show and the user to read straight back to us.
+export function describeExportRun(run) {
+  if (!run || run.stage === "done") return "";
+  const where = run.stage === "recording"
+    ? `recording ${(run.t ?? 0).toFixed(1)}s of ${(run.total ?? 0).toFixed(1)}s`
+    : `preparing scene ${run.scene ?? "?"} of ${run.scenes ?? "?"}`;
+  const bits = [where];
+  if (run.width && run.height) bits.push(`${run.width}\u00d7${run.height}`);
+  if (run.frames) bits.push(`${run.frames} frames at ${run.fps}fps`);
+  if (run.bytes) bits.push(`${(run.bytes / 1048576).toFixed(1)}MB captured`);
+  if (run.clipsLoaded !== undefined) bits.push(`${run.clipsLoaded} clips open`);
+  return bits.join(", ");
 }
 
 // Records the reel in real time. MediaRecorder captures a live stream, so
@@ -588,7 +631,8 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
     } catch (e) { reject(e); return; }
 
     const chunks = [];
-    recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    let recordedBytes = 0;
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size) { chunks.push(e.data); recordedBytes += e.data.size; } };
     recorder.onerror = (e) => reject(e.error || new Error("Recording failed"));
 
     let raf = 0;
@@ -617,6 +661,9 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
       if (settled) return;
       settled = true;
       cleanup();
+      // Reached the end under its own power — so whatever the breadcrumb was
+      // last saying, this run is not the one that died.
+      noteExportRun({ stage: "done" });
       resolve({ blob: new Blob(chunks, { type: picked.mime }), ext: picked.ext, mime: picked.mime });
     };
     recorder.onstop = finish;
@@ -665,8 +712,23 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
         pushFrame?.();
         if (musicEl) musicEl.play().catch(() => {});
         const t0 = performance.now();
-        const frameGap = 1 / fps;
+        // The capture rate is a target, not a promise. A phone that is also
+        // decoding stock footage and encoding 720p can take longer to
+        // composite a frame than the gap between frames — and every frame
+        // handed to the stream that the encoder hasn't reached yet is a
+        // full-size copy of the canvas (3.7MB at 720x1280) sitting in a queue
+        // nobody is draining. Pushing at a fixed rate regardless is how that
+        // queue becomes the thing that kills the tab, later and later into the
+        // render as the device gets busier. So measure what a draw actually
+        // costs and, when the device can't hold the rate, stop asking it to:
+        // a 20fps reel is a reel, a render that dies at 92% is nothing.
+        let gap = 1 / fps;
+        const maxGap = 1 / 20; // never drop below 20fps
+        let drawEma = 0;
+        let frames = 0;
         let lastDrawn = -Infinity;
+        let lastNote = 0;
+        let lastPct = -1;
         const tick = (now) => {
           const t = (now - t0) / 1000;
           if (isCancelled?.()) { stopRecorder(); return; }
@@ -687,12 +749,33 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
           // the full-canvas draws (video sample, grade, overlays, all at
           // 720x1280) were work nobody could ever see, competing with the
           // encoder for the same main thread.
-          if (t - lastDrawn >= frameGap) {
+          if (t - lastDrawn >= gap) {
             lastDrawn = t;
+            const startedAt = performance.now();
             drawFrame(ctx, scenes, items, t, W, H);
             pushFrame?.();
+            frames += 1;
+            const took = performance.now() - startedAt;
+            drawEma = drawEma ? drawEma * 0.9 + took * 0.1 : took;
+            if (drawEma > gap * 1200 && gap < maxGap) gap = Math.min(maxGap, gap * 1.15);
           }
-          onProgress?.(t / total);
+          // Repainting the dialog on every animation frame is thousands of
+          // React renders over a render, all competing with the encoder for
+          // the same main thread, to move a bar that only has a hundred
+          // positions. Once per percent is the same bar for 1/20th the work.
+          const pct = Math.floor((t / total) * 100);
+          if (pct !== lastPct) { lastPct = pct; onProgress?.(t / total); }
+          // Leave a trail (see noteExportRun) — if the tab is killed this is
+          // the only thing that will survive to say where it happened.
+          if (now - lastNote > 1000) {
+            lastNote = now;
+            noteExportRun({
+              stage: "recording", t, total, width: W, height: H,
+              fps: Math.round(1 / gap), frames, bytes: recordedBytes,
+              clipsLoaded: scenes.filter((sc) => sc?.videoState === "loaded").length,
+              scenes: scenes.length,
+            });
+          }
           raf = requestAnimationFrame(tick);
         };
         raf = requestAnimationFrame(tick);
