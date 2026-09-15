@@ -556,7 +556,26 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
     const W = canvas.width;
     const H = canvas.height;
 
-    const stream = canvas.captureStream(fps);
+    // Drive the stream from our own draws rather than letting it sample the
+    // canvas on a timer of its own. captureStream(fps) grabs a frame every
+    // 1/fps whether or not a new one was drawn and whether or not the encoder
+    // is keeping up — and on a phone busy decoding footage it is not, so the
+    // ungrabbed frames pile up in the stream's buffer for the whole render.
+    // That backlog is a steady climb, which is what dying partway through a
+    // recording rather than at the start looks like. With captureStream(0)
+    // nothing is captured until requestFrame() is called, so what gets
+    // encoded is exactly what got drawn, and a slow frame costs latency
+    // instead of memory. Not every browser has requestFrame, hence the probe.
+    const stream = canvas.captureStream(0);
+    const videoTrack = stream.getVideoTracks()[0];
+    const pushFrame = typeof videoTrack?.requestFrame === "function"
+      ? () => videoTrack.requestFrame()
+      : null;
+    if (!pushFrame) {
+      videoTrack?.stop();
+      stream.removeTrack(videoTrack);
+      canvas.captureStream(fps).getVideoTracks().forEach((tr) => stream.addTrack(tr));
+    }
     const { track: audioTrack, ctx: audioCtx } = buildAudioTrack(scenes, musicEl, musicVolume);
     if (audioTrack) stream.addTrack(audioTrack);
 
@@ -629,13 +648,19 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
 
       setTimeout(() => {
         recorder.start(250);
+        // Nothing is captured until asked for now, so the opening frame has
+        // to be handed over explicitly or the file starts on black.
+        pushFrame?.();
         if (musicEl) musicEl.play().catch(() => {});
         const t0 = performance.now();
+        const frameGap = 1 / fps;
+        let lastDrawn = -Infinity;
         const tick = (now) => {
           const t = (now - t0) / 1000;
           if (isCancelled?.()) { stopRecorder(); return; }
           if (t >= total) {
             drawFrame(ctx, scenes, items, Math.max(0, total - 0.001), W, H);
+            pushFrame?.();
             onProgress?.(1);
             // One extra beat so the final frame is definitely in the stream
             // before the recorder is told to stop.
@@ -644,7 +669,17 @@ export function recordReel({ canvas, scenes, items, total, fps = 30, onProgress,
           }
           manageSceneWindow(scenes, items, t);
           syncScenes(scenes, items, t, true);
-          drawFrame(ctx, scenes, items, t, W, H);
+          // Composite at the output's frame rate, not the display's. This ran
+          // on every animation frame — 60 a second on the phone this was
+          // failing on — while the recording only ever wanted 30, so half of
+          // the full-canvas draws (video sample, grade, overlays, all at
+          // 720x1280) were work nobody could ever see, competing with the
+          // encoder for the same main thread.
+          if (t - lastDrawn >= frameGap) {
+            lastDrawn = t;
+            drawFrame(ctx, scenes, items, t, W, H);
+            pushFrame?.();
+          }
           onProgress?.(t / total);
           raf = requestAnimationFrame(tick);
         };
