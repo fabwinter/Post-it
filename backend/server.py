@@ -3302,7 +3302,7 @@ async def rss_import(req: RssImportRequest):
 # three consumers: copy prompts, image prompts, and the client-side visual
 # renderer. Colors are two full palettes (dark/light) under the bg/fg/accent/
 # sub role names every renderer already speaks — labeled to the user as
-# Primary/Secondary/Tertiary/Muted, but kept under those keys so VisualCard,
+# Background/Text/Accent/Muted, and kept under those keys so VisualCard,
 # PostPreview and the image-prompt palette injection don't need to know about
 # the rename. color_mode picks which palette this kit currently renders with.
 DEFAULT_DARK_COLORS = {"bg": "#0A0A0A", "fg": "#FFFFFF", "accent": "#E2FF3D", "sub": "#a1a1aa"}
@@ -3321,6 +3321,8 @@ DEFAULT_GUIDELINE = {
     "imagery_mood": "", "imagery_color": "", "icon_style": "",
     "voice_attributes": [], "voice_do": "", "voice_dont": "",
     "doc_owner": "", "version": "v1.0",
+    "naming_conventions": "", "logo_position": "", "logo_placement_notes": "",
+    "color_usage": "", "typography": {},
 }
 def _normalize_guideline(raw) -> dict:
     """Merges a saved (possibly partial or legacy) guideline onto

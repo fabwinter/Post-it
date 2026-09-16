@@ -7,6 +7,7 @@ import { PLATFORM_LIST } from "@/lib/platforms";
 import { groupFontsByCategory, fontStack, useAllFontsLoaded, useFontCatalog } from "@/lib/fonts";
 import { CustomFontsPanel, FontNotice } from "@/components/CustomFonts";
 import { BrandGuidelineDoc } from "@/components/BrandGuidelineDoc";
+import { COLOR_FIELDS, TYPE_ROLES, WEIGHTS, LOGO_POSITIONS, getTypeStyle } from "@/lib/brandGuideline";
 import { KnowledgeBase } from "@/components/KnowledgeBase";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -27,19 +28,14 @@ const emptyGuideline = () => ({
   imagery_mood: "", imagery_color: "", icon_style: "",
   voice_attributes: [], voice_do: "", voice_dont: "",
   doc_owner: "", version: "v1.0",
+  naming_conventions: "", logo_position: "", logo_placement_notes: "",
+  color_usage: "", typography: {},
 });
 
 const LOGO_VARIANTS = [
   { key: "color", label: "Full color" },
   { key: "black_on_white", label: "Black on white" },
   { key: "white_on_black", label: "White on black" },
-];
-
-const COLOR_FIELDS = [
-  { key: "bg", label: "Primary" },
-  { key: "fg", label: "Secondary" },
-  { key: "accent", label: "Tertiary" },
-  { key: "sub", label: "Muted" },
 ];
 
 const IMPORT_TYPES = [
@@ -357,7 +353,7 @@ export default function BrandKit() {
 
           <section className="rounded-xl border border-white/10 bg-[#121212] p-5">
             <div className="flex items-center justify-between">
-              <h3 className="font-display text-base font-semibold">Palette</h3>
+              <h3 className="font-display text-base font-semibold">Colour Palette</h3>
               <div className="flex items-center gap-1 rounded-full border border-white/10 bg-[#0A0A0A] p-0.5" data-testid="brand-color-mode">
                 <button onClick={() => set("color_mode", "dark")} data-testid="brand-color-mode-dark"
                   className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${mode === "dark" ? "bg-lime/10 text-lime" : "text-zinc-500 hover:text-white"}`}>
@@ -376,22 +372,64 @@ export default function BrandKit() {
                   <label className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">{c.label}</label>
                   <div className="mt-1.5 flex items-center gap-2 rounded-lg border border-white/10 bg-[#0A0A0A] px-2 py-1.5">
                     <input type="color" value={form.colors?.[mode]?.[c.key] || "#000000"} data-testid={`brand-color-${c.key}`}
+                      aria-label={`${c.label} colour`}
                       onChange={(e) => setColor(c.key, e.target.value)}
                       className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent p-0" />
                     <input value={form.colors?.[mode]?.[c.key] || ""} onChange={(e) => setColor(c.key, e.target.value)}
                       data-testid={`brand-color-${c.key}-hex`}
+                      aria-label={`${c.label} hex`}
                       className="w-full bg-transparent font-mono text-xs text-zinc-300 outline-none" />
                   </div>
+                  <p className="mt-1 text-xs text-zinc-400">{c.usage}</p>
                 </div>
               ))}
             </div>
+            <Area className="mt-4" label="Colour usage" value={form.guideline?.color_usage}
+              onChange={(v) => setGuideline("color_usage", v)} rows={2}
+              placeholder="Describe approved combinations, proportions and exceptions."
+              testid="brand-guideline-color-usage" />
           </section>
 
           <section className="rounded-xl border border-white/10 bg-[#121212] p-5">
-            <h3 className="flex items-center gap-2 font-display text-base font-semibold"><Type size={15} className="text-lime" /> Fonts</h3>
+            <h3 className="flex items-center gap-2 font-display text-base font-semibold"><Type size={15} className="text-lime" /> Typography</h3>
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
               <FontField label="Display / headings" value={form.fonts?.display} onChange={(v) => set("fonts", { ...form.fonts, display: v })} testid="brand-font-display" />
               <FontField label="Body text" value={form.fonts?.body} onChange={(v) => set("fonts", { ...form.fonts, body: v })} testid="brand-font-body" />
+            </div>
+            <p className="mt-3 text-xs leading-relaxed text-zinc-400">
+              Default families above also apply to generated graphics. The hierarchy below defines the guideline sheet;
+              sizes are CSS pixels at its full 850px reference width, not post-template sizes.
+            </p>
+            <div className="mt-4 space-y-4">
+              {TYPE_ROLES.map((role) => {
+                const type = getTypeStyle(form, role);
+                const raw = form.guideline?.typography?.[role.key] || {};
+                const update = (key, value) => setGuideline("typography", {
+                  ...form.guideline?.typography, [role.key]: { ...raw, [key]: value },
+                });
+                return (
+                  <fieldset key={role.key} className="min-w-0 rounded-lg border border-white/10 p-3">
+                    <legend className="px-1 text-sm font-medium">{role.label}</legend>
+                    <FontField label="Font family" value={type.font} onChange={(v) => update("font", v)} testid={`brand-type-${role.key}-font`} />
+                    <button type="button" className="mt-2 text-xs text-lime" data-testid={`brand-type-${role.key}-inherit`}
+                      onClick={() => update("font", "")}>Use default {role.font} family</button>
+                    <div className="mt-3 grid grid-cols-2 gap-3">
+                      <NumericField label="Size (px)" value={raw.size ?? type.size} min={6} max={96} step={0.5}
+                        onChange={(v) => update("size", v)} testid={`brand-type-${role.key}-size`} />
+                      <label className="text-xs text-zinc-400">Weight
+                        <select className={inputCls} value={type.weight} data-testid={`brand-type-${role.key}-weight`}
+                          onChange={(e) => update("weight", Number(e.target.value))}>
+                          {Object.entries(WEIGHTS).map(([value, label]) => <option key={value} value={value}>{label} ({value})</option>)}
+                        </select>
+                      </label>
+                      <NumericField label="Line height (ratio)" value={raw.line_height ?? type.line_height} min={1} max={3} step={0.1}
+                        onChange={(v) => update("line_height", v)} testid={`brand-type-${role.key}-line-height`} />
+                    </div>
+                    <Field className="mt-3" label="Usage" value={type.usage} onChange={(v) => update("usage", v)}
+                      testid={`brand-type-${role.key}-usage`} />
+                  </fieldset>
+                );
+              })}
             </div>
             <div className="mt-5 border-t border-white/10 pt-4">
               <h4 className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">Your own fonts</h4>
@@ -429,6 +467,10 @@ export default function BrandKit() {
               and how the voice reads in practice. Everything above (colors, fonts, voice, audience) feeds the
               same page automatically.
             </p>
+            <Field className="mt-4" label="Naming conventions" value={form.guideline?.naming_conventions}
+              onChange={(v) => setGuideline("naming_conventions", v)}
+              placeholder="Approved brand spelling, capitalisation and product names."
+              testid="brand-guideline-naming" />
 
             <label className="mt-1 block font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">Logo lockups</label>
             <div className="mt-1.5 grid gap-3 sm:grid-cols-3">
@@ -442,6 +484,17 @@ export default function BrandKit() {
               ))}
             </div>
 
+            <label className="mt-4 block text-xs text-zinc-400">Preferred logo position
+              <select className={inputCls} value={form.guideline?.logo_position || ""}
+                onChange={(e) => setGuideline("logo_position", e.target.value)} data-testid="brand-guideline-logo-position">
+                {LOGO_POSITIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+            </label>
+            <Field className="mt-4" label="Logo placement notes" value={form.guideline?.logo_placement_notes}
+              onChange={(v) => setGuideline("logo_placement_notes", v)}
+              placeholder="Safe-area offsets, alignment and format-specific exceptions."
+              testid="brand-guideline-logo-placement-notes" />
+            <p className="mt-2 text-xs text-zinc-400">Placement is documented on the guideline, not automatically applied to post templates.</p>
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
               <Field label="Logo clear space" value={form.guideline?.logo_clear_space}
                 onChange={(v) => setGuideline("logo_clear_space", v)}
@@ -668,10 +721,22 @@ function ConnectionsPanel() {
 
 const inputCls ="mt-1.5 w-full rounded-lg border border-white/10 bg-[#0A0A0A] px-3 py-2.5 text-sm text-white outline-none transition-colors placeholder:text-zinc-700 focus:border-lime";
 
+const NumericField = ({ label, value, min, max, step, onChange, testid }) => (
+  <label className="text-xs text-zinc-400">{label}
+    <input type="number" value={value} min={min} max={max} step={step} className={inputCls}
+      data-testid={testid} onChange={(e) => onChange(e.target.value)}
+      onBlur={(e) => {
+        const n = Number(e.target.value);
+        if (e.target.value === "" || !Number.isFinite(n)) onChange("");
+        else onChange(Math.min(max, Math.max(min, n)));
+      }} />
+  </label>
+);
+
 const Field = ({ label, value, onChange, placeholder, testid, className = "" }) => (
   <div className={className}>
-    <label className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">{label}</label>
-    <input value={value || ""} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
+    <label htmlFor={testid} className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">{label}</label>
+    <input id={testid} value={value || ""} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
       data-testid={testid} className={inputCls} />
   </div>
 );
@@ -722,8 +787,8 @@ const FontField = ({ label, value, onChange, testid, className = "" }) => {
   const groups = groupFontsByCategory(options);
   return (
     <div className={className}>
-      <label className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">{label}</label>
-      <select value={value || "Inter"} onChange={(e) => onChange(e.target.value)} data-testid={testid}
+      <label htmlFor={testid} className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">{label}</label>
+      <select id={testid} value={value || "Inter"} onChange={(e) => onChange(e.target.value)} data-testid={testid}
         className={`${inputCls} [color-scheme:dark]`} style={{ fontFamily: "inherit" }}>
         {groups.map(({ category, fonts }) => (
           <optgroup key={category} label={category}>
@@ -738,8 +803,8 @@ const FontField = ({ label, value, onChange, testid, className = "" }) => {
 
 const Area = ({ label, value, onChange, placeholder, testid, rows = 3, className = "" }) => (
   <div className={className}>
-    <label className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">{label}</label>
-    <textarea value={value || ""} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} rows={rows}
+    <label htmlFor={testid} className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">{label}</label>
+    <textarea id={testid} value={value || ""} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} rows={rows}
       data-testid={testid} className={`${inputCls} resize-none leading-relaxed`} />
   </div>
 );
