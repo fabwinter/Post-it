@@ -31,6 +31,7 @@ import { ComposerBatchPanel } from "@/components/ComposerBatchPanel";
 import { ComposerProjectPanel } from "@/components/ComposerProjectPanel";
 import { ComposerIdeaPanel } from "@/components/ComposerIdeaPanel";
 import { ComposerReelOptions } from "@/components/ComposerReelOptions";
+import { ComposerDesignMedia } from "@/components/ComposerDesignMedia";
 import { ComposerReelReview } from "@/components/ComposerReelReview";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -71,6 +72,17 @@ const DEFAULT_REEL_OPTIONS = {
   visualStyle: "",
   musicStyle: "",
 };
+
+// A saved design carries three kinds of media of its own: the pictures in
+// its layout, the footage on its scenes, and the background colors behind
+// both. Reusing all three is what picking a design has always meant, and
+// stays the default — but a design reused for a different topic often wants
+// its LAYOUT and not its pictures, so each kind can be switched to "new"
+// independently. "new" never means "blank": the slot is emptied server-side
+// and filled fresh by the same search/generation a scene's footage already
+// uses. Backgrounds are the exception — their "new" is the slide's own
+// theme colour, since a background here is a colour, not a picture.
+const DEFAULT_DESIGN_MEDIA = { images: "reuse", videos: "reuse", backgrounds: "reuse" };
 
 // Three of these voice IDs came with no name or public description
 // attached anywhere in the account that created them — Nova/Jade/Wren are
@@ -288,6 +300,11 @@ export default function Composer() {
   // scene, stock footage and generated music, with the default scene count,
   // and the only way to change any of it was after the fact, scene by scene.
   const [reelOptions, setReelOptions] = useState(DEFAULT_REEL_OPTIONS);
+  // Which of a chosen design's own media rides along into this build, per
+  // kind (see DEFAULT_DESIGN_MEDIA). Only ever meaningful with a design
+  // selected — the controls hide entirely without one, since there's
+  // nothing to reuse or replace.
+  const [designMedia, setDesignMedia] = useState(DEFAULT_DESIGN_MEDIA);
   // The raw script (data.assets, still on-screen-text/voiceover per scene)
   // waiting on a look before anything gets recorded or shot for it — see
   // buildFromTopic and confirmReelReview. Null once confirmed or discarded.
@@ -410,6 +427,10 @@ export default function Composer() {
     // visuals sets clip.url; music is reel-wide) rather than one after the
     // other, since they touch different fields on the same scene.
     setMusic({});
+    // A design whose pictures the build was told not to reuse arrives with
+    // empty, flagged frames — fill them whatever the format, since a
+    // carousel has no scene footage for autoFillReelVisuals to fetch.
+    autoFillSlideImages(plan.assets || [], visualOptsFrom(opts));
     if (plan.format === "reel" && (plan.assets || []).some((a) => a.type === "scene")) {
       if (opts.includeVoiceover) synthesizeReelVoices(plan.assets);
       if (opts.includeFootage) {
@@ -571,6 +592,33 @@ export default function Composer() {
   // idea instead, for a reel that needs a look stock can't supply. `kind`
   // picks video vs a still either way — a still still uses every clip
   // control (opacity/fit/effects/transition), it's just not moving.
+  // One picture or clip, fetched or generated — the half of fillSceneVisual
+  // that has nothing to do with scenes, so an image ELEMENT slot (a design's
+  // picture frame the build was told not to reuse) can ask for exactly the
+  // same thing without pretending to be a scene's footage. Throws rather
+  // than returning "" so each caller decides what a miss means for it.
+  const fetchVisualUrl = async ({ q, kind = "video", source = "stock", style = "" }) => {
+    if (source === "stock") {
+      const orientation = orientationFor(aspectFor(specs, primary, "reel"));
+      const { data } = await api.get("/stock/search", { params: { q, type: kind, per_page: 1, orientation } });
+      const pick = (data.results || []).find((r) => r.url);
+      if (!pick) throw new Error("No footage found");
+      return { url: pick.url, credit: pick.credit || "" };
+    }
+    const prompt = style ? `${q}. Style: ${style}.` : q;
+    const { data } = await api.post("/ai/generate", {
+      kind,
+      prompt,
+      options: kind === "video"
+        ? { model: "seedance-2-fast", duration: 5, resolution: "720p", aspect_ratio: "9:16", generate_audio: false }
+        : { model: "gpt-image-2.5-sunburst", size: "9:16" },
+    });
+    const result = await pollTask(data.task_id);
+    const url = (result.files || []).find((f) => f.file_url)?.file_url || "";
+    if (!url) throw new Error("Nothing came back");
+    return { url, credit: "" };
+  };
+
   const fillSceneVisual = async (index, query, opts = {}) => {
     const asset = assets[index];
     const q = (query ?? asset?.spec?.video_prompt ?? slideText(asset?.spec).heading).trim();
@@ -581,27 +629,7 @@ export default function Composer() {
     setSceneVisualLoading((s) => ({ ...s, [index]: true }));
     setSceneVisualError((s) => ({ ...s, [index]: false }));
     try {
-      let url = "";
-      let credit = "";
-      if (source === "stock") {
-        const orientation = orientationFor(aspectFor(specs, primary, "reel"));
-        const { data } = await api.get("/stock/search", { params: { q, type: kind, per_page: 1, orientation } });
-        const pick = (data.results || []).find((r) => r.url);
-        if (!pick) throw new Error("No footage found");
-        url = pick.url; credit = pick.credit || "";
-      } else {
-        const prompt = style ? `${q}. Style: ${style}.` : q;
-        const { data } = await api.post("/ai/generate", {
-          kind,
-          prompt,
-          options: kind === "video"
-            ? { model: "seedance-2-fast", duration: 5, resolution: "720p", aspect_ratio: "9:16", generate_audio: false }
-            : { model: "gpt-image-2.5-sunburst", size: "9:16" },
-        });
-        const result = await pollTask(data.task_id);
-        url = (result.files || []).find((f) => f.file_url)?.file_url || "";
-        if (!url) throw new Error("Nothing came back");
-      }
+      const { url, credit } = await fetchVisualUrl({ q, kind, source, style });
       setAssets((s) => s.map((a, idx) => {
         if (idx !== index) return a;
         const clip = normalizeClip({
@@ -670,6 +698,50 @@ export default function Composer() {
       if (done === needsFootage.length) toast.success(`${noun} for every scene that needed it`);
       else if (done > 0) toast.error(`${noun} for ${done} of ${needsFootage.length} scenes`);
       else toast.error("Couldn't get any footage — scenes kept their themed background.");
+    } finally {
+      setVisualFilling(false);
+    }
+  };
+
+  // The image half of "reuse this design's media, or get new". A design's
+  // picture elements arrive emptied and flagged needs_image (server side,
+  // _apply_template_layouts) when the build was told not to reuse them —
+  // the frame stays exactly where the design put it, and this fills it.
+  // Only ever touches flagged slots: a blank image element a designer left
+  // blank ON PURPOSE has no flag, and nothing here goes looking for it.
+  // Each slot asks about its own slide, so a five-slide carousel gets five
+  // different pictures rather than the same one repeated.
+  const autoFillSlideImages = async (slideAssets, opts = {}) => {
+    const slots = [];
+    slideAssets.forEach((a, i) => {
+      (a.spec?.elements || []).forEach((el) => {
+        if (el.needs_image) slots.push({ i, id: el.id, spec: a.spec });
+      });
+    });
+    if (!slots.length) return;
+    setVisualFilling(true);
+    try {
+      const results = await Promise.all(slots.map(async ({ i, id, spec }) => {
+        const q = (spec?.image_prompt || spec?.video_prompt || slideText(spec).heading || title).trim();
+        if (!q) return false;
+        try {
+          const { url } = await fetchVisualUrl({ q, kind: "image", source: opts.source, style: opts.style });
+          setAssets((s) => s.map((a, idx) => (idx !== i ? a : {
+            ...a,
+            spec: {
+              ...a.spec,
+              elements: (a.spec.elements || []).map((el) => (
+                el.id === id ? { ...el, url, needs_image: undefined } : el
+              )),
+            },
+          })));
+          return true;
+        } catch { return false; }
+      }));
+      const done = results.filter(Boolean).length;
+      if (done === slots.length) toast.success(`New ${done === 1 ? "image" : "images"} for the design's picture ${slots.length === 1 ? "frame" : "frames"}`);
+      else if (done > 0) toast.error(`Filled ${done} of ${slots.length} picture frames — the rest stayed empty.`);
+      else toast.error("Couldn't get new images — the design's picture frames are empty.");
     } finally {
       setVisualFilling(false);
     }
@@ -1034,6 +1106,9 @@ export default function Composer() {
         topic, platform: primary, format, model: model || defaultModel,
         slides: format === "reel" ? (reelOptions.sceneCount || pspec.slides?.default) : pspec.slides?.default,
         custom_template_id: customTemplateId || undefined, brand_kit_id: brandKitId || undefined,
+        reuse_template_images: designMedia.images === "reuse",
+        reuse_template_videos: designMedia.videos === "reuse",
+        reuse_template_backgrounds: designMedia.backgrounds === "reuse",
         ...(format === "reel" ? {
           reel_intro: reelOptions.intro, reel_outro: reelOptions.outro,
           include_voiceover: reelOptions.includeVoiceover,
@@ -1150,6 +1225,29 @@ export default function Composer() {
 
   // ---- slide editing ----
   const patchSlide = (i, patch) => setAssets((s) => s.map((a, idx) => (idx === i ? { ...a, spec: { ...a.spec, ...patch } } : a)));
+  // Editing a slide's actual words, as opposed to any other spec field.
+  // Once a slide carries freeform elements, THEY hold the copy (see
+  // slideElements.js) — writing only spec.heading/spec.body there produces
+  // the classic split-brain bug: the field shows the new line, the card
+  // still shows the old one, and the voiceover records whichever the reader
+  // happened to ask for. Both are written, so neither can go stale.
+  const patchSlideText = (i, patch) => setAssets((s) => s.map((a, idx) => {
+    if (idx !== i) return a;
+    const next = { ...a.spec, ...patch };
+    // A cover's title and its heading are the same words wearing two names
+    // (slideText reads role "title" and "heading" alike); keeping the plain
+    // field in step matters because that's what a template save and a
+    // fresh-from-spec render both still read.
+    if (patch.heading !== undefined && a.spec.template === "cover") next.title = patch.heading;
+    if (a.spec.elements) {
+      const words = slideText(a.spec);
+      next.elements = elementsWithText(a.spec.elements, {
+        heading: patch.heading !== undefined ? patch.heading : words.heading,
+        body: patch.body !== undefined ? patch.body : words.body,
+      });
+    }
+    return { ...a, spec: next };
+  }));
   const setAllThemes = (theme) => setAssets((s) => s.map((a) => ({ ...a, spec: { ...a.spec, theme } })));
   // Decks with a cover are numbered from 0 (cover, then 1..N); a reel
   // storyboard has no cover, so its scenes are numbered from 1.
@@ -1902,6 +2000,9 @@ export default function Composer() {
                 className="h-7 gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 text-xs text-white hover:bg-white/10">
                 {templateUploading ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />} Upload design
               </Button>
+              {customTemplateId && (
+                <ComposerDesignMedia value={designMedia} onChange={setDesignMedia} />
+              )}
             </div>
 
             {coach && <CoachPanel coach={coach} onUseHook={(h) => setContent(h + "\n\n" + content)} />}
@@ -2151,30 +2252,47 @@ export default function Composer() {
 
                       {/* Controls */}
                       <div className="mt-4 min-w-0 md:mt-0">
-                        {activeAsset.spec.elements ? (
-                          <ElementPropertyPanel
-                            elements={activeAsset.spec.elements} selectedId={selectedElementId}
-                            onSelect={setSelectedElementId} onPatch={patchElement} onAdd={addElementToSlide}
-                            onRemove={removeElement} onDuplicate={duplicateElement} onReorder={reorderElement}
-                            onAddStock={() => setStockTarget("element-new")}
-                            onBrowseStock={() => setStockTarget("element-replace")}
-                            onApplyAll={applyElementToAllSlides} onOpenLibrary={() => setLibraryOpen(true)}
-                            onSaveToLibrary={saveElementToLibrary}
-                            canApplyAll={assets.length > 1}
-                            brand={brand}
-                            bgColor={activeAsset.spec.bg_color || themeFor(activeAsset.spec.theme, brand).bg}
-                            onChangeBg={(hex) => patchSlide(active, { bg_color: hex })}
-                          />
-                        ) : activeAsset.spec.template === "cover" ? (
-                          <SlideField label="Cover title" value={activeAsset.spec.title} testid="composer-slide-title"
-                            onChange={(v) => patchSlide(active, { title: v })} />
+                        {/* Plain word fields, always. A slide having freeform
+                            elements used to REPLACE these with the element
+                            panel outright — fine back when elements only ever
+                            appeared because someone chose "Edit layout", but
+                            a generated post now starts with them (a design's
+                            baked-in copy, or the brand starting point seeded
+                            at build time), which left the ordinary "change
+                            this headline" with nowhere to happen short of
+                            hunting the right text box on the canvas.
+                            slideText/elementsWithText are what make one pair
+                            of fields safe over both shapes: they read and
+                            write through the role-tagged elements when there
+                            are any, and fall back to the spec's own fields
+                            when there aren't, so the two can't drift. */}
+                        {activeAsset.spec.template === "cover" ? (
+                          <SlideField label="Cover title" value={slideText(activeAsset.spec).heading} testid="composer-slide-title"
+                            onChange={(v) => patchSlideText(active, { heading: v })} />
                         ) : (
                           <>
-                            <SlideField label={activeAsset.type === "scene" ? "On-screen text" : "Heading"} value={activeAsset.spec.heading}
-                              testid="composer-slide-heading" onChange={(v) => patchSlide(active, { heading: v })} />
-                            <SlideField label={activeAsset.type === "scene" ? "Voiceover" : "Body"} value={activeAsset.spec.body} rows={3}
-                              testid="composer-slide-body" onChange={(v) => patchSlide(active, { body: v })} />
+                            <SlideField label={activeAsset.type === "scene" ? "On-screen text" : "Heading"} value={slideText(activeAsset.spec).heading}
+                              testid="composer-slide-heading" onChange={(v) => patchSlideText(active, { heading: v })} />
+                            <SlideField label={activeAsset.type === "scene" ? "Voiceover" : "Body"} value={slideText(activeAsset.spec).body} rows={3}
+                              testid="composer-slide-body" onChange={(v) => patchSlideText(active, { body: v })} />
                           </>
+                        )}
+                        {activeAsset.spec.elements && (
+                          <div className="mt-3">
+                            <ElementPropertyPanel
+                              elements={activeAsset.spec.elements} selectedId={selectedElementId}
+                              onSelect={setSelectedElementId} onPatch={patchElement} onAdd={addElementToSlide}
+                              onRemove={removeElement} onDuplicate={duplicateElement} onReorder={reorderElement}
+                              onAddStock={() => setStockTarget("element-new")}
+                              onBrowseStock={() => setStockTarget("element-replace")}
+                              onApplyAll={applyElementToAllSlides} onOpenLibrary={() => setLibraryOpen(true)}
+                              onSaveToLibrary={saveElementToLibrary}
+                              canApplyAll={assets.length > 1}
+                              brand={brand}
+                              bgColor={activeAsset.spec.bg_color || themeFor(activeAsset.spec.theme, brand).bg}
+                              onChangeBg={(hex) => patchSlide(active, { bg_color: hex })}
+                            />
+                          </div>
                         )}
 
                         {/* Voiceover status/retry — its own block, outside the
