@@ -1310,6 +1310,105 @@ check("a reel built from the template gets the saved clip on every scene (falls 
 r = c.delete(f"/api/templates/custom/{reel_template_id}")
 check("cleanup: the reel template can be deleted", r.status_code == 200, r.text)
 
+# --- reusing a design's media, or asking for new ---
+# Picking a design used to mean taking ALL of it: its layout AND the exact
+# pictures, footage and background colours it was saved with. That's right
+# when you're re-running the same look for a new topic and wrong when the
+# pictures were about the old topic. Three independent switches now decide,
+# and turning one off must never cost the layout that held the media — the
+# frame stays exactly where the design put it, just empty.
+media_slides = [
+    {"template": "cover", "heading": "Cover", "title": "Cover", "body": "", "bg_color": "#223344",
+     "clip": {"url": "https://cdn.test/saved-cover.mp4", "credit": "Pexels"},
+     "elements": [
+         _text_el("m1", "Cover", "Poppins", 32, 800, "#ffffff", 30),
+         {"id": "m2", "type": "image", "url": "https://cdn.test/old-topic.jpg", "x": 5, "y": 55, "w": 60, "h": 30},
+         {"id": "m3", "type": "image", "role": "logo", "url": "https://cdn.test/brand-logo.png", "x": 80, "y": 4, "w": 14, "h": 8},
+     ]},
+    {"template": "slide", "heading": "Point one", "body": "Detail one", "bg_color": "#223344",
+     "elements": [_text_el("m4", "Point one", "Poppins", 24, 800, "#ffffff", 20)]},
+]
+CHAT_REPLY["value"] = "not valid json"
+r = c.post("/api/templates/from-composer", json={"name": "Media template", "format": "carousel", "theme": "midnight", "slides": media_slides})
+check("a design carrying pictures, a logo and a clip saves ok", r.status_code == 200, r.text)
+media_tpl = r.json()
+media_template_id = media_tpl["id"]
+cover_layout = media_tpl["layouts"]["cover"]
+check("the design's own picture reaches the saved layout",
+      any(e.get("type") == "image" and e.get("url") == "https://cdn.test/old-topic.jpg" for e in cover_layout), cover_layout)
+# The layout builder strips `role` from every element so a demoted text slot
+# can't answer to a stale role forever — but a logo has to survive that, or
+# there's no way to tell the brand mark apart from a stock photo later.
+check("a logo element keeps its role through a save, so it can be told apart from a stock photo",
+      any(e.get("role") == "logo" and e.get("url") == "https://cdn.test/brand-logo.png" for e in cover_layout), cover_layout)
+
+def _build_with_media(**flags):
+    CHAT_REPLY["value"] = json.dumps({
+        "format": "carousel", "title": "T", "caption": "cap", "hashtags": [],
+        "visual": {"style": "carousel", "title": "Cover", "slides": [{"heading": "h1", "body": "b1"}, {"heading": "h2", "body": "b2"}]},
+    })
+    body = {"topic": "x", "platform": "instagram", "format": "carousel",
+            "custom_template_id": media_template_id, "use_brand": False}
+    body.update(flags)
+    resp = c.post("/api/ai/build-post", json=body)
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+def _images(spec, role=None):
+    return [e for e in (spec.get("elements") or [])
+            if e.get("type") == "image" and (role is None or e.get("role") == role)]
+
+# Default: everything rides along, exactly as before these switches existed.
+default_cover = _build_with_media()["assets"][0]["spec"]
+check("by default the design's picture still comes along (unchanged behaviour)",
+      [e.get("url") for e in _images(default_cover) if e.get("role") != "logo"] == ["https://cdn.test/old-topic.jpg"],
+      _images(default_cover))
+check("by default the design's background colour still comes along",
+      default_cover.get("bg_color") == "#223344", default_cover.get("bg_color"))
+check("by default the design's saved clip still comes along",
+      default_cover.get("video_url") == "https://cdn.test/saved-cover.mp4", default_cover.get("video_url"))
+
+# Images off: the picture goes, its frame stays, and the slot is flagged so
+# the Composer knows to fill THIS one (and only this one) with something new.
+new_images = _build_with_media(reuse_template_images=False)["assets"][0]["spec"]
+content_imgs = [e for e in _images(new_images) if e.get("role") != "logo"]
+check("asking for new images empties the design's picture", [e.get("url") for e in content_imgs] == [""], content_imgs)
+check("...but keeps the frame exactly where the design put it",
+      [(e.get("x"), e.get("y"), e.get("w"), e.get("h")) for e in content_imgs] == [(5, 55, 60, 30)], content_imgs)
+check("...and flags the slot so the app knows to fill it rather than leave it blank",
+      all(e.get("needs_image") for e in content_imgs), content_imgs)
+check("asking for new images never touches the logo — that's the brand, not this post's content",
+      [e.get("url") for e in _images(new_images, role="logo")] == ["https://cdn.test/brand-logo.png"], _images(new_images, role="logo"))
+check("a slot the design left blank on purpose isn't flagged (nothing was emptied)",
+      not any(e.get("needs_image") for e in _images(default_cover)), _images(default_cover))
+check("asking for new images leaves the background and footage alone",
+      new_images.get("bg_color") == "#223344" and new_images.get("video_url") == "https://cdn.test/saved-cover.mp4", new_images)
+
+# Backgrounds off: the slide falls back to its own theme colour.
+new_bg = _build_with_media(reuse_template_backgrounds=False)["assets"][0]["spec"]
+check("asking for a new background drops the design's saved colour", new_bg.get("bg_color") != "#223344", new_bg.get("bg_color"))
+check("asking for a new background leaves the pictures alone",
+      [e.get("url") for e in _images(new_bg) if e.get("role") != "logo"] == ["https://cdn.test/old-topic.jpg"], _images(new_bg))
+
+# Videos off: no clip is copied, so the scene is an empty slot the Composer's
+# existing gap-fill then fetches fresh footage for.
+new_video = _build_with_media(reuse_template_videos=False)["assets"][0]["spec"]
+check("asking for new footage drops the design's saved clip",
+      not new_video.get("video_url") and not new_video.get("clip"), new_video)
+check("asking for new footage leaves the layout, pictures and background alone",
+      new_video.get("bg_color") == "#223344"
+      and [e.get("url") for e in _images(new_video) if e.get("role") != "logo"] == ["https://cdn.test/old-topic.jpg"], new_video)
+
+# All three off at once still keeps the thing you actually picked the design for.
+all_new = _build_with_media(reuse_template_images=False, reuse_template_videos=False, reuse_template_backgrounds=False)["assets"][0]["spec"]
+check("turning everything off still keeps the design's layout — that's what picking a design means",
+      any(e.get("type") == "text" and e.get("fontFamily") == "Poppins" for e in (all_new.get("elements") or [])), all_new.get("elements"))
+check("...and still keeps the logo", [e.get("url") for e in _images(all_new, role="logo")] == ["https://cdn.test/brand-logo.png"], _images(all_new, role="logo"))
+
+r = c.delete(f"/api/templates/custom/{media_template_id}")
+check("cleanup: the media template can be deleted", r.status_code == 200, r.text)
+
+
 r = c.delete(f"/api/templates/custom/{composer_template_id}")
 check("cleanup: the editable template can be deleted", r.status_code == 200, r.text)
 

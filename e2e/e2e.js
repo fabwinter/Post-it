@@ -798,10 +798,18 @@ async function confirmReel(page) {
   // retry/status block, which lived inside the very branch that got
   // replaced. Once edited, a scene's voiceover became unreachable with no
   // error and no way back short of resetting the layout.
-  await tap(page, 'composer-slide-edit-layout');
-  await page.waitForTimeout(200);
-  ok('editing a scene\'s layout no longer hides its voiceover controls',
+  // A scene can arrive with elements already (a design's baked-in copy, or
+  // the brand starting point seeded at build time), in which case there's no
+  // "Edit layout" left to press — it's already in that state, which is the
+  // state this check is actually about. Only the getting-there differs.
+  if (await page.getByTestId('composer-slide-edit-layout').count()) {
+    await tap(page, 'composer-slide-edit-layout');
+    await page.waitForTimeout(200);
+  }
+  ok('a scene carrying freeform elements still shows its voiceover controls',
      (await page.getByTestId('composer-scene-voice-retry').count()) === 1);
+  ok("...on a scene that really is in freeform layout, so that isn't trivially true",
+     (await page.getByTestId('composer-element-panel').count()) === 1);
 
   // The reel-wide row (parity with the score's own row) — count of scenes
   // with a real take, and a bulk retry beside the score's own regenerate.
@@ -1269,7 +1277,7 @@ async function confirmReel(page) {
   // "Add element > Stock photo" hardcoded a new "image" element regardless
   // of what type was picked inside that same picker — a chosen video landed
   // as an <img src="…mp4">, which never renders anything.
-  await tap(page, 'composer-slide-edit-layout');
+  if (await page.getByTestId('composer-slide-edit-layout').count()) await tap(page, 'composer-slide-edit-layout');
   await page.getByTestId('composer-element-panel').waitFor({ timeout: 8000 });
   await page.waitForTimeout(400);
   await tap(page, 'composer-add-element-stock');
@@ -1402,7 +1410,16 @@ async function confirmReel(page) {
   await confirmReel(page);
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForTimeout(1000);
-  ok('a fresh reel scene has no freeform elements yet', await page.getByTestId('composer-element-panel').count() === 0);
+  // A generated scene now arrives with freeform elements already (the brand
+  // starting point seeded at build time), so the original premise here — a
+  // scene with NO elements at all — is no longer reachable from a build.
+  // That case still matters and is still covered, on the backend, where the
+  // bug actually lived: "a reel with an un-laid-out clip saves ok" in
+  // backend/tests/test_api.py exercises _layouts_from_composer_slides with
+  // slides that have a clip and no elements. What this block proves from
+  // here on is the rest of the round trip.
+  ok('a generated scene starts from the brand design, with elements already on it',
+     await page.getByTestId('composer-element-panel').count() === 1);
   await tap(page, 'clip-stock');
   await page.waitForTimeout(700);
   await page.getByTestId('media-query').fill('city');
@@ -1440,9 +1457,9 @@ async function confirmReel(page) {
   // scene that renders straight from spec.heading — passing whether or not
   // the code under test works. "Edit layout" is also how a person makes a
   // design in the first place, so this is the real path, not a contrivance.
-  await tap(page, 'composer-slide-edit-layout');
+  if (await page.getByTestId('composer-slide-edit-layout').count()) await tap(page, 'composer-slide-edit-layout');
   await page.waitForTimeout(400);
-  ok('editing the layout materializes elements to save with the design',
+  ok('the slide carries freeform elements to save with the design',
      (await page.getByTestId('composer-element-panel').count()) === 1);
   await tap(page, 'composer-save-template');
   await page.waitForTimeout(2000);
@@ -1517,6 +1534,37 @@ async function confirmReel(page) {
   ok("...and that clip's own customization (not a fresh auto-fill's default) survives too",
      (await sceneVideoOpacity()) === savedClipOpacity, { savedClipOpacity, built: await sceneVideoOpacity() });
 
+  // ---- ...unless you ask that design for NEW footage ----
+  // The same design, the same build, one switch flipped. Picking a design
+  // used to be all-or-nothing: you got its layout AND the exact footage it
+  // was saved with, with no way to say "this look, different clips" short
+  // of replacing each scene by hand afterwards. Opacity is what makes this
+  // readable at all — the fake stock search returns the same clip URL no
+  // matter what, but the design's saved 1.00 and a fresh auto-fill's 0.45
+  // tell "reused the design's clip" apart from "went and got a new one".
+  ok('the design-media switches appear once a design is picked',
+     (await page.getByTestId('composer-design-media').count()) === 1);
+  await tap(page, 'composer-design-media-videos-new');
+  await page.waitForTimeout(200);
+  await page.getByTestId('composer-brief').fill('shipping weekly, e2e new footage');
+  await tap(page, 'composer-autobuild');
+  await confirmReel(page);
+  await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
+  await page.waitForTimeout(1200);
+  await tap(page, 'composer-reel-view-play');
+  await page.waitForTimeout(400);
+  const newFootageOpacity = await sceneVideoOpacity();
+  ok("asking a design for new footage doesn't reuse its saved clip's own settings",
+     newFootageOpacity !== savedClipOpacity, { savedClipOpacity, newFootage: newFootageOpacity });
+  ok('...the scene still gets footage — "new" means fresh, never empty',
+     !!(await sceneVideoUrl()), await sceneVideoUrl());
+  // The whole point of having picked a design: its layout is not what you
+  // gave up by asking for different media.
+  await tap(page, 'composer-reel-view-canvas');
+  await page.waitForTimeout(300);
+  ok("...and the design's layout is kept either way",
+     (await page.getByTestId('composer-element-panel').count()) === 1);
+
   // Leave on a different URL than the next block's own goto target: Playwright's
   // page.goto() to the exact URL already loaded (this block's last navigation
   // was a client-side `navigate("/composer", {state})`, which leaves
@@ -1542,7 +1590,7 @@ async function confirmReel(page) {
   await tap(page, 'composer-autobuild');
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForTimeout(1000);
-  await tap(page, 'composer-slide-edit-layout');
+  if (await page.getByTestId('composer-slide-edit-layout').count()) await tap(page, 'composer-slide-edit-layout');
   await page.getByTestId('composer-element-panel').waitFor({ timeout: 8000 });
   await page.waitForTimeout(300);
 
@@ -1608,7 +1656,7 @@ async function confirmReel(page) {
   await tap(page, 'composer-autobuild');
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForTimeout(1000);
-  await tap(page, 'composer-slide-edit-layout');
+  if (await page.getByTestId('composer-slide-edit-layout').count()) await tap(page, 'composer-slide-edit-layout');
   await page.getByTestId('composer-element-panel').waitFor({ timeout: 8000 });
   await page.waitForTimeout(400);
 

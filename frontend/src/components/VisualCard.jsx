@@ -191,6 +191,28 @@ export const VisualCard = forwardRef(function VisualCard(
           const roleColor = el.color || theme[el.colorRole] || theme.fg;
           const family = el.fontFamily || (el.fontKind && theme.fonts?.[el.fontKind]) || undefined;
           if (el.type === "text") {
+            const type = {
+              fontFamily: fontStack(family), fontSize: f(el.fontSize || 16),
+              fontWeight: el.fontWeight || 600, color: roleColor, textAlign: el.align || "left",
+              lineHeight: el.lineHeight || 1.2, whiteSpace: "pre-wrap", wordBreak: "break-word",
+            };
+            // The spoken line, highlighted word by word as the reel plays.
+            // The fixed-template branch below has always done this, and used
+            // to be the only branch a reel scene went through — a scene
+            // carrying freeform elements (a design's baked-in copy, or the
+            // brand starting point seeded at build time) comes through HERE
+            // instead, and word sync was silently lost for every generated
+            // reel. The body element is the spoken line (see slideElements'
+            // role tags, which is how everything else finds it too).
+            if (el.role === "body" && activeWordIndex != null) {
+              return (
+                <div key={el.id} style={box}
+                  data-testid={activeWordIndex >= 0 ? "visual-card-caption-active" : undefined}>
+                  <CaptionBody text={el.text} activeWordIndex={activeWordIndex} accent={theme.accent}
+                    style={{ ...type, margin: 0 }} />
+                </div>
+              );
+            }
             return (
               // A text box imported from a design tool is sized to hug the
               // text it was authored with, and those tools let a line spill
@@ -198,9 +220,7 @@ export const VisualCard = forwardRef(function VisualCard(
               // away the tail of anything even slightly larger — a swapped-in
               // font measuring wider, or fresh copy longer than the original.
               // The card itself still clips, so nothing escapes the slide.
-              <div key={el.id} style={{ ...box, fontFamily: fontStack(family), fontSize: f(el.fontSize || 16),
-                fontWeight: el.fontWeight || 600, color: roleColor, textAlign: el.align || "left",
-                lineHeight: el.lineHeight || 1.2, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+              <div key={el.id} style={{ ...box, ...type }}>
                 {el.text}
               </div>
             );

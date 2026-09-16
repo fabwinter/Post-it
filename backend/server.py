@@ -2686,13 +2686,26 @@ def _fill_layout(layout: List[Dict[str, Any]], spec: dict, index: int) -> List[D
     return out
 
 
-def _apply_template_layouts(assets: List[Dict[str, Any]], template: dict) -> List[Dict[str, Any]]:
+def _apply_template_layouts(assets: List[Dict[str, Any]], template: dict,
+                            reuse: Optional[Dict[str, bool]] = None) -> List[Dict[str, Any]]:
     """Gives every generated slide the template's layout — the model writes
     the words, the template decides where they sit, and the result is still
     fully editable in the Composer. A reel scene's clip rides along the same
     way, and independently of layout: a scene can have a saved clip with no
     customized elements at all (see _layouts_from_composer_slides), so it's
-    applied whether or not this slide has a layout to fill."""
+    applied whether or not this slide has a layout to fill.
+
+    `reuse` picks which of the design's own media rides along — images (the
+    layout's picture elements), videos (saved scene clips) and backgrounds
+    (saved bg colors), each defaulting to True. Turning one off never drops
+    the layout that held it: the box stays exactly where the design put it
+    and is left empty, so what fills it lands in the same place. A logo is
+    never treated as a reusable picture — it's the brand's identity, not
+    this post's content, so role="logo" keeps its url either way."""
+    reuse = reuse or {}
+    reuse_images = reuse.get("images", True)
+    reuse_videos = reuse.get("videos", True)
+    reuse_backgrounds = reuse.get("backgrounds", True)
     layouts = (template or {}).get("layouts") or {}
     bg_colors = (template or {}).get("bg_colors") or {}
     clips = (template or {}).get("clips") or {}
@@ -2714,17 +2727,26 @@ def _apply_template_layouts(assets: List[Dict[str, Any]], template: dict) -> Lis
         layout = layouts.get(key) or layouts.get("slide") or layouts.get("cover")
         if layout:
             spec["elements"] = _fill_layout(layout, spec, i)
+            if not reuse_images:
+                # Empty the picture, keep the frame. needs_image is what the
+                # Composer looks for to know which slots IT should fill —
+                # without it a blank image element the designer left blank on
+                # purpose would be indistinguishable from one emptied here.
+                for el in spec["elements"]:
+                    if el.get("type") == "image" and el.get("role") != "logo" and el.get("url"):
+                        el["url"] = ""
+                        el["needs_image"] = True
             # A source file's own background (e.g. a PPTX's real slide
             # color) doesn't fit any of the four built-in theme keys, so it
             # rides along separately from the role-based layout itself.
             bg = bg_colors.get(key) or bg_colors.get("slide") or bg_colors.get("cover")
-            if bg:
+            if bg and reuse_backgrounds:
                 spec["bg_color"] = bg
         # This scene's own saved footage first (see _layouts_from_composer_slides
         # on why clips are keyed per index as well as per role), falling back to
         # the role keys for templates saved before that and for carousels.
         clip = clips.get(str(i)) or clips.get(key) or clips.get("slide") or clips.get("cover")
-        if clip:
+        if clip and reuse_videos:
             spec["clip"] = dict(clip)
             spec["video_url"] = clip.get("url", "")
     return assets
@@ -2786,8 +2808,16 @@ def _layout_from_elements(elements: List[Dict[str, Any]], is_cover: bool) -> Lis
         # Cleared unconditionally so an element demoted this round (it held
         # a role before but lost the hint contest to another element) can't
         # keep answering to its stale role forever — see the docstring.
+        # A logo is the one non-text role that has to survive a save: it's
+        # the brand's identity, not this post's content, and it's what
+        # _apply_template_layouts checks before emptying a picture slot for
+        # a "new images" build. Without this it comes back role-less and
+        # gets blanked like any other stock photo.
+        was_logo = el.get("role") == "logo"
         e.pop("role", None)
         role = roles.get(id(el))
+        if was_logo and not role:
+            e["role"] = "logo"
         if role:
             e["role"] = ("title" if is_cover else "heading") if role == "title" else "body"
             e.pop("text", None)
@@ -4321,6 +4351,16 @@ class BuildPostRequest(BaseModel):
     reel_intro: bool = False
     reel_outro: bool = False
     include_voiceover: bool = True
+    # What of a chosen design's OWN media comes along, per kind. All three
+    # default true — that's what every build did before these existed, and
+    # what picking a design usually means. False means "keep the design's
+    # layout, not the picture that was in it": the slot is left empty here
+    # so the Composer fills it fresh (footage via its own auto-fill, image
+    # elements via the needs_image flag below), rather than the design's
+    # frozen copy being reused for a post about something else.
+    reuse_template_images: bool = True
+    reuse_template_videos: bool = True
+    reuse_template_backgrounds: bool = True
 
 
 @api_router.get("/platform-specs")
@@ -4646,7 +4686,11 @@ async def ai_build_post(req: BuildPostRequest):
             hashtags.append(tag)
     plan["hashtags"] = hashtags[: spec["hashtags"]]
 
-    assets = _apply_template_layouts(_plan_to_assets(plan, theme), template)
+    assets = _apply_template_layouts(_plan_to_assets(plan, theme), template, {
+        "images": req.reuse_template_images,
+        "videos": req.reuse_template_videos,
+        "backgrounds": req.reuse_template_backgrounds,
+    })
     assets = _seed_brand_design(assets, brand, template, spec["aspect"].get(plan["format"], "1:1"))
     result = {
         "format": plan["format"],
