@@ -16,6 +16,7 @@ import { CanvasEditor } from "@/components/CanvasEditor";
 import { ReelPlayer } from "@/components/ReelPlayer";
 import { VideoClipEditor } from "@/components/VideoClipEditor";
 import { ReelExportDialog } from "@/components/ReelExportDialog";
+import { proxied } from "@/lib/videoExport";
 import { MediaPicker } from "@/components/MediaPicker";
 import { useTemplateStyles } from "@/lib/templateStyles";
 import { useCustomTemplates } from "@/lib/useCustomTemplates";
@@ -1542,10 +1543,49 @@ export default function Composer() {
     toast.success(item.credit ? `Added — photo by ${item.credit}` : "Added");
   };
 
+  // html-to-image can only rasterize a card whose images it can read back
+  // out of the canvas. A slide's backdrop and element images are usually
+  // cross-origin (PoYo art, Pexels stock) and served without CORS headers,
+  // so the browser taints the canvas and toPng throws "Export failed" — the
+  // reason PNG/ZIP export silently failed for every visual that had a
+  // picture in it. Route each image through our own same-origin proxy (the
+  // exact trick the reel video export already uses) for the duration of the
+  // capture, wait for the swapped sources to decode, then restore the
+  // originals so the live preview is untouched.
+  const captureCardPng = async (node) => {
+    const imgs = Array.from(node.querySelectorAll("img"));
+    const originals = imgs.map((img) => img.getAttribute("src"));
+    imgs.forEach((img) => {
+      const src = img.getAttribute("src");
+      const p = proxied(src);
+      if (p !== src) { img.crossOrigin = "anonymous"; img.setAttribute("src", p); }
+    });
+    // Give the proxied sources a moment to load before capturing.
+    await Promise.all(imgs.map((img) => (img.complete && img.naturalWidth
+      ? Promise.resolve()
+      : new Promise((resolve) => {
+        const done = () => resolve();
+        img.addEventListener("load", done, { once: true });
+        img.addEventListener("error", done, { once: true });
+        setTimeout(done, 8000);
+      }))));
+    try {
+      // cacheBust is deliberately OFF: it appends a query string that would
+      // turn every already-proxied same-origin URL back into an uncached
+      // cross-origin-looking fetch, reintroducing the taint this fixes.
+      return await toPng(node, { pixelRatio: 2 });
+    } finally {
+      imgs.forEach((img, i) => {
+        if (originals[i] == null) img.removeAttribute("src");
+        else img.setAttribute("src", originals[i]);
+      });
+    }
+  };
+
   const downloadSlide = async () => {
     if (!cardRef.current) return;
     try {
-      const url = await toPng(cardRef.current, { pixelRatio: 2, cacheBust: true });
+      const url = await captureCardPng(cardRef.current);
       const a = document.createElement("a");
       a.href = url; a.download = `${(title || "post").replace(/\W+/g, "-").toLowerCase()}-${active + 1}.png`; a.click();
       toast.success("Downloaded PNG");
@@ -1566,7 +1606,7 @@ export default function Composer() {
         setActive(i);
         await new Promise((r) => setTimeout(r, 260)); // let the card re-render for slide i
         if (!cardRef.current) continue;
-        const dataUrl = await toPng(cardRef.current, { pixelRatio: 2, cacheBust: true });
+        const dataUrl = await captureCardPng(cardRef.current);
         zip.file(`slide-${String(i + 1).padStart(2, "0")}.png`, dataUrl.split(",")[1], { base64: true });
       }
       const blob = await zip.generateAsync({ type: "blob" });
