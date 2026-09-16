@@ -5,8 +5,6 @@ import JSZip from "jszip";
 import { api, pollTask, apiErrorMessage } from "@/lib/api";
 import { useTextModels } from "@/lib/useTextModels";
 import { useBrandKit, useBrandKits, activeColors } from "@/lib/useBrand";
-import { brandLogoUrls, isBrandLogoElement } from "@/lib/brandGuideline";
-import { SceneTypographyControl } from "@/components/ReelBrand";
 import { PLATFORM_LIST, platformOf } from "@/lib/platforms";
 import { usePlatformSpecs, specFor, aspectFor, FORMAT_LABEL, FALLBACK_SPECS } from "@/lib/platformSpecs";
 import { openHistory } from "@/lib/historyBus";
@@ -1167,13 +1165,7 @@ export default function Composer() {
     // defaults to the account's own brand kit (when one is actually saved)
     // rather than a generic theme the user never chose.
     const theme = s[0]?.spec?.theme || (brand?.id ? "brand" : "midnight");
-    const added = emptySlide(s.length, s.length + 1, theme);
-    if (isReel) {
-      added.type = "scene";
-      added.spec.template = "slide";
-      added.spec.coverCounts = false;
-    }
-    const next = renumber([...s, added]);
+    const next = renumber([...s, emptySlide(s.length, s.length + 1, theme)]);
     setActive(next.length - 1);
     return next;
   });
@@ -2082,7 +2074,7 @@ export default function Composer() {
                       className={`relative flex-shrink-0 overflow-hidden rounded-lg border-2 transition-colors ${active === i ? "border-lime" : "border-white/10"}`}
                       style={{ width: 68 }}>
                       <div className={`${aspectCls} w-full`}>
-                        <VisualCard spec={a.spec} brand={brand} scale={68 / 440} reelScene={isReel || a.type === "scene"} />
+                        <VisualCard spec={a.spec} brand={brand} scale={0.155} />
                       </div>
                       <span className="absolute left-1 top-1 rounded bg-black/60 px-1 font-mono text-[9px] text-white">{i + 1}</span>
                     </button>
@@ -2125,13 +2117,13 @@ export default function Composer() {
                           <ReelPlayer assets={assets} brand={brand} aspectCls={aspectCls} music={music}
                             activeIndex={active} onSelectScene={(i) => { setActive(i); setSelectedElementId(null); }} />
                         ) : activeAsset.spec.elements ? (
-                          <SlideEditor spec={activeAsset.spec} brand={brand} aspectCls={aspectCls} cardRef={canvasOpen ? null : cardRef} reelScene={isReel || activeAsset.type === "scene"}
+                          <SlideEditor spec={activeAsset.spec} brand={brand} aspectCls={aspectCls} cardRef={canvasOpen ? null : cardRef}
                             selectedId={selectedElementId} onSelect={setSelectedElementId}
                             onChangeElement={patchElement} />
                         ) : (
                           <div ref={previewBoxRef} className={`${aspectCls} w-full overflow-hidden rounded-xl`}>
                             <div ref={canvasOpen ? null : cardRef} className="h-full w-full">
-                              <VisualCard spec={activeAsset.spec} brand={brand} scale={previewScale} reelScene={isReel || activeAsset.type === "scene"} />
+                              <VisualCard spec={activeAsset.spec} brand={brand} scale={previewScale} />
                             </div>
                           </div>
                         )}
@@ -2149,17 +2141,9 @@ export default function Composer() {
 
                       {/* Controls */}
                       <div className="mt-4 min-w-0 md:mt-0">
-                        {(isReel || activeAsset.type === "scene") && (
-                          <p className="mb-3 text-xs leading-relaxed text-zinc-400" data-testid="composer-reel-brand-guidelines">
-                            Typography follows the selected Brand Kit on every scene.
-                            {brandLogoUrls(brand).length
-                              ? " The logo uses the kit's position, width and inset."
-                              : " No logo is uploaded in this kit. Add one in Brand Kit to show it on every scene."}
-                          </p>
-                        )}
                         {activeAsset.spec.elements ? (
                           <ElementPropertyPanel
-                            elements={activeAsset.spec.elements} selectedId={selectedElementId} reelScene={isReel || activeAsset.type === "scene"}
+                            elements={activeAsset.spec.elements} selectedId={selectedElementId}
                             onSelect={setSelectedElementId} onPatch={patchElement} onAdd={addElementToSlide}
                             onRemove={removeElement} onDuplicate={duplicateElement} onReorder={reorderElement}
                             onAddStock={() => setStockTarget("element-new")}
@@ -2418,7 +2402,7 @@ export default function Composer() {
 
       {canvasOpen && activeAsset && (
         <CanvasEditor
-          spec={activeAsset.spec} brand={brand} aspect={aspect} aspectCls={aspectCls} cardRef={cardRef} reelScene={isReel || activeAsset.type === "scene"}
+          spec={activeAsset.spec} brand={brand} aspect={aspect} aspectCls={aspectCls} cardRef={cardRef}
           slides={assets} slideCount={assets.length} activeIndex={active}
           onSelectSlide={(i) => { setActive(i); setSelectedElementId(null); }}
           onAddSlide={addSlide} onDuplicateSlide={() => duplicateSlide(active)}
@@ -2501,11 +2485,10 @@ const SlideField = ({ label, value, onChange, rows, testid }) => (
 
 // The property panel for a slide's freeform elements — shown instead of the
 // fixed heading/body fields once a slide has entered layout-edit mode.
-function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, onRemove, onDuplicate, onReorder, onAddStock, onBrowseStock, onApplyAll, onOpenLibrary, onSaveToLibrary, canApplyAll, brand, bgColor, onChangeBg, reelScene = false }) {
+function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, onRemove, onDuplicate, onReorder, onAddStock, onBrowseStock, onApplyAll, onOpenLibrary, onSaveToLibrary, canApplyAll, brand, bgColor, onChangeBg }) {
   useAllFontsLoaded();
   const fontCatalog = useFontCatalog();
   const el = elements.find((x) => x.id === selectedId);
-  const brandType = reelScene && brand && el?.type === "text";
   const fontOptions = brand?.fonts?.display && !fontCatalog.some((f) => f.key === brand.fonts.display)
     ? [{ key: brand.fonts.display, label: `${brand.fonts.display} (brand)` }, ...fontCatalog] : fontCatalog;
   const fontGroups = groupFontsByCategory(fontOptions);
@@ -2554,7 +2537,6 @@ function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, 
             <>
               <textarea value={el.text || ""} onChange={(e) => onPatch(el.id, { text: e.target.value })} rows={2}
                 data-testid="composer-element-text" className="w-full resize-none rounded-lg border border-white/10 bg-[#0A0A0A] px-2.5 py-2 text-sm text-white outline-none focus:border-lime" />
-              {brandType ? <SceneTypographyControl brand={brand} element={el} onChange={(patch) => onPatch(el.id, patch)} testid="composer-scene-typography" /> : <>
               <div className="mt-2 grid grid-cols-2 gap-2">
                 <select value={el.fontFamily || "Inter"} onChange={(e) => onPatch(el.id, { fontFamily: e.target.value })} data-testid="composer-element-font"
                   className="rounded-lg border border-white/10 bg-[#0A0A0A] px-2 py-1.5 text-xs text-white outline-none [color-scheme:dark]">
@@ -2570,13 +2552,10 @@ function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, 
                 </select>
               </div>
               <FontNotice fontKey={el.fontFamily || "Inter"} testid="composer-font-notice" />
-              </>}
               <div className="mt-2 flex flex-wrap items-center gap-2">
-                {!brandType && <>
                 <label className="font-mono text-[10px] text-zinc-500">Size</label>
                 <input type="number" min={8} max={120} value={el.fontSize || 16} onChange={(e) => onPatch(el.id, { fontSize: Number(e.target.value) })}
                   data-testid="composer-element-size" className="w-16 rounded-lg border border-white/10 bg-[#0A0A0A] px-2 py-1 text-xs text-white outline-none" />
-                </>}
                 <input type="color" value={el.color || "#FFFFFF"} onChange={(e) => onPatch(el.id, { color: e.target.value })}
                   data-testid="composer-element-color" className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent p-0" />
                 <div className="flex gap-1">
@@ -2592,7 +2571,6 @@ function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, 
           )}
           {(el.type === "image" || el.type === "video") && (
             <>
-              {reelScene && isBrandLogoElement(el, brand) && <p className="mb-2 text-xs text-zinc-400">This logo is managed by Brand Kit and rendered once at its preferred position on every scene.</p>}
               <div className="flex gap-1.5">
                 <input value={el.url || ""} onChange={(e) => onPatch(el.id, { url: e.target.value })}
                   placeholder={el.type === "video" ? "Video URL" : "Image URL"}

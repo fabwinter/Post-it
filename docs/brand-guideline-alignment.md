@@ -1,33 +1,30 @@
-# Brand Kit and guideline alignment
+# Brand Guidelines: editable creation defaults
 
-The Brand Kit editor and printable Brand Guidelines sheet share palette and typography definitions in `frontend/src/lib/brandGuideline.js`.
+## Precedence
 
-## Field mapping
+1. A selected template determines the generated design. Brand Guidelines never supersede it, even when the template has no custom element layout.
+2. With no selected template, generation copies available Brand Kit typography, colours and logo into ordinary editable elements.
+3. After creation, the stored elements are the source of truth. Canvas edits always win. Loading, playback and export never reapply guidelines.
 
-- Naming conventions: approved spelling, capitalisation and product naming, shown below the sheet header.
-- Colours: Background (`bg`), Text (`fg`), Accent (`accent`) and Muted (`sub`), with both dark and light palettes and colour-usage notes.
-- Typography: H1, H2, H3, body and caption each have a font family, size in CSS pixels, weight, line-height ratio and usage text.
-- Logo: preferred position and placement notes supplement the existing lockups, clear space, minimum size and do/don't rules.
-- Visual style: the existing field now appears under Imagery & Icons.
+The earlier render-time enforcement was reverted. Font family, weight, size, line spacing, colours and logo position are editable again. The logo is a normal image element, not a locked overlay; users can move, resize, replace or delete it.
 
-## Compatibility and scope
+## Scale
 
-New fields are stored under the existing `guideline` JSON object. No database migration is needed. Existing colour keys and display/body font fields are unchanged.
+Generated element sizes use the existing 440px canvas coordinate system. A saved guideline size is copied directly into `fontSize`, without the previous 440/850 reduction. Actual preview/export size scales uniformly with canvas width, as it does for every other editable element.
 
-Missing typography rules use the previous sheet hierarchy. Font families inherit the kit's display/body defaults unless overridden per role; “Use default … family” removes the override. Numeric sizes accept 6–96px and line heights accept ratios of 1–3, with bounded input and safe render fallbacks.
+If a guideline size has not been configured, use the readable canvas defaults: 40px cover, 30px scene heading and 18px body. The 850px guideline sheet is a document layout, not a video coordinate system. Its sample hierarchy still has document defaults; configured values seed creation.
 
-Typography sizes describe the sheet at its 850px reference width. Reels and shorts now use the same rules, proportionally scaled by canvas width in thumbnails, the editor, playback and video export. Headlines use H1, body text uses Body, and small labels use Caption. Custom text can select a Brand typography role; local font sizes no longer override the selected kit on reel scenes. Non-reel templates retain their existing typography.
+## Storage and compatibility
 
-Each scene has a managed uploaded-logo layer. The colour lockup is preferred, followed by the primary uploaded logo and monochrome variants. Placement defaults to bottom right; `logo_width` (24–300, default 120) and `logo_inset` (0–150, default 24) use the same 850px reference. The image fits inside a square box without stretching. Matching custom logo elements are replaced by this managed layer to avoid duplicates. No uploaded logo means no invented logo; the editor warns. Export waits for fonts and logo fallbacks and reports a failed logo rather than silently producing unbranded video. Free-text usage/clear-space notes remain descriptive, not executable layout instructions.
+No database migration is required. Generation materializes `spec.elements` and `spec.bg_color` once, with descriptive `design_source` metadata. Existing posts and templates are not rewritten. The reverted implementation did not persist its forced sizes, so reopening existing content restores its stored element sizes.
 
-The sheet header keeps its own document layout. Existing videos are not rewritten: reopen and render the reel again to apply updated rules.
+Colours, naming, typography and usage notes remain in the Brand Guidelines sheet. Free-text placement/clear-space notes are documentation, not executable constraints. The preferred logo position supplies a starting position only.
 
 ## Verification
 
-- `cd frontend && CI=true npm test -- --watchAll=false --runInBand`: helper tests covering defaults, overrides, invalid values, scene roles, proportional sizes, logo placement and fallbacks.
-- `cd frontend && npm run build`: production build succeeds.
-- `cd e2e && bash run.sh brand-guideline.js`: focused browser regression covering live updates, family inheritance, both palettes, naming and placement, API persistence, reload, empty/out-of-range input, 375px mobile width, and PNG download.
-- `cd e2e && node reel-brand-guidelines.js` (against `serve.py`): standard and custom scenes, scaled typography, custom role selection, no duplicate logo, bottom-right dimensions, mobile fit, actual 480px video decoding with logo pixels in both scenes, logo fallback, and explicit export failure for broken uploads.
-- Desktop, mobile and guideline screenshots visually inspected.
+- `python e2e/brand-starting-points.py`: direct canvas sizes, readable defaults, template precedence, no-brand behaviour and preservation of edits/deleted logos.
+- `node e2e/brand-starting-points.js` against the isolated `serve.py` backend: real generation with/without a template, editable fonts/sizes/logo, save/reload after guideline changes, and video export.
+- `cd frontend && npm run build`
+- `cd frontend && CI=true npm test -- --watchAll=false --runInBand`
 
-The preview uses the existing isolated E2E backend with a local test database and simulated external services. No production data or credentials are required.
+The private preview uses simulated external services and a local test database, not live user data.

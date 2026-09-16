@@ -1,5 +1,4 @@
 import { useLayoutEffect, useState } from "react";
-import { brandLogoUrls } from "@/lib/brandGuideline";
 
 // A slide can carry a freeform `elements` array instead of (alongside) its
 // fixed template fields (title/heading/body/...). Every element is
@@ -146,7 +145,7 @@ export function elementsWithText(elements, { heading, body, index }) {
 export function newElement(type, theme, brand) {
   const base = { id: genId(), x: 20, y: 40, rotation: 0, opacity: 1 };
   if (type === "text") return { ...base, type: "text", text: "New text", w: 60, h: 15, fontFamily: brand?.fonts?.body || "Inter", fontSize: 20, fontWeight: 600, color: theme?.fg || "#FFFFFF", align: "left", lineHeight: 1.2 };
-  if (type === "logo") return { ...base, type: "image", role: "logo", url: brandLogoUrls(brand)[0] || "", w: 20, h: 20, fit: "contain" };
+  if (type === "logo") return { ...base, type: "image", url: brand?.logo_url || "", w: 20, h: 20, fit: "contain" };
   if (type === "image") return { ...base, type: "image", url: "", w: 40, h: 30, fit: "cover" };
   // A video behaves like an image with a grade: same box, same handles, so a
   // scene can carry several of them (a cutaway over a background plate, a

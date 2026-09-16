@@ -34,7 +34,7 @@ function SceneLayer({ item, brand, scale, style, registerVideo, activeWordIndex 
 
   return (
     <div className="absolute inset-0 overflow-hidden" style={style}>
-      <VisualCard spec={item.asset.spec} brand={brand} scale={scale} videoRef={ref} videoControlled reelScene
+      <VisualCard spec={item.asset.spec} brand={brand} scale={scale} videoRef={ref} videoControlled
         activeWordIndex={activeWordIndex} />
     </div>
   );
