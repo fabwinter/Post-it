@@ -40,7 +40,7 @@ import {
   Search, Wand, Palette, Upload, FileText, Image as ImageIcon, Presentation,
   Type, Square, LayoutTemplate, Undo2, Redo2, Copy, ChevronsUp, ChevronsDown, AlignLeft, AlignCenter, AlignRight,
   Shapes, CopyPlus, BookmarkPlus, Maximize2, PlayCircle, SquarePen, Lightbulb, Repeat, LayoutGrid,
-  Music, Volume2, VolumeX, RefreshCw, Mic, FolderOpen,
+  Music, Volume2, VolumeX, RefreshCw, Mic, FolderOpen, Pause,
 } from "lucide-react";
 
 // The first four are the ones PoYo's TTS model schema documents as its own
@@ -72,6 +72,11 @@ const DEFAULT_REEL_OPTIONS = {
   musicStyle: "",
 };
 
+// Three of these voice IDs came with no name or public description
+// attached anywhere in the account that created them — Nova/Jade/Wren are
+// names picked for this app so the picker has something better than
+// "Custom voice 1" to show, not a claim about what ElevenLabs calls them.
+// The preview button (below) is what actually tells them apart.
 const VOICE_PRESETS = [
   { key: "Rachel", label: "Rachel", desc: "Warm, professional — the default" },
   { key: "Aria", label: "Aria", desc: "Bright, expressive" },
@@ -80,10 +85,15 @@ const VOICE_PRESETS = [
   { key: "Qggl4b0xRMiqOwhPtVWT", label: "Clara", desc: "Warm, soothing, American accent" },
   { key: "M7ya1YbaeFaPXljg9BpK", label: "Hannah", desc: "Natural Australian accent" },
   { key: "jQQiXyFE3PBHLF8znAIb", label: "Custom voice — AU", desc: "Australian, urban Sydney accent, early-mid 30s" },
-  { key: "vChnJZ1Cu89g2XXumPfT", label: "Custom voice 1", desc: "No public description found for this voice ID" },
-  { key: "uWAhmTxbFR3p3HsniNS9", label: "Custom voice 2", desc: "No public description found for this voice ID" },
-  { key: "VyyyOgRmsqOzaZXnKWnI", label: "Custom voice 3", desc: "No public description found for this voice ID" },
+  { key: "vChnJZ1Cu89g2XXumPfT", label: "Nova", desc: "Unlabeled custom voice — tap the preview button to hear it" },
+  { key: "uWAhmTxbFR3p3HsniNS9", label: "Jade", desc: "Unlabeled custom voice — tap the preview button to hear it" },
+  { key: "VyyyOgRmsqOzaZXnKWnI", label: "Wren", desc: "Unlabeled custom voice — tap the preview button to hear it" },
 ];
+
+// One short, voice-agnostic line every preset gets synthesized with — long
+// enough to hear the accent and pacing, short enough not to spend much on
+// a click that's just "what does this sound like".
+const VOICE_PREVIEW_LINE = "Hi there — this is a quick preview of how I sound for your captions.";
 
 // The four ways a post can start here — icons/labels for the mode switcher
 // above the topic/build controls.
@@ -221,6 +231,56 @@ export default function Composer() {
   // a reel-wide choice rather than per scene, since a reel reads as one
   // voice throughout.
   const [voicePreset, setVoicePreset] = useState(VOICE_PRESETS[0].key);
+  // "Which of these am I actually going to sound like" — three of the
+  // presets above are custom voice IDs with no name attached anywhere, so
+  // picking blind was the only option before this. One shared <audio>
+  // (voicePreviewAudioRef) plays whichever preset was tapped; previewUrlsRef
+  // caches each preset's synthesized sample for the rest of this session so
+  // clicking the same voice twice in a row doesn't spend a second
+  // generation on it. voicePreviewState is the small bit of UI state that
+  // actually needs a re-render: which key is loading, and which is playing.
+  // A real <audio> element (rendered hidden, below) rather than a bare
+  // `new Audio()` — the latter plays fine detached from the document, but
+  // nothing outside this component (a test, a screen reader) could ever
+  // find it to check what it's doing.
+  const voicePreviewAudioRef = useRef(null);
+  const previewUrlsRef = useRef({});
+  const [voicePreviewState, setVoicePreviewState] = useState({ loading: null, playing: null });
+
+  const previewVoice = async (key) => {
+    const audio = voicePreviewAudioRef.current;
+    if (!audio) return;
+    if (voicePreviewState.playing === key) {
+      audio.pause();
+      setVoicePreviewState((s) => ({ ...s, playing: null }));
+      return;
+    }
+    const cached = previewUrlsRef.current[key];
+    if (cached) {
+      audio.src = cached;
+      audio.play();
+      setVoicePreviewState({ loading: null, playing: key });
+      return;
+    }
+    setVoicePreviewState({ loading: key, playing: null });
+    try {
+      const { data } = await api.post("/ai/generate", { kind: "voice", prompt: VOICE_PREVIEW_LINE, options: { voice: key } });
+      const result = await pollTask(data.task_id);
+      const url = (result.files || []).find((f) => f.file_url)?.file_url;
+      if (!url) throw new Error("No preview came back");
+      previewUrlsRef.current[key] = url;
+      audio.src = url;
+      audio.play();
+      setVoicePreviewState({ loading: null, playing: key });
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "Couldn't preview that voice."));
+      setVoicePreviewState({ loading: null, playing: null });
+    }
+  };
+  // A preview that outlives the page it was started on plays over whatever
+  // comes next — leaving Composer entirely, not just switching slides.
+  useEffect(() => () => voicePreviewAudioRef.current?.pause(), []);
+
   // Every choice ComposerReelOptions offers, set before a reel is even
   // scripted — scene structure, which of voiceover/music/footage to spend a
   // generation on at all, and where footage and its look come from. This
@@ -1505,6 +1565,11 @@ export default function Composer() {
 
   return (
     <div data-testid="composer-page">
+      {/* Backs every voice-preset preview button (VoicePresetPicker) — one
+          shared, hidden element rather than one per chip, since only ever
+          one preview plays at a time. */}
+      <audio ref={voicePreviewAudioRef} data-testid="composer-voice-preview-audio" className="hidden"
+        onEnded={() => setVoicePreviewState((s) => ({ ...s, playing: null }))} />
       <div className="flex items-center justify-between">
         <div>
           <div className="font-mono text-xs uppercase tracking-[0.25em] text-zinc-500">Composer</div>
@@ -1735,7 +1800,8 @@ export default function Composer() {
                 </div>
                 {isReel && (
                   <>
-                    <VoicePresetPicker value={voicePreset} onChange={setVoicePreset} idPrefix="composer-voice-preset-pre" />
+                    <VoicePresetPicker value={voicePreset} onChange={setVoicePreset} idPrefix="composer-voice-preset-pre"
+                      previewState={voicePreviewState} onPreview={previewVoice} />
                     <ComposerReelOptions options={reelOptions} onChange={setReelOptions}
                       sceneRange={pspec.slides || { min: 3, max: 8, default: 5 }} />
                   </>
@@ -1946,7 +2012,8 @@ export default function Composer() {
             )}
 
             {isReel && assets.length > 0 && (
-              <VoicePresetPicker value={voicePreset} onChange={setVoicePreset} idPrefix="composer-voice-preset" />
+              <VoicePresetPicker value={voicePreset} onChange={setVoicePreset} idPrefix="composer-voice-preset"
+                previewState={voicePreviewState} onPreview={previewVoice} />
             )}
 
             {isReel && assets.length > 0 && (
@@ -2369,18 +2436,37 @@ const IconBtn = ({ children, onClick, disabled, testid, danger, title }) => (
 // the first take already comes back in the right voice) and after one
 // (for a per-scene retake in a different voice). `idPrefix` keeps their
 // testids distinct without duplicating this markup twice.
-const VoicePresetPicker = ({ value, onChange, idPrefix }) => (
+//
+// The select button is untouched from before the preview existed — same
+// element, same classes, same testid — with a small preview button now
+// sitting beside it as a sibling rather than nested inside it. Siblings
+// rather than one button inside another: nesting would mean either an
+// invalid <button> inside a <button>, or relying on stopPropagation and
+// exact click coordinates to keep a tap on one from also firing the other.
+const VoicePresetPicker = ({ value, onChange, idPrefix, previewState, onPreview }) => (
   <div className="mt-3 flex flex-wrap items-center gap-1.5">
     <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Voice</span>
-    {VOICE_PRESETS.map((v) => (
-      <button key={v.key} onClick={() => onChange(v.key)} title={v.desc}
-        data-testid={`${idPrefix}-${v.key.toLowerCase()}`}
-        className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
-          value === v.key ? "border-lime bg-lime/10 text-lime" : "border-white/10 text-zinc-400 hover:text-white"
-        }`}>
-        {v.label}
-      </button>
-    ))}
+    {VOICE_PRESETS.map((v) => {
+      const isLoading = previewState?.loading === v.key;
+      const isPlaying = previewState?.playing === v.key;
+      return (
+        <div key={v.key} className="flex items-center gap-1">
+          <button onClick={() => onChange(v.key)} title={v.desc}
+            data-testid={`${idPrefix}-${v.key.toLowerCase()}`}
+            className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+              value === v.key ? "border-lime bg-lime/10 text-lime" : "border-white/10 text-zinc-400 hover:text-white"
+            }`}>
+            {v.label}
+          </button>
+          <button onClick={() => onPreview?.(v.key)} disabled={isLoading}
+            data-testid={`${idPrefix}-${v.key.toLowerCase()}-preview`}
+            title={isPlaying ? "Stop preview" : "Preview this voice"}
+            className="flex h-6 w-6 flex-none items-center justify-center rounded-full border border-white/10 text-zinc-500 hover:text-white disabled:opacity-50">
+            {isLoading ? <Loader2 size={11} className="animate-spin" /> : isPlaying ? <Pause size={11} /> : <PlayCircle size={11} />}
+          </button>
+        </div>
+      );
+    })}
   </div>
 );
 

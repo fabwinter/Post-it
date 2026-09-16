@@ -943,6 +943,52 @@ async function confirmReel(page) {
     document.querySelector('[data-testid="composer-voice-preset-aria"]')?.className.includes('border-lime'));
   ok('a curated voice preset can be selected', !!ariaActive);
 
+  // ---------- 11a-v. Voice preview ----------
+  // Three of the presets are custom voice IDs with no name attached
+  // anywhere — the preview button is the only way to actually tell them
+  // apart before committing a whole reel's takes to one. Clicking it should
+  // synthesize a short sample and play it; clicking the SAME voice again
+  // should reuse that sample rather than spending a second generation.
+  const previewRequests = [];
+  await page.route('**/api/ai/generate', async (route) => {
+    const body = route.request().postDataJSON();
+    if (body?.kind === 'voice') previewRequests.push(body);
+    await route.continue();
+  });
+  await tap(page, 'composer-voice-preset-sarah-preview');
+  await page.waitForSelector('[data-testid="composer-voice-preset-sarah-preview"] svg.animate-spin', { state: 'detached', timeout: 10000 });
+  ok('previewing a voice synthesizes a sample with that voice, not the currently selected one',
+     previewRequests.length === 1 && previewRequests[0].options?.voice === 'Sarah', JSON.stringify(previewRequests));
+  const playingAfterFirst = await page.evaluate(() => {
+    const a = document.querySelector('[data-testid="composer-voice-preview-audio"]');
+    return a ? { paused: a.paused, src: a.currentSrc } : null;
+  });
+  ok('the preview actually starts playing, not just synthesizes silently',
+     playingAfterFirst && !playingAfterFirst.paused, JSON.stringify(playingAfterFirst));
+
+  // Stop it, then preview the SAME voice again — should replay the cached
+  // sample with no second request to the backend.
+  await tap(page, 'composer-voice-preset-sarah-preview');
+  await page.waitForTimeout(150);
+  await tap(page, 'composer-voice-preset-sarah-preview');
+  await page.waitForTimeout(300);
+  ok('re-previewing the same voice reuses the cached sample instead of generating again',
+     previewRequests.length === 1, String(previewRequests.length));
+  await page.unroute('**/api/ai/generate');
+
+  // Previewing a DIFFERENT (unlabeled custom) voice must not disturb which
+  // voice is actually selected for the reel's own takes — preview and
+  // selection are two different things sharing one row of chips. Testid is
+  // keyed off the voice ID itself (vChnJZ1Cu89g2XXumPfT, named "Nova" only
+  // in the label), same as every other chip's testid.
+  const novaPreviewTestId = 'composer-voice-preset-vchnjz1cu89g2xxumpft-preview';
+  await tap(page, novaPreviewTestId);
+  await page.waitForSelector(`[data-testid="${novaPreviewTestId}"] svg.animate-spin`, { state: 'detached', timeout: 10000 });
+  const stillAriaSelected = await page.evaluate(() =>
+    document.querySelector('[data-testid="composer-voice-preset-aria"]')?.className.includes('border-lime'));
+  ok("previewing an unlabeled voice doesn't change which voice is actually selected",
+     !!stillAriaSelected);
+
   await page.getByTestId('composer-scene-voice-retry').waitFor({ timeout: 5000 });
   await tap(page, 'composer-scene-voice-retry');
   await page.waitForTimeout(600);
