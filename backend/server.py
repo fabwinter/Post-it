@@ -3323,7 +3323,6 @@ DEFAULT_GUIDELINE = {
     "doc_owner": "", "version": "v1.0",
     "naming_conventions": "", "logo_position": "", "logo_placement_notes": "",
     "color_usage": "", "typography": {},
-    "logo_width": 120, "logo_inset": 24,
 }
 def _normalize_guideline(raw) -> dict:
     """Merges a saved (possibly partial or legacy) guideline onto
@@ -4401,6 +4400,88 @@ def _plan_to_assets(plan: dict, theme: str) -> List[Dict[str, Any]]:
     return assets
 
 
+def _seed_brand_design(assets, brand, template=None, aspect="9:16"):
+    """Creation-time defaults only. Never called by load, edit or export.
+
+    A selected template wins even if it has no custom element layout.
+    Persist ordinary editable elements, not a live link to guideline rules.
+    Sizes are authored in the existing 440px canvas coordinate system.
+    """
+    if template is not None or not brand:
+        return assets
+    guideline = brand.get("guideline") or {}
+    typography = guideline.get("typography") or {}
+    fonts = brand.get("fonts") or {}
+    mode = brand.get("color_mode") or "dark"
+    palette = {**(DEFAULT_LIGHT_COLORS if mode == "light" else DEFAULT_DARK_COLORS),
+               **((brand.get("colors") or {}).get(mode) or {})}
+
+    def number(value, fallback, low, high):
+        try:
+            n = float(value)
+            return n if math.isfinite(n) and low <= n <= high else fallback
+        except (ValueError, TypeError):
+            return fallback
+
+    def text(role, value, x, y, w, h, size, weight=400):
+        key = {"title": "h1", "heading": "h1", "body": "body", "caption": "caption"}[role]
+        rule = typography.get(key) or {}
+        family = "display" if key == "h1" else "body"
+        return {
+            "id": str(uuid.uuid4()), "type": "text", "role": role, "text": value,
+            "x": x, "y": y, "w": w, "h": h, "rotation": 0, "opacity": 1,
+            "fontFamily": rule.get("font") or fonts.get(family) or "Inter",
+            # Do NOT shrink a sheet size by 440/850 during rendering.
+            "fontSize": number(rule.get("size"), size, 6, 96),
+            "fontWeight": number(rule.get("weight"), weight, 400, 900),
+            "lineHeight": number(rule.get("line_height"), 1.2 if key == "h1" else 1.4, 1, 3),
+            "align": "left", "color": palette["fg"] if key == "h1" else palette["sub"],
+        }
+
+    try:
+        aw, ah = [float(v) for v in aspect.split(":")]
+        ratio = aw / ah if aw > 0 and ah > 0 else 9 / 16
+    except (ValueError, ZeroDivisionError):
+        ratio = 9 / 16
+    logos = guideline.get("logos") or {}
+    logo = logos.get("color") or brand.get("logo_url") or logos.get("black_on_white" if mode == "light" else "white_on_black")
+    for asset in assets:
+        spec = asset.get("spec")
+        if not spec or "elements" in spec:
+            continue  # Existing/authored layouts are never reseeded.
+        kind = spec.get("template")
+        if kind == "cover":
+            elements = [text("title", spec.get("title", ""), 8, 34, 84, 35, 40, 800)]
+        elif kind == "slide":
+            elements = [text("heading", spec.get("heading", ""), 8, 28, 84, 25, 30, 800)]
+            if spec.get("body"):
+                elements.append(text("body", spec["body"], 8, 56, 84, 25, 18))
+        elif kind == "quote":
+            elements = [text("heading", spec.get("quote", ""), 8, 25, 84, 45, 28, 700),
+                        text("caption", spec.get("author", ""), 8, 78, 65, 10, 14)]
+        elif kind == "infographic":
+            points = spec.get("points") or []
+            elements = [text("title", spec.get("title", ""), 8, 10, 84, 20, 34, 800)]
+            row = min(14, 55 / max(1, len(points)))
+            elements += [text("body", point, 8, 34 + i * row, 84, row, 17) for i, point in enumerate(points)]
+        else:
+            continue
+        if logo:
+            # Store a normal image element: draggable, resizable, replaceable
+            # and deletable. The default is bottom right, never a locked layer.
+            width = number(guideline.get("logo_width"), 60, 24, 150)
+            inset = number(guideline.get("logo_inset"), 16, 0, 80)
+            w, h = width / 440 * 100, width / 440 * 100 * ratio
+            ix, iy = inset / 440 * 100, inset / 440 * 100 * ratio
+            position = guideline.get("logo_position") or "bottom-right"
+            x = ix if position.endswith("left") else (100 - w) / 2 if position.endswith("center") or position == "center" else 100 - w - ix
+            y = iy if position.startswith("top") else (100 - h) / 2 if position == "center" else 100 - h - iy
+            elements.append({"id": str(uuid.uuid4()), "type": "image", "role": "logo", "url": logo,
+                             "x": x, "y": y, "w": w, "h": h, "fit": "contain", "rotation": 0, "opacity": 1})
+        spec.update(elements=elements, bg_color=palette["bg"], design_source="brand-starting-point")
+    return assets
+
+
 @api_router.post("/ai/build-post")
 async def ai_build_post(req: BuildPostRequest):
     """Topic in, publishable post out — copy, hashtags and a visual plan in one
@@ -4566,6 +4647,7 @@ async def ai_build_post(req: BuildPostRequest):
     plan["hashtags"] = hashtags[: spec["hashtags"]]
 
     assets = _apply_template_layouts(_plan_to_assets(plan, theme), template)
+    assets = _seed_brand_design(assets, brand, template, spec["aspect"].get(plan["format"], "1:1"))
     result = {
         "format": plan["format"],
         "platform": req.platform,
@@ -4577,6 +4659,7 @@ async def ai_build_post(req: BuildPostRequest):
         "alt_text": plan.get("alt_text", ""),
         "why_it_works": plan.get("why_it_works", ""),
         "theme": theme,
+        "design_source": "template" if template is not None else "brand-starting-point" if brand else "default",
         "assets": assets,
         "visual": plan.get("visual") or {},
     }

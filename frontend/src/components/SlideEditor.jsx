@@ -2,7 +2,6 @@ import { useState, useRef } from "react";
 import { Ruler } from "lucide-react";
 import { VisualCard } from "@/components/VisualCard";
 import { elementBoxStyle, MIN_SIZE, MAX_SIZE, clampPos, useCardScale } from "@/lib/slideElements";
-import { isBrandLogoElement } from "@/lib/brandGuideline";
 
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 const dist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
@@ -54,7 +53,7 @@ function RulerOverlay() {
 // VisualCard underneath renders the actual pixels; this overlays one
 // invisible hit-box per element, in the same percentage coordinate space
 // (lib/slideElements.js), purely for gesture handling.
-export function SlideEditor({ spec, brand, selectedId, onSelect, onChangeElement, aspectCls, cardRef, reelScene = false }) {
+export function SlideEditor({ spec, brand, selectedId, onSelect, onChangeElement, aspectCls, cardRef }) {
   const containerRef = useRef(null);
   const dragState = useRef(null);
   const pinchState = useRef(null);
@@ -140,12 +139,11 @@ export function SlideEditor({ spec, brand, selectedId, onSelect, onChangeElement
         <Ruler size={12} />
       </button>
       <div ref={cardRef} className="absolute inset-0">
-        <VisualCard spec={spec} brand={brand} scale={cardScale} reelScene={reelScene} />
+        <VisualCard spec={spec} brand={brand} scale={cardScale} />
       </div>
       {showGrid && <GridOverlay />}
       {showGrid && <RulerOverlay />}
       {(spec.elements || []).map((el) => {
-        if (reelScene && isBrandLogoElement(el, brand)) return null;
         const box = elementBoxStyle(el);
         const selected = el.id === selectedId;
         return (

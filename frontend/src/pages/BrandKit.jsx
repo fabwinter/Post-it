@@ -7,7 +7,7 @@ import { PLATFORM_LIST } from "@/lib/platforms";
 import { groupFontsByCategory, fontStack, useAllFontsLoaded, useFontCatalog } from "@/lib/fonts";
 import { CustomFontsPanel, FontNotice } from "@/components/CustomFonts";
 import { BrandGuidelineDoc } from "@/components/BrandGuidelineDoc";
-import { COLOR_FIELDS, TYPE_ROLES, WEIGHTS, LOGO_POSITIONS, getTypeStyle, DEFAULT_LOGO_WIDTH, DEFAULT_LOGO_INSET } from "@/lib/brandGuideline";
+import { COLOR_FIELDS, TYPE_ROLES, WEIGHTS, LOGO_POSITIONS, getTypeStyle } from "@/lib/brandGuideline";
 import { KnowledgeBase } from "@/components/KnowledgeBase";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -30,7 +30,6 @@ const emptyGuideline = () => ({
   doc_owner: "", version: "v1.0",
   naming_conventions: "", logo_position: "", logo_placement_notes: "",
   color_usage: "", typography: {},
-  logo_width: DEFAULT_LOGO_WIDTH, logo_inset: DEFAULT_LOGO_INSET,
 });
 
 const LOGO_VARIANTS = [
@@ -398,9 +397,10 @@ export default function BrandKit() {
               <FontField label="Body text" value={form.fonts?.body} onChange={(v) => set("fonts", { ...form.fonts, body: v })} testid="brand-font-body" />
             </div>
             <p className="mt-3 text-xs leading-relaxed text-zinc-400">
-              The hierarchy below applies to the guideline sheet and every reel/short scene, including custom layouts.
-              Sizes are CSS pixels at 850px reference width, scaled proportionally to the video width.
-              Scene headlines use H1, body text uses Body, and small labels use Caption.
+              Default families above also apply to generated graphics. The hierarchy below defines the guideline sheet;
+              sizes are starting values in the canvas's 440px coordinate system, not locked rules.
+              Guidelines are copied only when generating without a selected template. Templates take
+              priority; every generated font, size, colour and logo remains editable in the canvas.
             </p>
             <div className="mt-4 space-y-4">
               {TYPE_ROLES.map((role) => {
@@ -496,17 +496,7 @@ export default function BrandKit() {
               onChange={(v) => setGuideline("logo_placement_notes", v)}
               placeholder="Safe-area offsets, alignment and format-specific exceptions."
               testid="brand-guideline-logo-placement-notes" />
-            <div className="mt-4 grid grid-cols-2 gap-3">
-              <NumericField label="Logo box width (px)" value={form.guideline?.logo_width ?? DEFAULT_LOGO_WIDTH}
-                min={24} max={300} step={1} onChange={(v) => setGuideline("logo_width", v)} testid="brand-guideline-logo-width" />
-              <NumericField label="Logo edge inset (px)" value={form.guideline?.logo_inset ?? DEFAULT_LOGO_INSET}
-                min={0} max={150} step={1} onChange={(v) => setGuideline("logo_inset", v)} testid="brand-guideline-logo-inset" />
-            </div>
-            <p className="mt-2 text-xs leading-relaxed text-zinc-400">
-              Reels and shorts apply this position to every scene, defaulting to bottom right. Width and inset scale
-              from the same 850px reference; the logo fits inside a square box without stretching.
-              Placement notes, clear space and minimum size are descriptive rules, not automatically parsed.
-            </p>
+            <p className="mt-2 text-xs text-zinc-400">Placement is documented on the guideline, not automatically applied to post templates.</p>
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
               <Field label="Logo clear space" value={form.guideline?.logo_clear_space}
                 onChange={(v) => setGuideline("logo_clear_space", v)}

@@ -222,21 +222,6 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
         await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
         // eslint-disable-next-line no-await-in-loop
         await waitForImages(contentRefs.current[it.index]);
-        // A failed brand image must not become a "successful" unbranded video.
-        const logo = contentRefs.current[it.index]?.querySelector("[data-reel-logo]");
-        if (logo) {
-          // Wait for React's entire fallback chain, not only the first URL.
-          const deadline = Date.now() + 8000;
-          while (logo.dataset.reelLogoStatus === "loading" && Date.now() < deadline && !cancelled.current) {
-            // eslint-disable-next-line no-await-in-loop
-            await new Promise((r) => setTimeout(r, 50));
-          }
-          if (logo.dataset.reelLogoStatus !== "ready" || !logo.complete || !logo.naturalWidth) throw new Error("The Brand Kit logo could not be loaded. Check the uploaded logo or its URL and render again.");
-        }
-        // Font faces are requested by the just-mounted scene, not by the
-        // document sheet. Wait before freezing glyphs into the overlay.
-        // eslint-disable-next-line no-await-in-loop
-        if (document.fonts?.ready) await document.fonts.ready;
         if (cancelled.current) { setPhase("idle"); setStageIndex(-1); return; }
 
         if (fontEmbedCSS === undefined) {
@@ -518,7 +503,7 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
                 style={{ width: dims.width, height: dims.height, background: bg }} />
               <div ref={(el) => { contentRefs.current[it.index] = el; }} className="reel-export-content"
                 style={{ width: dims.width, height: dims.height }}>
-                <VisualCard spec={spec} brand={brand} scale={dims.width / CARD_REF_WIDTH} reelScene
+                <VisualCard spec={spec} brand={brand} scale={dims.width / CARD_REF_WIDTH}
                   activeWordIndex={stageWordIndex[it.index] ?? -1} />
               </div>
             </div>

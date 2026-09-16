@@ -5,8 +5,6 @@ import JSZip from "jszip";
 import { api, pollTask, apiErrorMessage } from "@/lib/api";
 import { useTextModels } from "@/lib/useTextModels";
 import { useBrandKit, useBrandKits, activeColors } from "@/lib/useBrand";
-import { brandLogoUrls, isBrandLogoElement } from "@/lib/brandGuideline";
-import { SceneTypographyControl } from "@/components/ReelBrand";
 import { PLATFORM_LIST, platformOf } from "@/lib/platforms";
 import { usePlatformSpecs, specFor, aspectFor, FORMAT_LABEL, FALLBACK_SPECS } from "@/lib/platformSpecs";
 import { openHistory } from "@/lib/historyBus";
@@ -515,8 +513,9 @@ export default function Composer() {
         return { ...asset, spec: { ...asset.spec, voice: { url, duration: duration || null, words }, clip } };
       }));
       return true;
-    } catch {
-      setSceneVoiceError((s) => ({ ...s, [index]: true }));
+    } catch (error) {
+      const reason = String(apiErrorMessage(error, "Voiceover generation failed.")).slice(0, 700);
+      setSceneVoiceError((s) => ({ ...s, [index]: reason }));
       return false;
     } finally {
       setSceneVoiceLoading((s) => ({ ...s, [index]: false }));
@@ -1167,13 +1166,7 @@ export default function Composer() {
     // defaults to the account's own brand kit (when one is actually saved)
     // rather than a generic theme the user never chose.
     const theme = s[0]?.spec?.theme || (brand?.id ? "brand" : "midnight");
-    const added = emptySlide(s.length, s.length + 1, theme);
-    if (isReel) {
-      added.type = "scene";
-      added.spec.template = "slide";
-      added.spec.coverCounts = false;
-    }
-    const next = renumber([...s, added]);
+    const next = renumber([...s, emptySlide(s.length, s.length + 1, theme)]);
     setActive(next.length - 1);
     return next;
   });
@@ -1727,16 +1720,25 @@ export default function Composer() {
 
         {brandKits.length > 0 && (
           <>
-            <label className="mt-5 block font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">Brand kit</label>
+            <label htmlFor="composer-brand-guidelines" className="mt-5 block font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">Brand Guidelines</label>
             <div className="mt-3 flex items-center gap-2">
               <Palette size={14} className="flex-shrink-0 text-zinc-600" />
-              <select value={brandKitId || ""} onChange={(e) => setBrandKitId(e.target.value || null)} data-testid="composer-brand-kit-select"
+              <select id="composer-brand-guidelines" value={brandKitId || brand?.id || ""} onChange={(e) => setBrandKitId(e.target.value || null)} data-testid="composer-brand-kit-select"
                 className="w-full max-w-xs rounded-lg border border-white/10 bg-[#0A0A0A] px-2.5 py-1.5 text-xs text-white outline-none focus:border-lime [color-scheme:dark]">
                 {brandKits.map((k) => <option key={k.id || "default"} value={k.id || ""}>{k.name}{k.is_default ? " (default)" : ""}</option>)}
               </select>
-              <span className="text-xs text-zinc-600">colors, fonts &amp; voice for this post</span>
+              <span className="text-xs text-zinc-400">Choose the kit containing your guidelines</span>
             </div>
+            <p className="mt-2 text-xs leading-relaxed text-zinc-400" data-testid="composer-brand-guidelines-help">
+              Select “Brand Guidelines (no template)” under Design to use this kit as the starting point.
+              A selected template keeps its own design. Everything remains editable after generation.
+            </p>
           </>
+        )}
+        {brandKits.length === 0 && (
+          <p className="mt-5 text-xs text-zinc-400" data-testid="composer-brand-guidelines-empty">
+            No Brand Guidelines yet. <button type="button" onClick={() => navigate("/brand")} className="text-lime underline">Create a Brand Kit</button> to use its guidelines when generating without a template.
+          </p>
         )}
       </div>
 
@@ -1875,7 +1877,7 @@ export default function Composer() {
               <select value={customTemplateId || ""} onChange={(e) => setCustomTemplateId(e.target.value || null)}
                 data-testid="composer-custom-template-select"
                 className="rounded-lg border border-white/10 bg-[#0A0A0A] px-2.5 py-1.5 text-xs text-white outline-none focus:border-iris [color-scheme:dark]">
-                <option value="">No design — AI picks the format</option>
+                <option value="">Brand Guidelines (no template)</option>
                 {sortedCustomTemplates.map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.name}{t.format !== format ? ` (${FORMAT_LABEL[t.format] || t.format} — will resize)` : ""}
@@ -2082,7 +2084,7 @@ export default function Composer() {
                       className={`relative flex-shrink-0 overflow-hidden rounded-lg border-2 transition-colors ${active === i ? "border-lime" : "border-white/10"}`}
                       style={{ width: 68 }}>
                       <div className={`${aspectCls} w-full`}>
-                        <VisualCard spec={a.spec} brand={brand} scale={68 / 440} reelScene={isReel || a.type === "scene"} />
+                        <VisualCard spec={a.spec} brand={brand} scale={0.155} />
                       </div>
                       <span className="absolute left-1 top-1 rounded bg-black/60 px-1 font-mono text-[9px] text-white">{i + 1}</span>
                     </button>
@@ -2125,13 +2127,13 @@ export default function Composer() {
                           <ReelPlayer assets={assets} brand={brand} aspectCls={aspectCls} music={music}
                             activeIndex={active} onSelectScene={(i) => { setActive(i); setSelectedElementId(null); }} />
                         ) : activeAsset.spec.elements ? (
-                          <SlideEditor spec={activeAsset.spec} brand={brand} aspectCls={aspectCls} cardRef={canvasOpen ? null : cardRef} reelScene={isReel || activeAsset.type === "scene"}
+                          <SlideEditor spec={activeAsset.spec} brand={brand} aspectCls={aspectCls} cardRef={canvasOpen ? null : cardRef}
                             selectedId={selectedElementId} onSelect={setSelectedElementId}
                             onChangeElement={patchElement} />
                         ) : (
                           <div ref={previewBoxRef} className={`${aspectCls} w-full overflow-hidden rounded-xl`}>
                             <div ref={canvasOpen ? null : cardRef} className="h-full w-full">
-                              <VisualCard spec={activeAsset.spec} brand={brand} scale={previewScale} reelScene={isReel || activeAsset.type === "scene"} />
+                              <VisualCard spec={activeAsset.spec} brand={brand} scale={previewScale} />
                             </div>
                           </div>
                         )}
@@ -2149,17 +2151,9 @@ export default function Composer() {
 
                       {/* Controls */}
                       <div className="mt-4 min-w-0 md:mt-0">
-                        {(isReel || activeAsset.type === "scene") && (
-                          <p className="mb-3 text-xs leading-relaxed text-zinc-400" data-testid="composer-reel-brand-guidelines">
-                            Typography follows the selected Brand Kit on every scene.
-                            {brandLogoUrls(brand).length
-                              ? " The logo uses the kit's position, width and inset."
-                              : " No logo is uploaded in this kit. Add one in Brand Kit to show it on every scene."}
-                          </p>
-                        )}
                         {activeAsset.spec.elements ? (
                           <ElementPropertyPanel
-                            elements={activeAsset.spec.elements} selectedId={selectedElementId} reelScene={isReel || activeAsset.type === "scene"}
+                            elements={activeAsset.spec.elements} selectedId={selectedElementId}
                             onSelect={setSelectedElementId} onPatch={patchElement} onAdd={addElementToSlide}
                             onRemove={removeElement} onDuplicate={duplicateElement} onReorder={reorderElement}
                             onAddStock={() => setStockTarget("element-new")}
@@ -2201,8 +2195,13 @@ export default function Composer() {
                             {sceneVoiceLoading[active] ? (
                               <span className="flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> Recording take…</span>
                             ) : sceneVoiceError[active] ? (
-                              <button onClick={() => retrySceneVoice(active)} data-testid="composer-scene-voice-retry"
-                                className="flex items-center gap-1 text-magic hover:text-white"><RefreshCw size={11} /> Take failed — retry</button>
+                              <div className="min-w-0">
+                                <button onClick={() => retrySceneVoice(active)} data-testid="composer-scene-voice-retry"
+                                  className="flex items-center gap-1 text-magic hover:text-white"><RefreshCw size={11} /> Take failed — retry</button>
+                                <p role="alert" data-testid="composer-scene-voice-error" className="mt-1 break-words text-magic">
+                                  {sceneVoiceError[active]}
+                                </p>
+                              </div>
                             ) : activeAsset.spec.voice?.url ? (
                               <button onClick={() => retrySceneVoice(active)} data-testid="composer-scene-voice-retry"
                                 className="flex items-center gap-1 hover:text-white"><RefreshCw size={11} /> Re-record this line</button>
@@ -2418,7 +2417,7 @@ export default function Composer() {
 
       {canvasOpen && activeAsset && (
         <CanvasEditor
-          spec={activeAsset.spec} brand={brand} aspect={aspect} aspectCls={aspectCls} cardRef={cardRef} reelScene={isReel || activeAsset.type === "scene"}
+          spec={activeAsset.spec} brand={brand} aspect={aspect} aspectCls={aspectCls} cardRef={cardRef}
           slides={assets} slideCount={assets.length} activeIndex={active}
           onSelectSlide={(i) => { setActive(i); setSelectedElementId(null); }}
           onAddSlide={addSlide} onDuplicateSlide={() => duplicateSlide(active)}
@@ -2501,11 +2500,10 @@ const SlideField = ({ label, value, onChange, rows, testid }) => (
 
 // The property panel for a slide's freeform elements — shown instead of the
 // fixed heading/body fields once a slide has entered layout-edit mode.
-function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, onRemove, onDuplicate, onReorder, onAddStock, onBrowseStock, onApplyAll, onOpenLibrary, onSaveToLibrary, canApplyAll, brand, bgColor, onChangeBg, reelScene = false }) {
+function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, onRemove, onDuplicate, onReorder, onAddStock, onBrowseStock, onApplyAll, onOpenLibrary, onSaveToLibrary, canApplyAll, brand, bgColor, onChangeBg }) {
   useAllFontsLoaded();
   const fontCatalog = useFontCatalog();
   const el = elements.find((x) => x.id === selectedId);
-  const brandType = reelScene && brand && el?.type === "text";
   const fontOptions = brand?.fonts?.display && !fontCatalog.some((f) => f.key === brand.fonts.display)
     ? [{ key: brand.fonts.display, label: `${brand.fonts.display} (brand)` }, ...fontCatalog] : fontCatalog;
   const fontGroups = groupFontsByCategory(fontOptions);
@@ -2554,7 +2552,6 @@ function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, 
             <>
               <textarea value={el.text || ""} onChange={(e) => onPatch(el.id, { text: e.target.value })} rows={2}
                 data-testid="composer-element-text" className="w-full resize-none rounded-lg border border-white/10 bg-[#0A0A0A] px-2.5 py-2 text-sm text-white outline-none focus:border-lime" />
-              {brandType ? <SceneTypographyControl brand={brand} element={el} onChange={(patch) => onPatch(el.id, patch)} testid="composer-scene-typography" /> : <>
               <div className="mt-2 grid grid-cols-2 gap-2">
                 <select value={el.fontFamily || "Inter"} onChange={(e) => onPatch(el.id, { fontFamily: e.target.value })} data-testid="composer-element-font"
                   className="rounded-lg border border-white/10 bg-[#0A0A0A] px-2 py-1.5 text-xs text-white outline-none [color-scheme:dark]">
@@ -2570,13 +2567,10 @@ function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, 
                 </select>
               </div>
               <FontNotice fontKey={el.fontFamily || "Inter"} testid="composer-font-notice" />
-              </>}
               <div className="mt-2 flex flex-wrap items-center gap-2">
-                {!brandType && <>
                 <label className="font-mono text-[10px] text-zinc-500">Size</label>
                 <input type="number" min={8} max={120} value={el.fontSize || 16} onChange={(e) => onPatch(el.id, { fontSize: Number(e.target.value) })}
                   data-testid="composer-element-size" className="w-16 rounded-lg border border-white/10 bg-[#0A0A0A] px-2 py-1 text-xs text-white outline-none" />
-                </>}
                 <input type="color" value={el.color || "#FFFFFF"} onChange={(e) => onPatch(el.id, { color: e.target.value })}
                   data-testid="composer-element-color" className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent p-0" />
                 <div className="flex gap-1">
@@ -2592,7 +2586,6 @@ function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, 
           )}
           {(el.type === "image" || el.type === "video") && (
             <>
-              {reelScene && isBrandLogoElement(el, brand) && <p className="mb-2 text-xs text-zinc-400">This logo is managed by Brand Kit and rendered once at its preferred position on every scene.</p>}
               <div className="flex gap-1.5">
                 <input value={el.url || ""} onChange={(e) => onPatch(el.id, { url: e.target.value })}
                   placeholder={el.type === "video" ? "Video URL" : "Image URL"}
