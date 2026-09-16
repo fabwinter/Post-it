@@ -1408,6 +1408,104 @@ check("...and still keeps the logo", [e.get("url") for e in _images(all_new, rol
 r = c.delete(f"/api/templates/custom/{media_template_id}")
 check("cleanup: the media template can be deleted", r.status_code == 200, r.text)
 
+# --- a design's handle, hashtags and contact line are not copy ---
+# Reported: "@connected.mothering is being replaced with a heading". Saving a
+# slide as a design turns one or two of its text boxes into copy slots,
+# refilled on every post built from it. With nothing else to go on that pick
+# is by Y position — and in a real social layout the handle is exactly what
+# sits at the top, so the handle became the headline slot and every build
+# overwrote it.
+mark_slides = [
+    {"template": "cover", "heading": "The real headline", "title": "The real headline", "body": "", "bg_color": "#101010",
+     "elements": [
+         _text_el("k1", "@connected.mothering", "Poppins", 13, 500, "#cccccc", 4),
+         _text_el("k2", "The real headline", "Poppins", 32, 800, "#ffffff", 30),
+         _text_el("k3", "The supporting line underneath it", "Poppins", 15, 400, "#cccccc", 55),
+         _text_el("k4", "#momlife #gentleparenting", "Poppins", 11, 400, "#888888", 88),
+         _text_el("k5", "hello@connectedmothering.com", "Poppins", 11, 400, "#888888", 93),
+     ]},
+    {"template": "slide", "heading": "Point one", "body": "Detail one", "bg_color": "#101010",
+     "elements": [_text_el("k6", "Point one", "Poppins", 24, 800, "#ffffff", 20)]},
+]
+CHAT_REPLY["value"] = "not valid json"
+r = c.post("/api/templates/from-composer", json={"name": "Handle design", "format": "carousel", "theme": "midnight", "slides": mark_slides})
+check("a design with a handle, hashtags and an email saves ok", r.status_code == 200, r.text)
+mark_tpl = r.json()
+mark_template_id = mark_tpl["id"]
+mark_layout = mark_tpl["layouts"]["cover"]
+
+def _el_text(layout, text):
+    return next((e for e in layout if e.get("text") == text), None)
+
+def _roles(layout):
+    return {e.get("text", "<dynamic>"): e.get("role") for e in layout if e.get("type") == "text"}
+
+check("the handle keeps its literal text instead of becoming a copy slot",
+      _el_text(mark_layout, "@connected.mothering") is not None, _roles(mark_layout))
+check("...and carries no copy role, so nothing downstream writes to it",
+      (_el_text(mark_layout, "@connected.mothering") or {}).get("role") is None, _roles(mark_layout))
+check("the hashtag row is left alone too", _el_text(mark_layout, "#momlife #gentleparenting") is not None, _roles(mark_layout))
+check("...as is the contact line", _el_text(mark_layout, "hello@connectedmothering.com") is not None, _roles(mark_layout))
+# The point isn't only that the handle survives — the real headline has to be
+# the slot instead, or the design just has no headline any more.
+title_els = [e for e in mark_layout if e.get("role") == "title"]
+body_els = [e for e in mark_layout if e.get("role") == "body"]
+check("the actual headline becomes the title slot, not the handle above it",
+      len(title_els) == 1 and "text" not in title_els[0], title_els)
+check("...and the line under it becomes the body slot",
+      len(body_els) == 1 and "text" not in body_els[0], body_els)
+
+CHAT_REPLY["value"] = json.dumps({
+    "format": "carousel", "title": "T", "caption": "cap", "hashtags": [],
+    "visual": {"style": "carousel", "title": "Generated cover headline",
+               "slides": [{"heading": "h1", "body": "b1"}, {"heading": "h2", "body": "b2"}]},
+})
+r = c.post("/api/ai/build-post", json={"topic": "x", "platform": "instagram", "format": "carousel",
+                                        "custom_template_id": mark_template_id, "use_brand": False})
+built_cover = r.json()["assets"][0]["spec"]
+built_text = [e.get("text") for e in (built_cover.get("elements") or []) if e.get("type") == "text"]
+check("a post built from that design still says the handle, not a generated heading",
+      "@connected.mothering" in built_text, built_text)
+check("...and the hashtags and email survive the build too",
+      "#momlife #gentleparenting" in built_text and "hello@connectedmothering.com" in built_text, built_text)
+check("...while the generated headline lands in the headline's own box",
+      "Generated cover headline" in built_text, built_text)
+
+# The explicit tag, for what reading the text can't know. `fixed` wins both
+# ways: it pins an ordinary-looking line, and releases a marky-looking one.
+tagged_slides = [
+    {"template": "cover", "heading": "Cover", "title": "Cover", "body": "", "bg_color": "#101010",
+     "elements": [
+         {**_text_el("f1", "Book a discovery call", "Poppins", 14, 600, "#cccccc", 6), "fixed": True},
+         _text_el("f2", "Cover", "Poppins", 32, 800, "#ffffff", 30),
+         _text_el("f3", "Supporting line", "Poppins", 15, 400, "#cccccc", 55),
+     ]},
+]
+CHAT_REPLY["value"] = "not valid json"
+r = c.post("/api/templates/from-composer", json={"name": "Tagged design", "format": "carousel", "theme": "midnight", "slides": tagged_slides})
+tagged_layout = r.json()["layouts"]["cover"]
+tagged_id = r.json()["id"]
+check("a line tagged Keep as is is never made a copy slot, even though it reads as copy",
+      (_el_text(tagged_layout, "Book a discovery call") or {}).get("role") is None, _roles(tagged_layout))
+check("...and the next line down becomes the headline slot instead",
+      len([e for e in tagged_layout if e.get("role") == "title"]) == 1, _roles(tagged_layout))
+check("...with the tag itself carried into the design, so it still holds on re-save",
+      (_el_text(tagged_layout, "Book a discovery call") or {}).get("fixed") is True, tagged_layout)
+
+released_slides = [
+    {"template": "cover", "heading": "Cover", "title": "Cover", "body": "", "bg_color": "#101010",
+     "elements": [{**_text_el("r1", "@thehandle", "Poppins", 30, 800, "#ffffff", 20), "fixed": False}]},
+]
+r = c.post("/api/templates/from-composer", json={"name": "Released design", "format": "carousel", "theme": "midnight", "slides": released_slides})
+released_layout = r.json()["layouts"]["cover"]
+released_id = r.json()["id"]
+check("tagging a handle-looking box Refill releases it, so the auto-read can be overridden either way",
+      len([e for e in released_layout if e.get("role") == "title"]) == 1, released_layout)
+
+for _id in (mark_template_id, tagged_id, released_id):
+    check("cleanup: the design can be deleted", c.delete(f"/api/templates/custom/{_id}").status_code == 200)
+
+
 
 r = c.delete(f"/api/templates/custom/{composer_template_id}")
 check("cleanup: the editable template can be deleted", r.status_code == 200, r.text)

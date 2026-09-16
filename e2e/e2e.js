@@ -1647,9 +1647,99 @@ async function confirmReel(page) {
   const reopenedAgain = await page.getByTestId('composer-element-text').inputValue();
   ok('...and stays put across a second no-op save, not just the first', reopenedAgain.includes('EDITED HEADLINE'), reopenedAgain);
 
-  // ---- elements can bleed past the slide's own edges ----
   await tap(page, 'composer-save-template-changes');
   await page.waitForTimeout(1500);
+
+  // ---- a design's handle is not copy, and doesn't get overwritten ----
+  // Reported: "@connected.mothering is being replaced with a heading".
+  // Saving a slide as a design turns one or two of its text boxes into copy
+  // slots refilled on every post built from it, and with nothing else to go
+  // on that pick is by position — which in a real social layout is exactly
+  // where the handle sits. Whole round trip here, through the real panel:
+  // type a handle into a box, save the design, build a fresh post from it,
+  // and read the handle back off the rendered card.
+  //
+  // Neutral stop first: the block above ends on /composer via a client-side
+  // navigate, so page.goto to that same URL can resolve as a no-reload
+  // transition and leak its editingTemplateId in — which turns "Save as
+  // design" into "Save changes" and breaks this block on a stale premise.
+  // (Same hazard, and the same fix, as the note further up this file.)
+  await page.goto(B + '/calendar', { waitUntil: 'domcontentloaded' });
+  await page.goto(B + '/composer', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(500);
+  page.once('dialog', (d) => d.accept('E2E Handle Design'));
+  await page.getByTestId('composer-brief').fill('a carousel about gentle parenting routines');
+  await tap(page, 'composer-autobuild');
+  await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
+  await page.waitForTimeout(1000);
+  if (await page.getByTestId('composer-slide-edit-layout').count()) await tap(page, 'composer-slide-edit-layout');
+  await page.getByTestId('composer-element-panel').waitFor({ timeout: 8000 });
+  await page.waitForTimeout(300);
+  ok('a text element exists to turn into the handle', await selectTextElement());
+  const isPicked = async (testid) =>
+    (await page.getByTestId(testid).getAttribute('class')).includes('border-lime');
+  ok('an ordinary line reads as copy, so a design still has a headline to refill',
+     await isPicked('composer-element-text-copy'));
+  // The seeded cover's own headline box is the topmost text on the slide —
+  // which is exactly the box the position guess would hand the copy slot to.
+  // Turning THAT one into the handle is what reproduces the report: anything
+  // lower down would pass whether or not the fix works.
+  await page.getByTestId('composer-element-text').fill('@connected.mothering');
+  await page.waitForTimeout(300);
+  // The panel says so BEFORE anything is saved — that's the point of showing
+  // it rather than letting the first rebuild be where you find out.
+  ok('typing a handle flips that box to Keep as is on its own, with no tagging',
+     await isPicked('composer-element-text-fixed'));
+  // A real design has a headline under the handle. Without one there'd be no
+  // copy slot left at all, and "the handle survived" would be true of a
+  // design that simply does nothing.
+  await tap(page, 'composer-add-element-text');
+  await page.waitForTimeout(300);
+  await page.getByTestId('composer-element-text').fill('The headline this design refills');
+  await page.waitForTimeout(300);
+  ok('...while an ordinary headline under it still reads as copy',
+     await isPicked('composer-element-text-copy'));
+  // Everything the design's cover says right now. What the rebuild produces
+  // has to differ from this, or "the handle survived" could just mean the
+  // design refilled nothing at all.
+  //
+  // Read the editing canvas, not composer-visuals (which wraps the slide
+  // strip, so every slide's thumbnail text is in it and no per-slide claim
+  // can be made from it) and not the slide-element-* boxes (those are the
+  // invisible drag hit-boxes — the words are painted by the VisualCard
+  // underneath them, so their own innerText is empty).
+  const cardLines = async () => (await page.getByTestId('slide-editor-canvas').innerText())
+    .split('\n').map((t) => t.trim()).filter(Boolean);
+  const designCoverLines = await cardLines();
+  ok('the design cover carries the handle plus other copy to refill',
+     designCoverLines.includes('@connected.mothering') && designCoverLines.length > 1,
+     JSON.stringify(designCoverLines));
+  await tap(page, 'composer-save-template');
+  await page.waitForTimeout(2000);
+
+  await page.goto(B + '/composer', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(400);
+  const handleOptions = await page.getByTestId('composer-custom-template-select').locator('option').allTextContents();
+  const handleIdx = handleOptions.findIndex((t) => t.includes('E2E Handle Design'));
+  ok('the handle design is offered to build a fresh post from', handleIdx > 0, JSON.stringify(handleOptions));
+  await page.getByTestId('composer-custom-template-select').selectOption({ index: handleIdx });
+  await page.getByTestId('composer-brief').fill('a different carousel about toddler sleep');
+  await tap(page, 'composer-autobuild');
+  await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
+  await page.waitForTimeout(1200);
+  const builtCoverLines = await cardLines();
+  ok("a post built from that design still says the handle, not a generated heading",
+     builtCoverLines.includes('@connected.mothering'), JSON.stringify(builtCoverLines));
+  // The other half: the handle could be "safe" simply because the design
+  // lost its copy slot altogether, which would make it useless. Fresh copy
+  // — a line that wasn't in the design — has to land on the same card.
+  ok('...on a design that does still refill its copy, so it is not just inert',
+     builtCoverLines.some((t) => t !== '@connected.mothering' && !designCoverLines.includes(t)),
+     JSON.stringify({ design: designCoverLines, built: builtCoverLines }));
+
+  await page.goto(B + '/calendar', { waitUntil: 'domcontentloaded' });
+
+  // ---- elements can bleed past the slide's own edges ----
   await page.goto(B + '/composer', { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(500);
   await page.getByTestId('composer-brief').fill('another short carousel about focus habits');
