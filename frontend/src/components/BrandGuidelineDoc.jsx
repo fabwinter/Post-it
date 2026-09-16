@@ -1,5 +1,6 @@
-import { forwardRef } from "react";
-import { fontStack, useBrandFonts } from "@/lib/fonts";
+import { forwardRef, useEffect } from "react";
+import { fontStack, useBrandFonts, ensureFontLoaded } from "@/lib/fonts";
+import { COLOR_FIELDS, TYPE_ROLES, WEIGHTS, LOGO_POSITIONS, getTypeStyle, guidelineFonts } from "@/lib/brandGuideline";
 
 // A one-page, printable brand guideline — the "quick reference" sheet a
 // brand kit's own scattered fields (colors, fonts, voice, logo) don't
@@ -49,6 +50,10 @@ const Swatch = ({ label, hex, f }) => (
 
 export const BrandGuidelineDoc = forwardRef(function BrandGuidelineDoc({ brand, scale = 1 }, ref) {
   useBrandFonts(brand?.fonts);
+  const typeFonts = JSON.stringify(Object.values(guidelineFonts(brand)));
+  useEffect(() => {
+    JSON.parse(typeFonts).forEach(ensureFontLoaded);
+  }, [typeFonts]);
   const displayFont = fontStack(brand?.fonts?.display);
   const bodyFont = fontStack(brand?.fonts?.body);
   const g = brand?.guideline || {};
@@ -58,7 +63,7 @@ export const BrandGuidelineDoc = forwardRef(function BrandGuidelineDoc({ brand, 
   const hasName = brand?.name && brand.name !== "Default brand" && brand.name !== "New brand kit";
 
   return (
-    <div ref={ref} style={{ width: f(850), background: "#ffffff", color: "#141414", fontFamily: bodyFont, padding: f(44), boxSizing: "border-box" }}>
+    <div ref={ref} data-testid="brand-guideline-doc" style={{ width: f(850), background: "#ffffff", color: "#141414", fontFamily: bodyFont, padding: f(44), boxSizing: "border-box", overflowWrap: "anywhere" }}>
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "2px solid #141414", paddingBottom: f(14) }}>
         <div style={{ display: "flex", alignItems: "center", gap: f(14) }}>
@@ -79,8 +84,9 @@ export const BrandGuidelineDoc = forwardRef(function BrandGuidelineDoc({ brand, 
           {brand?.handle && <div>{brand.handle}</div>}
         </div>
       </div>
+      {g.naming_conventions && <div style={{ marginTop: f(10), fontSize: f(9.5), lineHeight: 1.5 }}><strong>Naming conventions:</strong> {g.naming_conventions}</div>}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: f(32) }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: f(32) }}>
         {/* Left column */}
         <div>
           <SectionLabel n="01" title="Logo Usage" f={f} />
@@ -92,6 +98,8 @@ export const BrandGuidelineDoc = forwardRef(function BrandGuidelineDoc({ brand, 
           <div style={{ fontSize: f(9.5), lineHeight: 1.6, color: "#4b5563", marginTop: f(8) }}>
             <div><strong>Clear space:</strong> {g.logo_clear_space || "—"}</div>
             <div><strong>Min size:</strong> {g.logo_min_size || "—"}</div>
+            <div data-testid="brand-guideline-doc-logo-position"><strong>Preferred position:</strong> {LOGO_POSITIONS.find(([value]) => value === g.logo_position)?.[1] || "Not specified"}</div>
+            {g.logo_placement_notes && <div><strong>Placement notes:</strong> {g.logo_placement_notes}</div>}
           </div>
           {(g.logo_dos?.length > 0 || g.logo_donts?.length > 0) && (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: f(10), marginTop: f(10), fontSize: f(9) }}>
@@ -106,24 +114,23 @@ export const BrandGuidelineDoc = forwardRef(function BrandGuidelineDoc({ brand, 
             </div>
           )}
 
-          <SectionLabel n="02" title="Color Palette" f={f} />
+          <SectionLabel n="02" title="Colour Palette" f={f} />
           <div style={{ fontSize: f(8.5), color: "#9ca3af", marginBottom: f(6) }}>Dark theme</div>
           <div style={{ display: "flex", gap: f(8), flexWrap: "wrap" }}>
-            <Swatch label="Background" hex={dark.bg} f={f} />
-            <Swatch label="Text" hex={dark.fg} f={f} />
-            <Swatch label="Accent" hex={dark.accent} f={f} />
-            <Swatch label="Muted" hex={dark.sub} f={f} />
+            {COLOR_FIELDS.map((c) => <Swatch key={c.key} label={c.label} hex={dark[c.key]} f={f} />)}
           </div>
           <div style={{ fontSize: f(8.5), color: "#9ca3af", margin: `${f(10)} 0 ${f(6)}` }}>Light theme</div>
           <div style={{ display: "flex", gap: f(8), flexWrap: "wrap" }}>
-            <Swatch label="Background" hex={light.bg} f={f} />
-            <Swatch label="Text" hex={light.fg} f={f} />
-            <Swatch label="Accent" hex={light.accent} f={f} />
-            <Swatch label="Muted" hex={light.sub} f={f} />
+            {COLOR_FIELDS.map((c) => <Swatch key={c.key} label={c.label} hex={light[c.key]} f={f} />)}
+          </div>
+          <div style={{ marginTop: f(8), fontSize: f(9), lineHeight: 1.5, color: "#4b5563" }}>
+            {COLOR_FIELDS.map((c) => <div key={c.key}><strong>{c.label}:</strong> {c.usage}</div>)}
+            {g.color_usage && <div><strong>Colour usage:</strong> {g.color_usage}</div>}
           </div>
 
           <SectionLabel n="04" title="Imagery & Icons" f={f} />
           <div style={{ fontSize: f(9.5), lineHeight: 1.6, color: "#4b5563" }}>
+            {brand?.style && <div><strong>Visual style:</strong> {brand.style}</div>}
             <div><strong>Mood:</strong> {g.imagery_mood || "—"}</div>
             <div><strong>Color:</strong> {g.imagery_color || "—"}</div>
             <div><strong>Icons:</strong> {g.icon_style || "—"}</div>
@@ -133,16 +140,18 @@ export const BrandGuidelineDoc = forwardRef(function BrandGuidelineDoc({ brand, 
         {/* Right column */}
         <div>
           <SectionLabel n="03" title="Typography" f={f} />
-          <div data-testid="brand-guideline-doc-h1" style={{ fontFamily: displayFont, fontWeight: 800, fontSize: f(22), lineHeight: 1.2 }}>Aa</div>
-          <div style={{ fontSize: f(8), color: "#9ca3af" }}>Header / H1 — {brand?.fonts?.display || "Inter"} Bold</div>
-          <div style={{ fontFamily: displayFont, fontWeight: 700, fontSize: f(16), marginTop: f(8), lineHeight: 1.2 }}>Aa</div>
-          <div style={{ fontSize: f(8), color: "#9ca3af" }}>Subhead / H2 — {brand?.fonts?.display || "Inter"} Bold</div>
-          <div style={{ fontFamily: bodyFont, fontWeight: 600, fontSize: f(12.5), marginTop: f(8), lineHeight: 1.2 }}>Aa</div>
-          <div style={{ fontSize: f(8), color: "#9ca3af" }}>Subhead / H3 — {brand?.fonts?.body || "Inter"} SemiBold</div>
-          <div style={{ fontFamily: bodyFont, fontWeight: 400, fontSize: f(10), marginTop: f(8), lineHeight: 1.3 }}>Aa Bb Cc</div>
-          <div style={{ fontSize: f(8), color: "#9ca3af" }}>Body text — {brand?.fonts?.body || "Inter"} Regular</div>
-          <div style={{ fontFamily: bodyFont, fontWeight: 400, fontSize: f(8.5), marginTop: f(8), color: "#6b7280" }}>AA BB</div>
-          <div style={{ fontSize: f(8), color: "#9ca3af" }}>Caption</div>
+          <div style={{ fontSize: f(8), color: "#6b7280", marginBottom: f(8) }}>CSS pixels at 850px reference width; preview scales uniformly.</div>
+          {TYPE_ROLES.map((role) => {
+            const type = getTypeStyle(brand, role);
+            return <div key={role.key} style={{ marginTop: f(8) }}>
+              <div data-testid={`brand-guideline-doc-${role.key}`} style={{ fontFamily: fontStack(type.font), fontWeight: type.weight, fontSize: f(type.size), lineHeight: type.line_height }}>Aa Bb</div>
+              <div style={{ fontSize: f(8), color: "#4b5563", lineHeight: 1.5 }}>
+                {role.label} · {type.font} · {WEIGHTS[type.weight]} ({type.weight})<br />
+                {type.size}px · Line height {type.line_height}
+                {type.usage && <div>{type.usage}</div>}
+              </div>
+            </div>;
+          })}
 
           <SectionLabel n="05" title="Voice & Messaging" f={f} />
           {(g.voice_attributes?.length > 0) && (
