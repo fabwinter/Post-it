@@ -3323,6 +3323,7 @@ DEFAULT_GUIDELINE = {
     "doc_owner": "", "version": "v1.0",
     "naming_conventions": "", "logo_position": "", "logo_placement_notes": "",
     "color_usage": "", "typography": {},
+    "logo_width": 120, "logo_inset": 24,
 }
 def _normalize_guideline(raw) -> dict:
     """Merges a saved (possibly partial or legacy) guideline onto

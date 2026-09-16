@@ -1,6 +1,6 @@
 import { forwardRef, useEffect } from "react";
 import { fontStack, useBrandFonts, ensureFontLoaded } from "@/lib/fonts";
-import { COLOR_FIELDS, TYPE_ROLES, WEIGHTS, LOGO_POSITIONS, getTypeStyle, guidelineFonts } from "@/lib/brandGuideline";
+import { COLOR_FIELDS, TYPE_ROLES, WEIGHTS, LOGO_POSITIONS, getTypeStyle, guidelineFonts, sceneLogoSettings } from "@/lib/brandGuideline";
 
 // A one-page, printable brand guideline — the "quick reference" sheet a
 // brand kit's own scattered fields (colors, fonts, voice, logo) don't
@@ -61,6 +61,7 @@ export const BrandGuidelineDoc = forwardRef(function BrandGuidelineDoc({ brand, 
   const light = brand?.colors?.light || {};
   const f = (n) => `${n * scale}px`;
   const hasName = brand?.name && brand.name !== "Default brand" && brand.name !== "New brand kit";
+  const logoLayout = sceneLogoSettings(brand);
 
   return (
     <div ref={ref} data-testid="brand-guideline-doc" style={{ width: f(850), background: "#ffffff", color: "#141414", fontFamily: bodyFont, padding: f(44), boxSizing: "border-box", overflowWrap: "anywhere" }}>
@@ -98,7 +99,8 @@ export const BrandGuidelineDoc = forwardRef(function BrandGuidelineDoc({ brand, 
           <div style={{ fontSize: f(9.5), lineHeight: 1.6, color: "#4b5563", marginTop: f(8) }}>
             <div><strong>Clear space:</strong> {g.logo_clear_space || "—"}</div>
             <div><strong>Min size:</strong> {g.logo_min_size || "—"}</div>
-            <div data-testid="brand-guideline-doc-logo-position"><strong>Preferred position:</strong> {LOGO_POSITIONS.find(([value]) => value === g.logo_position)?.[1] || "Not specified"}</div>
+            <div data-testid="brand-guideline-doc-logo-position"><strong>Preferred position:</strong> {LOGO_POSITIONS.find(([value]) => value === g.logo_position)?.[1] || "Bottom right (default)"}</div>
+            <div><strong>Reel logo box:</strong> {logoLayout.width}px · <strong>Edge inset:</strong> {logoLayout.inset}px</div>
             {g.logo_placement_notes && <div><strong>Placement notes:</strong> {g.logo_placement_notes}</div>}
           </div>
           {(g.logo_dos?.length > 0 || g.logo_donts?.length > 0) && (
@@ -140,7 +142,7 @@ export const BrandGuidelineDoc = forwardRef(function BrandGuidelineDoc({ brand, 
         {/* Right column */}
         <div>
           <SectionLabel n="03" title="Typography" f={f} />
-          <div style={{ fontSize: f(8), color: "#6b7280", marginBottom: f(8) }}>CSS pixels at 850px reference width; preview scales uniformly.</div>
+          <div style={{ fontSize: f(8), color: "#6b7280", marginBottom: f(8) }}>CSS pixels at 850px reference width. Reels/shorts scale by video width: headlines H1, body Body, labels Caption.</div>
           {TYPE_ROLES.map((role) => {
             const type = getTypeStyle(brand, role);
             return <div key={role.key} style={{ marginTop: f(8) }}>
