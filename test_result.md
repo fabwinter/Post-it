@@ -101,3 +101,34 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+## user_problem_statement: "Fix single image visual generating a carousel." When a user requests a single-image post via the Composer, the AI build-post flow sometimes returned a multi-slide carousel instead of one visual.
+
+## backend:
+##   - task: "ai/build-post single format returns one visual, not a carousel"
+##     implemented: true
+##     working: "NA"
+##     file: "backend/server.py"
+##     stuck_count: 0
+##     priority: "high"
+##     needs_retesting: true
+##     status_history:
+##         -working: "NA"
+##         -agent: "main"
+##         -comment: "_plan_to_assets now only builds a cover+slide deck when format is a DECK_FORMAT (carousel/thread). For single/story it emits exactly one visual asset (quote/infographic/photo/cover), with a cover fallback when the model returns only slides. Model previously returned a slides[] array even for single, which was honored and produced a carousel."
+
+## metadata:
+##   created_by: "main_agent"
+##   version: "1.1"
+##   test_sequence: 1
+##   run_ui: false
+
+## test_plan:
+##   current_focus:
+##     - "ai/build-post single format returns one visual, not a carousel"
+##   stuck_tasks: []
+##   test_all: false
+##   test_priority: "high_first"
+
+## agent_communication:
+##     -agent: "main"
+##     -message: "Please test POST /api/ai/build-post. Verify: (1) format='single' on instagram returns assets with exactly ONE item (not a cover+multiple slides). (2) format='story' returns one asset. (3) format='carousel' still returns a cover + multiple slide assets. (4) The single asset has a valid spec (template cover/quote/infographic). Uses PoYo/LLM key already in backend/.env."

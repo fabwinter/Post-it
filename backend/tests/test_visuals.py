@@ -3,7 +3,7 @@ import os
 import pytest
 import requests
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://content-hub-1905.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://single-to-carousel.preview.emergentagent.com").rstrip("/")
 VISUAL = f"{BASE_URL}/api/ai/visual"
 TIMEOUT = 90
 
