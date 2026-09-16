@@ -2,7 +2,9 @@ import { forwardRef, useEffect } from "react";
 import { Twitter, BadgeCheck, Loader2 } from "lucide-react";
 import { activeColors } from "@/lib/useBrand";
 import { fontStack, useBrandFonts, ensureFontLoaded } from "@/lib/fonts";
-import { elementBoxStyle } from "@/lib/slideElements";
+import { elementBoxStyle, CARD_REF_WIDTH } from "@/lib/slideElements";
+import { sceneTypography, guidelineFonts, isBrandLogoElement } from "@/lib/brandGuideline";
+import { ReelBrandLogo } from "@/components/ReelBrand";
 import { normalizeClip, filterCss } from "@/lib/videoClip";
 import { ICON_MAP } from "@/lib/elementLibrary";
 
@@ -109,7 +111,7 @@ function CaptionBody({ text, activeWordIndex, style, accent }) {
 }
 
 export const VisualCard = forwardRef(function VisualCard(
-  { spec, brand, loading = false, scale = 1, className = "", videoRef, videoControlled = false, activeWordIndex }, ref
+  { spec, brand, loading = false, scale = 1, className = "", videoRef, videoControlled = false, activeWordIndex, reelScene = false }, ref
 ) {
   const theme = themeFor(spec?.theme, brand);
   const base = { background: theme.bg, color: theme.fg };
@@ -156,6 +158,15 @@ export const VisualCard = forwardRef(function VisualCard(
   }, [elementFonts]);
   const displayFont = theme.fonts?.display ? fontStack(theme.fonts.display) : undefined;
   const bodyFont = theme.fonts?.body ? fontStack(theme.fonts.body) : undefined;
+  const sceneBrand = reelScene && brand;
+  const sceneFonts = JSON.stringify(sceneBrand ? Object.values(guidelineFonts(brand)) : []);
+  useEffect(() => { JSON.parse(sceneFonts).forEach(ensureFontLoaded); }, [sceneFonts]);
+  const sceneStyle = (element) => {
+    if (!sceneBrand) return {};
+    const type = sceneTypography(brand, element, CARD_REF_WIDTH * scale);
+    return { fontFamily: fontStack(type.font), fontSize: `${type.size}px`, fontWeight: type.weight, lineHeight: type.line_height };
+  };
+  const sceneLogo = sceneBrand ? <ReelBrandLogo brand={brand} width={CARD_REF_WIDTH * scale} /> : null;
 
   if (loading) {
     return (
@@ -181,9 +192,10 @@ export const VisualCard = forwardRef(function VisualCard(
   if (spec.elements) {
     const bg = spec.bg_color ? { background: spec.bg_color, color: theme.fg } : base;
     return (
-      <div ref={ref} className={`relative h-full w-full overflow-hidden ${className}`} style={bg}>
+      <div ref={ref} data-reel-scene={reelScene || undefined} className={`relative h-full w-full overflow-hidden ${className}`} style={bg}>
         {backdrop}
         {spec.elements.map((el) => {
+          if (sceneBrand && isBrandLogoElement(el, brand)) return null;
           const box = elementBoxStyle(el);
           // Starter templates reference the palette and the brand's fonts by
           // role rather than by value, so they re-theme themselves; anything
@@ -198,10 +210,12 @@ export const VisualCard = forwardRef(function VisualCard(
               // away the tail of anything even slightly larger — a swapped-in
               // font measuring wider, or fresh copy longer than the original.
               // The card itself still clips, so nothing escapes the slide.
-              <div key={el.id} style={{ ...box, fontFamily: fontStack(family), fontSize: f(el.fontSize || 16),
+              <div key={el.id} data-scene-text={sceneBrand ? (el.role || "body") : undefined} style={{ ...box, fontFamily: fontStack(family), fontSize: f(el.fontSize || 16),
                 fontWeight: el.fontWeight || 600, color: roleColor, textAlign: el.align || "left",
-                lineHeight: el.lineHeight || 1.2, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                {el.text}
+                lineHeight: el.lineHeight || 1.2, whiteSpace: "pre-wrap", wordBreak: "break-word", ...sceneStyle(el) }}>
+                {reelScene && el.role === "body"
+                  ? <CaptionBody text={el.text} activeWordIndex={activeWordIndex} accent={theme.accent} style={{ margin: 0, font: "inherit" }} />
+                  : el.text}
               </div>
             );
           }
@@ -227,6 +241,7 @@ export const VisualCard = forwardRef(function VisualCard(
           }
           return <div key={el.id} style={{ ...box, background: el.color || theme[el.colorRole] || theme.accent, borderRadius: el.shape === "ellipse" ? "50%" : `${f(4)}` }} />;
         })}
+        {sceneLogo}
       </div>
     );
   }
@@ -236,52 +251,55 @@ export const VisualCard = forwardRef(function VisualCard(
 
   if (t === "quote") {
     return (
-      <div ref={ref} className={`relative flex h-full w-full flex-col justify-between ${className}`} style={{ ...base, ...pad }}>
+      <div ref={ref} data-reel-scene={reelScene || undefined} className={`relative flex h-full w-full flex-col justify-between ${className}`} style={{ ...base, ...pad }}>
         <div className="absolute inset-0" style={patt} />
         <div className="relative font-display" style={{ fontSize: f(64), lineHeight: 1, color: theme.accent }}>&ldquo;</div>
-        <p className="relative font-display" style={{ fontSize: f(28), fontWeight: 700, lineHeight: 1.25, fontFamily: displayFont }}>{spec.quote}</p>
+        <p className="relative font-display" style={{ fontSize: f(28), fontWeight: 700, lineHeight: 1.25, fontFamily: displayFont, ...sceneStyle({ role: "heading" }) }}>{spec.quote}</p>
         <div className="relative flex items-center justify-between">
-          <span style={{ color: theme.sub, fontSize: f(14), fontWeight: 600, fontFamily: bodyFont }}>— {spec.author}</span>
-          <span style={{ color: theme.accent, fontSize: f(11), fontFamily: "JetBrains Mono, monospace", letterSpacing: f(2) }}>{wordmark(brand)}</span>
+          <span style={{ color: theme.sub, fontSize: f(14), fontWeight: 600, fontFamily: bodyFont, ...sceneStyle({ role: "caption" }) }}>— {spec.author}</span>
+          {!sceneLogo && <span style={{ color: theme.accent, fontSize: f(11), fontFamily: "JetBrains Mono, monospace", letterSpacing: f(2) }}>{wordmark(brand)}</span>}
         </div>
+        {sceneLogo}
       </div>
     );
   }
 
   if (t === "tweet") {
     return (
-      <div ref={ref} className={`flex h-full w-full flex-col justify-center ${className}`} style={{ ...base, ...pad }}>
+      <div ref={ref} data-reel-scene={reelScene || undefined} className={`relative flex h-full w-full flex-col justify-center ${className}`} style={{ ...base, ...pad }}>
         <div className="flex items-center" style={{ gap: f(12) }}>
           <div style={{ height: f(52), width: f(52), borderRadius: 999, background: `linear-gradient(135deg,${theme.accent},#C4B5FD)` }} />
           <div>
-            <div className="flex items-center" style={{ fontSize: f(17), fontWeight: 700, gap: f(4) }}>
+            <div className="flex items-center" style={{ fontSize: f(17), fontWeight: 700, gap: f(4), ...sceneStyle({ role: "h2" }) }}>
               {spec.name}<BadgeCheck size={16 * scale} style={{ color: "#1DA1F2" }} />
             </div>
-            <div style={{ color: theme.sub, fontSize: f(14) }}>{spec.handle}</div>
+            <div style={{ color: theme.sub, fontSize: f(14), ...sceneStyle({ role: "caption" }) }}>{spec.handle}</div>
           </div>
           <Twitter size={22 * scale} className="ml-auto" style={{ color: theme.sub }} />
         </div>
-        <p className="font-display" style={{ marginTop: f(20), fontSize: f(25), lineHeight: 1.35, fontWeight: 500, fontFamily: bodyFont }}>{spec.text}</p>
-        <div style={{ marginTop: f(24), color: theme.sub, fontSize: f(13) }}>9:41 AM · {wordmark(brand)}</div>
+        <p className="font-display" style={{ marginTop: f(20), fontSize: f(25), lineHeight: 1.35, fontWeight: 500, fontFamily: bodyFont, ...sceneStyle({ role: "body" }) }}>{spec.text}</p>
+        <div style={{ marginTop: f(24), color: theme.sub, fontSize: f(13), ...sceneStyle({ role: "caption" }) }}>9:41 AM · {wordmark(brand)}</div>
+        {sceneLogo}
       </div>
     );
   }
 
   if (t === "infographic") {
     return (
-      <div ref={ref} className={`relative flex h-full w-full flex-col ${className}`} style={{ ...base, ...pad }}>
+      <div ref={ref} data-reel-scene={reelScene || undefined} className={`relative flex h-full w-full flex-col ${className}`} style={{ ...base, ...pad }}>
         <div className="absolute inset-0" style={patt} />
-        <div className="relative font-mono" style={{ color: theme.accent, fontSize: f(11), letterSpacing: f(3) }}>INFOGRAPHIC</div>
-        <h2 className="relative font-display" style={{ marginTop: f(12), fontSize: f(34), fontWeight: 800, lineHeight: 1.05, fontFamily: displayFont }}>{spec.title}</h2>
+        <div className="relative font-mono" style={{ color: theme.accent, fontSize: f(11), letterSpacing: f(3), ...sceneStyle({ role: "caption" }) }}>INFOGRAPHIC</div>
+        <h2 className="relative font-display" style={{ marginTop: f(12), fontSize: f(34), fontWeight: 800, lineHeight: 1.05, fontFamily: displayFont, ...sceneStyle({ role: "heading" }) }}>{spec.title}</h2>
         <div className="relative flex flex-1 flex-col justify-center" style={{ marginTop: f(24), gap: f(12) }}>
           {(spec.points || []).map((p, i) => (
             <div key={i} className="flex items-start" style={{ gap: f(12) }}>
               <span className="flex-shrink-0 font-display" style={{ background: theme.accent, color: "#0A0A0A", fontWeight: 800, width: f(30), height: f(30), borderRadius: f(8), display: "flex", alignItems: "center", justifyContent: "center", fontSize: f(15) }}>{i + 1}</span>
-              <span style={{ fontSize: f(17), lineHeight: 1.3, fontWeight: 500, fontFamily: bodyFont }}>{p}</span>
+              <span style={{ fontSize: f(17), lineHeight: 1.3, fontWeight: 500, fontFamily: bodyFont, ...sceneStyle({ role: "body" }) }}>{p}</span>
             </div>
           ))}
         </div>
-        <div className="relative font-mono" style={{ color: theme.sub, fontSize: f(11), letterSpacing: f(2) }}>{wordmark(brand)}</div>
+        <div className="relative font-mono" style={{ color: theme.sub, fontSize: f(11), letterSpacing: f(2), ...sceneStyle({ role: "caption" }) }}>{wordmark(brand)}</div>
+        {sceneLogo}
       </div>
     );
   }
@@ -295,35 +313,36 @@ export const VisualCard = forwardRef(function VisualCard(
   const hasCover = spec.coverCounts !== false;
   const dot = hasCover ? (spec.index || 0) : (spec.index || 1) - 1;
   return (
-    <div ref={ref} className={`relative flex h-full w-full flex-col justify-between ${className}`} style={{ ...base, ...pad }}>
+    <div ref={ref} data-reel-scene={reelScene || undefined} className={`relative flex h-full w-full flex-col justify-between overflow-hidden ${className}`} style={{ ...base, ...pad }}>
       {backdrop}
       <div className="absolute inset-0" style={patt} />
-      <div className="relative flex items-center justify-between font-mono" style={{ color: theme.accent, fontSize: f(11), letterSpacing: f(2) }}>
+      <div className="relative flex items-center justify-between font-mono" style={{ color: theme.accent, fontSize: f(11), letterSpacing: f(2), ...sceneStyle({ role: "caption" }) }}>
         <span>{isCover ? "SWIPE →" : total > 1 ? `${spec.index}/${hasCover ? total - 1 : total}` : ""}</span>
         <span style={{ color: theme.sub }}>{wordmark(brand)}</span>
       </div>
       <div className="relative flex flex-1 flex-col justify-center">
         {isCover ? (
-          <h2 className="font-display" style={{ fontSize: f(40), fontWeight: 800, lineHeight: 1.05, fontFamily: displayFont }}>{spec.title}</h2>
+          <h2 data-scene-text={sceneBrand ? "title" : undefined} className="font-display" style={{ fontSize: f(40), fontWeight: 800, lineHeight: 1.05, fontFamily: displayFont, ...sceneStyle({ role: "title" }) }}>{spec.title}</h2>
         ) : (
           <>
-            <h3 className="font-display" style={{ fontSize: f(30), fontWeight: 800, lineHeight: 1.1, fontFamily: displayFont }}>{spec.heading}</h3>
+            <h3 data-scene-text={sceneBrand ? "heading" : undefined} className="font-display" style={{ fontSize: f(30), fontWeight: 800, lineHeight: 1.1, fontFamily: displayFont, ...sceneStyle({ role: "heading" }) }}>{spec.heading}</h3>
             {spec.body && (
               <div data-testid={activeWordIndex != null && activeWordIndex >= 0 ? "visual-card-caption-active" : undefined}>
                 <CaptionBody text={spec.body} activeWordIndex={activeWordIndex} accent={theme.accent}
-                  style={{ marginTop: f(16), fontSize: f(18), lineHeight: 1.4, color: theme.sub, fontFamily: bodyFont }} />
+                  style={{ marginTop: f(16), fontSize: f(18), lineHeight: 1.4, color: theme.sub, fontFamily: bodyFont, ...sceneStyle({ role: "body" }) }} />
               </div>
             )}
           </>
         )}
       </div>
       {total > 1 && (
-        <div className="relative flex" style={{ gap: f(6) }}>
+        <div className="relative flex" style={{ gap: f(6), ...(sceneLogo ? { maxWidth: "65%", alignSelf: "center", width: "100%" } : {}) }}>
           {Array.from({ length: total }).map((_, i) => (
             <span key={i} style={{ height: f(4), flex: 1, borderRadius: f(4), background: i === dot ? theme.accent : "rgba(150,150,150,0.3)" }} />
           ))}
         </div>
       )}
+      {sceneLogo}
     </div>
   );
 });

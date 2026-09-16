@@ -9,6 +9,7 @@ import { SlideEditor } from "@/components/SlideEditor";
 import { clampPos } from "@/lib/slideElements";
 import { groupFontsByCategory, fontStack, useAllFontsLoaded, useFontCatalog } from "@/lib/fonts";
 import { FontNotice } from "@/components/CustomFonts";
+import { SceneTypographyControl } from "@/components/ReelBrand";
 import { Button } from "@/components/ui/button";
 
 // The card is sized to the biggest it can be inside the stage while keeping
@@ -106,7 +107,7 @@ export function CanvasEditor({
   spec, brand, aspect, aspectCls, cardRef, slideCount, activeIndex, onSelectSlide, onAddSlide, onDuplicateSlide,
   selectedId, onSelect, onChangeElement, onAdd, onRemove, onDuplicate, onReorder,
   onAddStock, onBrowseStock, onApplyAll, onOpenLibrary, onSaveToLibrary, onChangeBg, bgColor,
-  onEnterLayoutEdit, onClose, onUndo, onRedo, canUndo, canRedo, slides,
+  onEnterLayoutEdit, onClose, onUndo, onRedo, canUndo, canRedo, slides, reelScene = false,
 }) {
   useAllFontsLoaded();
   const stageRef = useRef(null);
@@ -203,12 +204,12 @@ export function CanvasEditor({
         {card.w > 0 && (
           <div style={{ width: card.w }} data-testid="canvas-card-box">
             {elements ? (
-              <SlideEditor spec={spec} brand={brand} aspectCls={aspectCls} cardRef={cardRef}
+              <SlideEditor spec={spec} brand={brand} aspectCls={aspectCls} cardRef={cardRef} reelScene={reelScene}
                 selectedId={selectedId} onSelect={onSelect} onChangeElement={onChangeElement} />
             ) : (
               <div className={`${aspectCls} relative w-full overflow-hidden rounded-xl`}>
                 <div ref={cardRef} className="h-full w-full">
-                  <VisualCard spec={spec} brand={brand} scale={card.w / 440} />
+                  <VisualCard spec={spec} brand={brand} scale={card.w / 440} reelScene={reelScene} />
                 </div>
                 <div className="absolute inset-0 flex items-end justify-center bg-gradient-to-t from-black/70 to-transparent p-4">
                   <Button onClick={onEnterLayoutEdit} data-testid="canvas-enter-layout-edit"
@@ -232,7 +233,7 @@ export function CanvasEditor({
               className={`relative flex-shrink-0 overflow-hidden rounded-lg border-2 transition-colors ${i === activeIndex ? "border-lime" : "border-white/10"}`}
               style={{ width: 44 }}>
               <div className={`${aspectCls} w-full`}>
-                <VisualCard spec={a.spec} brand={brand} scale={44 / 440} />
+                <VisualCard spec={a.spec} brand={brand} scale={44 / 440} reelScene={reelScene || a.type === "scene"} />
               </div>
             </button>
           ))}
@@ -287,6 +288,7 @@ export function CanvasEditor({
 
       {el && sheet === "font" && (
         <Sheet title="Font" onClose={() => setSheet(null)} testid="canvas-sheet-font">
+          {reelScene && brand ? <SceneTypographyControl brand={brand} element={el} onChange={patch} testid="canvas-scene-font" /> : <>
           <select value={el.fontFamily || "Inter"} onChange={(e) => patch({ fontFamily: e.target.value })} data-testid="canvas-element-font"
             className="h-10 w-full rounded-xl border border-white/10 bg-[#0A0A0A] px-3 text-sm text-white outline-none [color-scheme:dark]"
             style={{ fontFamily: fontStack(el.fontFamily || "Inter") }}>
@@ -304,11 +306,13 @@ export function CanvasEditor({
                 style={{ fontWeight: w }}>{w}</button>
             ))}
           </div>
+          </>}
         </Sheet>
       )}
 
       {el && sheet === "size" && (
         <Sheet title="Size & spacing" onClose={() => setSheet(null)} testid="canvas-sheet-size">
+          {reelScene && brand ? <SceneTypographyControl brand={brand} element={el} onChange={patch} testid="canvas-scene-size" /> : <>
           <Slider label="Size" min={8} max={120} step={1} value={el.fontSize || 16}
             onChange={(v) => patch({ fontSize: v })} testid="canvas-element-size" />
           <div className="mt-1">
@@ -317,6 +321,7 @@ export function CanvasEditor({
             <Slider label="Leading" min={80} max={240} step={5} value={(el.lineHeight ?? 1.2) * 100}
               onChange={(v) => patch({ lineHeight: Number((v / 100).toFixed(2)) })} suffix="%" testid="canvas-element-leading" />
           </div>
+          </>}
         </Sheet>
       )}
 
