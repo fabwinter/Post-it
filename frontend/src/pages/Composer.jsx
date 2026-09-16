@@ -513,8 +513,9 @@ export default function Composer() {
         return { ...asset, spec: { ...asset.spec, voice: { url, duration: duration || null, words }, clip } };
       }));
       return true;
-    } catch {
-      setSceneVoiceError((s) => ({ ...s, [index]: true }));
+    } catch (error) {
+      const reason = String(apiErrorMessage(error, "Voiceover generation failed.")).slice(0, 700);
+      setSceneVoiceError((s) => ({ ...s, [index]: reason }));
       return false;
     } finally {
       setSceneVoiceLoading((s) => ({ ...s, [index]: false }));
@@ -1719,16 +1720,25 @@ export default function Composer() {
 
         {brandKits.length > 0 && (
           <>
-            <label className="mt-5 block font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">Brand kit</label>
+            <label htmlFor="composer-brand-guidelines" className="mt-5 block font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">Brand Guidelines</label>
             <div className="mt-3 flex items-center gap-2">
               <Palette size={14} className="flex-shrink-0 text-zinc-600" />
-              <select value={brandKitId || ""} onChange={(e) => setBrandKitId(e.target.value || null)} data-testid="composer-brand-kit-select"
+              <select id="composer-brand-guidelines" value={brandKitId || brand?.id || ""} onChange={(e) => setBrandKitId(e.target.value || null)} data-testid="composer-brand-kit-select"
                 className="w-full max-w-xs rounded-lg border border-white/10 bg-[#0A0A0A] px-2.5 py-1.5 text-xs text-white outline-none focus:border-lime [color-scheme:dark]">
                 {brandKits.map((k) => <option key={k.id || "default"} value={k.id || ""}>{k.name}{k.is_default ? " (default)" : ""}</option>)}
               </select>
-              <span className="text-xs text-zinc-600">colors, fonts &amp; voice for this post</span>
+              <span className="text-xs text-zinc-400">Choose the kit containing your guidelines</span>
             </div>
+            <p className="mt-2 text-xs leading-relaxed text-zinc-400" data-testid="composer-brand-guidelines-help">
+              Select “Brand Guidelines (no template)” under Design to use this kit as the starting point.
+              A selected template keeps its own design. Everything remains editable after generation.
+            </p>
           </>
+        )}
+        {brandKits.length === 0 && (
+          <p className="mt-5 text-xs text-zinc-400" data-testid="composer-brand-guidelines-empty">
+            No Brand Guidelines yet. <button type="button" onClick={() => navigate("/brand")} className="text-lime underline">Create a Brand Kit</button> to use its guidelines when generating without a template.
+          </p>
         )}
       </div>
 
@@ -1867,7 +1877,7 @@ export default function Composer() {
               <select value={customTemplateId || ""} onChange={(e) => setCustomTemplateId(e.target.value || null)}
                 data-testid="composer-custom-template-select"
                 className="rounded-lg border border-white/10 bg-[#0A0A0A] px-2.5 py-1.5 text-xs text-white outline-none focus:border-iris [color-scheme:dark]">
-                <option value="">No design — AI picks the format</option>
+                <option value="">Brand Guidelines (no template)</option>
                 {sortedCustomTemplates.map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.name}{t.format !== format ? ` (${FORMAT_LABEL[t.format] || t.format} — will resize)` : ""}
@@ -2185,8 +2195,13 @@ export default function Composer() {
                             {sceneVoiceLoading[active] ? (
                               <span className="flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> Recording take…</span>
                             ) : sceneVoiceError[active] ? (
-                              <button onClick={() => retrySceneVoice(active)} data-testid="composer-scene-voice-retry"
-                                className="flex items-center gap-1 text-magic hover:text-white"><RefreshCw size={11} /> Take failed — retry</button>
+                              <div className="min-w-0">
+                                <button onClick={() => retrySceneVoice(active)} data-testid="composer-scene-voice-retry"
+                                  className="flex items-center gap-1 text-magic hover:text-white"><RefreshCw size={11} /> Take failed — retry</button>
+                                <p role="alert" data-testid="composer-scene-voice-error" className="mt-1 break-words text-magic">
+                                  {sceneVoiceError[active]}
+                                </p>
+                              </div>
                             ) : activeAsset.spec.voice?.url ? (
                               <button onClick={() => retrySceneVoice(active)} data-testid="composer-scene-voice-retry"
                                 className="flex items-center gap-1 hover:text-white"><RefreshCw size={11} /> Re-record this line</button>
