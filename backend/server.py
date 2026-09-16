@@ -4407,7 +4407,11 @@ async def ai_build_post(req: BuildPostRequest):
     allowed = spec["formats"]
     fmt = req.format if req.format in allowed else ("auto" if req.format == "auto" else spec["default_format"])
     n = int(req.slides or spec["slides"]["default"])
-    n = max(spec["slides"]["min"], min(n, spec["slides"]["max"]))
+    # The ceiling every later adjustment has to stay under. A pinned template
+    # lowers it below the platform's own max (see below); the reel structure
+    # options raise n toward it but never past it.
+    n_cap = spec["slides"]["max"]
+    n = max(spec["slides"]["min"], min(n, n_cap))
 
     # A template — one of the starters, or one converted from an uploaded
     # PDF/PPTX/image — pins the slide count and supplies a real outline to
@@ -4425,7 +4429,8 @@ async def ai_build_post(req: BuildPostRequest):
         if template["format"] in allowed and fmt == "auto":
             fmt = template["format"]
         if template["slides"]:
-            n = max(spec["slides"]["min"], min(len(template["slides"]), spec["slides"]["max"]))
+            n_cap = min(n_cap, len(template["slides"]))
+            n = max(spec["slides"]["min"], min(len(template["slides"]), n_cap))
 
     brand = await load_brand(req.brand_kit_id) if req.use_brand else {}
     brand_note = brand_prompt(brand) if brand else ""
@@ -4463,14 +4468,21 @@ async def ai_build_post(req: BuildPostRequest):
     # they change the scene COUNT itself, before the model has run.
     reel_structure_note = ""
     if fmt == "reel":
+        # An intro and an outro are scenes in their own right, so they have to
+        # fit INSIDE the cap rather than stretch past it — the clamp above ran
+        # before these were known. Once the reel is already at its ceiling the
+        # extras take their scenes from the body instead of being appended,
+        # which is what asking for a cold open and a CTA in a fixed-length
+        # reel actually means.
+        extras = int(bool(req.reel_intro)) + int(bool(req.reel_outro))
+        if extras:
+            n = max(spec["slides"]["min"], min(n + extras, n_cap))
         if req.reel_intro:
-            n += 1
             reel_structure_note += (
                 " Scene 1 is a distinct cold-open hook — direct address or a bold claim, no context yet, "
                 "nothing about the rest of the arc below leaks into it."
             )
         if req.reel_outro:
-            n += 1
             reel_structure_note += (
                 " The LAST scene is a distinct outro — a one-line recap or a direct call to action, "
                 "separate from the payoff scene before it."

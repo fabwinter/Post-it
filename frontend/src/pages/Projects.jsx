@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { api, apiErrorMessage } from "@/lib/api";
 import { platformOf } from "@/lib/platforms";
 import { FORMAT_LABEL } from "@/lib/platformSpecs";
-import { STATUS_META, FORMAT_ICON, projectSummary } from "@/lib/projects";
+import { STATUS_META, FORMAT_ICON, projectSummary, projectThumb } from "@/lib/projects";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
@@ -162,7 +162,7 @@ export default function Projects() {
           const isSelected = selected.has(p.id);
           const status = STATUS_META[p.status] || STATUS_META.draft;
           const FormatIcon = FORMAT_ICON[p.format] || FORMAT_ICON.single;
-          const thumb = p.media_urls?.[0] || p.assets?.[0]?.spec?.image_url || p.assets?.[0]?.spec?.video_url || "";
+          const thumb = projectThumb(p);
           const when = p.status === "scheduled" && p.scheduled_time
             ? new Date(p.scheduled_time).toLocaleString()
             : new Date(p.updated_at || p.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
