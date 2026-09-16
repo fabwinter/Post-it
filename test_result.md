@@ -106,25 +106,30 @@
 ## backend:
 ##   - task: "ai/build-post single format returns one visual, not a carousel"
 ##     implemented: true
-##     working: "NA"
+##     working: true
 ##     file: "backend/server.py"
 ##     stuck_count: 0
 ##     priority: "high"
-##     needs_retesting: true
+##     needs_retesting: false
 ##     status_history:
 ##         -working: "NA"
 ##         -agent: "main"
 ##         -comment: "_plan_to_assets now only builds a cover+slide deck when format is a DECK_FORMAT (carousel/thread). For single/story it emits exactly one visual asset (quote/infographic/photo/cover), with a cover fallback when the model returns only slides. Model previously returned a slides[] array even for single, which was honored and produced a carousel."
+##         -working: false
+##         -agent: "testing"
+##         -comment: "Initial testing revealed the issue was NOT fully fixed. While _plan_to_assets correctly handles format logic, the problem was at line 4745-4746 where plan['format'] was only overridden if NOT in allowed list. When user requested format='single' but model returned format='carousel' (which IS allowed), it wasn't being overridden. Fixed by changing logic to: if fmt != 'auto', always use user's requested format; else if model's format not in allowed, use default."
+##         -working: true
+##         -agent: "testing"
+##         -comment: "After fix at lines 4745-4750, all tests pass. Test 1: format='single' on Instagram returns exactly 1 asset with template='cover'. Test 2: format='story' on Instagram returns exactly 1 asset with template='cover'. Test 3: format='carousel' on Instagram returns 7 assets (1 cover + 6 slides). Test 4: format='single' on LinkedIn returns exactly 1 asset. No 'slide' template assets appear in single/story formats. Carousel functionality preserved."
 
 ## metadata:
 ##   created_by: "main_agent"
-##   version: "1.1"
-##   test_sequence: 1
+##   version: "1.2"
+##   test_sequence: 2
 ##   run_ui: false
 
 ## test_plan:
-##   current_focus:
-##     - "ai/build-post single format returns one visual, not a carousel"
+##   current_focus: []
 ##   stuck_tasks: []
 ##   test_all: false
 ##   test_priority: "high_first"
@@ -132,3 +137,5 @@
 ## agent_communication:
 ##     -agent: "main"
 ##     -message: "Please test POST /api/ai/build-post. Verify: (1) format='single' on instagram returns assets with exactly ONE item (not a cover+multiple slides). (2) format='story' returns one asset. (3) format='carousel' still returns a cover + multiple slide assets. (4) The single asset has a valid spec (template cover/quote/infographic). Uses PoYo/LLM key already in backend/.env."
+##     -agent: "testing"
+##     -message: "Bug found and fixed. The main agent's fix in _plan_to_assets was correct but incomplete. The root cause was that when user explicitly requested format='single', the model was returning format='carousel', and the code at line 4745 only overrode invalid formats, not valid-but-wrong ones. Fixed by always honoring user's explicit format choice when fmt != 'auto'. All 4 test cases now pass: single/story return 1 asset each, carousel returns multiple assets with correct structure."

@@ -4742,8 +4742,12 @@ async def ai_build_post(req: BuildPostRequest):
         plan = {"format": "single", "title": req.topic[:60], "hook": "", "caption": content.strip(),
                 "hashtags": [], "cta": "", "visual": {}}
 
-    if plan.get("format") not in allowed:
-        plan["format"] = fmt if fmt != "auto" else spec["default_format"]
+    # When the user explicitly requests a format (not "auto"), always honor it
+    # regardless of what the model returns. Only let the model choose when fmt is "auto".
+    if fmt != "auto":
+        plan["format"] = fmt
+    elif plan.get("format") not in allowed:
+        plan["format"] = spec["default_format"]
     # A template's theme was a deliberate choice when it was converted —
     # honor it over whatever the model happened to pick. Otherwise, a real
     # saved brand kit wins by default: the model is never even offered
