@@ -121,6 +121,9 @@
 ##         -working: true
 ##         -agent: "testing"
 ##         -comment: "After fix at lines 4745-4750, all tests pass. Test 1: format='single' on Instagram returns exactly 1 asset with template='cover'. Test 2: format='story' on Instagram returns exactly 1 asset with template='cover'. Test 3: format='carousel' on Instagram returns 7 assets (1 cover + 6 slides). Test 4: format='single' on LinkedIn returns exactly 1 asset. No 'slide' template assets appear in single/story formats. Carousel functionality preserved."
+##         -working: true
+##         -agent: "testing"
+##         -comment: "Regression test confirmed. POST /api/ai/build-post with {topic:'healthy breakfast ideas', platform:'instagram', format:'single'} returned 200 with format='single' and exactly 1 asset with template='cover'. No 'slide' template assets present. The fix continues to work correctly."
 
 ## metadata:
 ##   created_by: "main_agent"
@@ -139,3 +142,22 @@
 ##     -message: "Please test POST /api/ai/build-post. Verify: (1) format='single' on instagram returns assets with exactly ONE item (not a cover+multiple slides). (2) format='story' returns one asset. (3) format='carousel' still returns a cover + multiple slide assets. (4) The single asset has a valid spec (template cover/quote/infographic). Uses PoYo/LLM key already in backend/.env."
 ##     -agent: "testing"
 ##     -message: "Bug found and fixed. The main agent's fix in _plan_to_assets was correct but incomplete. The root cause was that when user explicitly requested format='single', the model was returning format='carousel', and the code at line 4745 only overrode invalid formats, not valid-but-wrong ones. Fixed by always honoring user's explicit format choice when fmt != 'auto'. All 4 test cases now pass: single/story return 1 asset each, carousel returns multiple assets with correct structure."
+
+## ---- 2026-09-16 session: download fix, delete media, save-as-project ----
+## metadata:
+##   created_by: "main_agent"
+##   version: "1.3"
+##   test_sequence: 3
+##   run_ui: false
+
+## test_plan:
+##   current_focus: []
+##   stuck_tasks: []
+##   test_all: false
+##   test_priority: "high_first"
+
+## agent_communication:
+##     -agent: "main"
+##     -message: "DB restored (Cloudflare D1 creds added). Please verify backend: (1) POST /api/posts creates a post (returns id) and it appears in GET /api/posts; PUT /api/posts/{id} updates it. (2) Create a generation or use an existing one from GET /api/media, then DELETE /api/generations/{id} returns ok and the item disappears from GET /api/media. (3) Re-confirm POST /api/ai/build-post with format=single returns exactly one asset (regression)."
+##     -agent: "testing"
+##     -message: "All backend tests passed successfully. (1) Posts CRUD: POST creates post with id, GET lists it, PUT updates it (title changed from 'Test project' to 'Test project edited'), DELETE removes it. All operations return 200 and work correctly. (2) Generation delete: DELETE /api/generations/{id} returns 200 with {'ok': true} and the specific generation is removed from the database (verified by checking GET /api/media - the deleted ID is no longer present). (3) Regression test: POST /api/ai/build-post with format='single' returns exactly 1 asset with template='cover', no 'slide' templates. All three backend features are working correctly with Cloudflare D1."

@@ -1715,6 +1715,12 @@ export default function Composer() {
           <h1 className="mt-2 font-display text-4xl font-semibold tracking-tight">Craft & schedule</h1>
         </div>
         <div className="flex items-center gap-1">
+          <Button variant="secondary" onClick={() => persist("draft")} disabled={saving}
+            data-testid="composer-save-project"
+            className="mr-1 gap-2 rounded-lg border border-white/10 bg-white/5 text-white hover:bg-white/10">
+            {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+            <span className="hidden sm:inline">Save as project</span>
+          </Button>
           <Button variant="ghost" onClick={() => openHistory()} data-testid="composer-history"
             className="gap-2 text-zinc-500 hover:text-lime"><History size={16} /><span className="hidden sm:inline">History</span></Button>
           {postId && (

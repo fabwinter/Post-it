@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Backend API tests for CreateOS
-Tests the POST /api/ai/build-post endpoint to verify single image format fix
+Tests Posts CRUD, Generation delete, and AI build-post regression
 """
 
 import requests
@@ -39,12 +39,364 @@ def log_error(msg):
 def log_info(msg):
     print(f"{YELLOW}ℹ {msg}{RESET}")
 
-def test_build_post_single_instagram():
-    """Test 1: POST /api/ai/build-post with format='single' on Instagram"""
-    log_test("Single image post on Instagram - should return exactly 1 asset")
+def test_posts_crud():
+    """Test Posts CRUD: POST, GET, PUT, DELETE /api/posts"""
+    log_test("Posts CRUD - Create, Read, Update, Delete")
+    
+    created_post_id = None
+    
+    try:
+        # 1. POST /api/posts - Create a post
+        log_info("Step 1: Creating a new post with POST /api/posts")
+        create_payload = {
+            "title": "Test project",
+            "content": "hello world",
+            "platforms": ["instagram"],
+            "status": "draft",
+            "format": "single",
+            "assets": []
+        }
+        
+        log_info(f"Payload: {json.dumps(create_payload, indent=2)}")
+        
+        response = requests.post(
+            f"{API_BASE}/posts",
+            json=create_payload,
+            timeout=30
+        )
+        
+        log_info(f"Response status: {response.status_code}")
+        
+        if response.status_code != 200:
+            log_error(f"Expected status 200, got {response.status_code}")
+            log_error(f"Response: {response.text[:500]}")
+            return False
+        
+        post_data = response.json()
+        created_post_id = post_data.get("id")
+        
+        if not created_post_id:
+            log_error("Response does not contain 'id' field")
+            log_error(f"Response: {json.dumps(post_data, indent=2)}")
+            return False
+        
+        log_success(f"Post created with id: {created_post_id}")
+        log_info(f"Created post: {json.dumps(post_data, indent=2)[:200]}...")
+        
+        # 2. GET /api/posts - List posts and verify the created post is present
+        log_info("Step 2: Listing all posts with GET /api/posts")
+        
+        response = requests.get(
+            f"{API_BASE}/posts",
+            timeout=30
+        )
+        
+        log_info(f"Response status: {response.status_code}")
+        
+        if response.status_code != 200:
+            log_error(f"Expected status 200, got {response.status_code}")
+            log_error(f"Response: {response.text[:500]}")
+            return False
+        
+        posts_list = response.json()
+        
+        if not isinstance(posts_list, list):
+            log_error(f"Expected list response, got {type(posts_list)}")
+            return False
+        
+        log_info(f"Total posts in list: {len(posts_list)}")
+        
+        # Find our created post
+        found_post = None
+        for post in posts_list:
+            if post.get("id") == created_post_id:
+                found_post = post
+                break
+        
+        if not found_post:
+            log_error(f"Created post with id {created_post_id} not found in list")
+            return False
+        
+        log_success(f"Created post found in list")
+        
+        # Verify the post data matches what we created
+        if found_post.get("title") != "Test project":
+            log_error(f"Expected title 'Test project', got '{found_post.get('title')}'")
+            return False
+        
+        log_success("Post title matches")
+        
+        # 3. PUT /api/posts/{id} - Update the post
+        log_info(f"Step 3: Updating post with PUT /api/posts/{created_post_id}")
+        
+        update_payload = {
+            "title": "Test project edited",
+            "content": "hello world edited",
+            "platforms": ["instagram"],
+            "status": "draft",
+            "format": "single",
+            "assets": []
+        }
+        
+        log_info(f"Update payload: {json.dumps(update_payload, indent=2)}")
+        
+        response = requests.put(
+            f"{API_BASE}/posts/{created_post_id}",
+            json=update_payload,
+            timeout=30
+        )
+        
+        log_info(f"Response status: {response.status_code}")
+        
+        if response.status_code != 200:
+            log_error(f"Expected status 200, got {response.status_code}")
+            log_error(f"Response: {response.text[:500]}")
+            return False
+        
+        updated_post = response.json()
+        
+        if updated_post.get("title") != "Test project edited":
+            log_error(f"Expected title 'Test project edited', got '{updated_post.get('title')}'")
+            return False
+        
+        if updated_post.get("content") != "hello world edited":
+            log_error(f"Expected content 'hello world edited', got '{updated_post.get('content')}'")
+            return False
+        
+        log_success("Post updated successfully")
+        log_info(f"Updated post: {json.dumps(updated_post, indent=2)[:200]}...")
+        
+        # 4. GET /api/posts again to verify the update persisted
+        log_info("Step 4: Verifying update persisted with GET /api/posts")
+        
+        response = requests.get(
+            f"{API_BASE}/posts",
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            log_error(f"Expected status 200, got {response.status_code}")
+            return False
+        
+        posts_list = response.json()
+        found_post = None
+        for post in posts_list:
+            if post.get("id") == created_post_id:
+                found_post = post
+                break
+        
+        if not found_post:
+            log_error(f"Updated post with id {created_post_id} not found in list")
+            return False
+        
+        if found_post.get("title") != "Test project edited":
+            log_error(f"Update did not persist. Expected title 'Test project edited', got '{found_post.get('title')}'")
+            return False
+        
+        log_success("Update persisted correctly")
+        
+        # 5. DELETE /api/posts/{id} - Clean up
+        log_info(f"Step 5: Deleting post with DELETE /api/posts/{created_post_id}")
+        
+        response = requests.delete(
+            f"{API_BASE}/posts/{created_post_id}",
+            timeout=30
+        )
+        
+        log_info(f"Response status: {response.status_code}")
+        
+        if response.status_code != 200:
+            log_error(f"Expected status 200, got {response.status_code}")
+            log_error(f"Response: {response.text[:500]}")
+            return False
+        
+        delete_response = response.json()
+        
+        if delete_response.get("ok") != True:
+            log_error(f"Expected {{'ok': true}}, got {delete_response}")
+            return False
+        
+        log_success("Post deleted successfully")
+        
+        # Verify the post is no longer in the list
+        log_info("Step 6: Verifying post is deleted with GET /api/posts")
+        
+        response = requests.get(
+            f"{API_BASE}/posts",
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            log_error(f"Expected status 200, got {response.status_code}")
+            return False
+        
+        posts_list = response.json()
+        found_post = None
+        for post in posts_list:
+            if post.get("id") == created_post_id:
+                found_post = post
+                break
+        
+        if found_post:
+            log_error(f"Post with id {created_post_id} still exists after deletion")
+            return False
+        
+        log_success("Post successfully removed from list")
+        
+        log_success("TEST PASSED: Posts CRUD flow works correctly")
+        return True
+        
+    except requests.exceptions.Timeout:
+        log_error("Request timed out")
+        return False
+    except Exception as e:
+        log_error(f"Exception occurred: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def test_generation_delete():
+    """Test Generation delete: GET /api/media, DELETE /api/generations/{id}"""
+    log_test("Generation Delete - Delete generated media")
+    
+    try:
+        # 1. GET /api/media - List existing generations
+        log_info("Step 1: Listing existing media with GET /api/media")
+        
+        response = requests.get(
+            f"{API_BASE}/media",
+            timeout=30
+        )
+        
+        log_info(f"Response status: {response.status_code}")
+        
+        if response.status_code != 200:
+            log_error(f"Expected status 200, got {response.status_code}")
+            log_error(f"Response: {response.text[:500]}")
+            return False
+        
+        media_list = response.json()
+        
+        if not isinstance(media_list, list):
+            log_error(f"Expected list response, got {type(media_list)}")
+            return False
+        
+        initial_count = len(media_list)
+        log_info(f"Total media items: {initial_count}")
+        
+        # 2. Test DELETE endpoint
+        if initial_count > 0:
+            # We have at least one generation, delete it
+            generation_to_delete = media_list[0]
+            gen_id = generation_to_delete.get("id")
+            
+            if not gen_id:
+                log_error("Media item does not have 'id' field")
+                return False
+            
+            log_info(f"Step 2: Deleting generation with id {gen_id}")
+            log_info(f"Generation to delete: {json.dumps(generation_to_delete, indent=2)[:200]}...")
+            
+            response = requests.delete(
+                f"{API_BASE}/generations/{gen_id}",
+                timeout=30
+            )
+            
+            log_info(f"Response status: {response.status_code}")
+            
+            if response.status_code != 200:
+                log_error(f"Expected status 200, got {response.status_code}")
+                log_error(f"Response: {response.text[:500]}")
+                return False
+            
+            delete_response = response.json()
+            
+            if delete_response.get("ok") != True:
+                log_error(f"Expected {{'ok': true}}, got {delete_response}")
+                return False
+            
+            log_success(f"Generation {gen_id} deleted successfully")
+            
+            # 3. GET /api/media again to verify the generation is gone
+            log_info("Step 3: Verifying generation is deleted with GET /api/media")
+            
+            response = requests.get(
+                f"{API_BASE}/media",
+                timeout=30
+            )
+            
+            if response.status_code != 200:
+                log_error(f"Expected status 200, got {response.status_code}")
+                return False
+            
+            media_list_after = response.json()
+            final_count = len(media_list_after)
+            
+            log_info(f"Media count after delete: {final_count}")
+            
+            # Verify the specific generation is not in the list
+            found = False
+            for item in media_list_after:
+                if item.get("id") == gen_id:
+                    found = True
+                    break
+            
+            if found:
+                log_error(f"Generation {gen_id} still exists after deletion")
+                return False
+            
+            log_success(f"Generation {gen_id} successfully removed from media list")
+            
+            # Note: Count may stay the same if there are more items than the limit (60)
+            # The important check is that the specific ID is gone
+            if final_count == initial_count:
+                log_info(f"Count stayed at {final_count} (likely more than 60 total items, next item moved into view)")
+            elif final_count == initial_count - 1:
+                log_success(f"Count decreased from {initial_count} to {final_count}")
+            else:
+                log_error(f"Unexpected count change: from {initial_count} to {final_count}")
+                return False
+            log_success("TEST PASSED: Generation delete works correctly")
+            return True
+            
+        else:
+            # No generations exist, test with non-existent ID to verify 404
+            log_info("No existing generations found")
+            log_info("Step 2: Testing DELETE with non-existent ID (should return 404)")
+            
+            fake_id = "nonexistent-id-123"
+            
+            response = requests.delete(
+                f"{API_BASE}/generations/{fake_id}",
+                timeout=30
+            )
+            
+            log_info(f"Response status: {response.status_code}")
+            
+            if response.status_code != 404:
+                log_error(f"Expected status 404 for non-existent ID, got {response.status_code}")
+                log_error(f"Response: {response.text[:500]}")
+                return False
+            
+            log_success("DELETE endpoint correctly returns 404 for non-existent ID")
+            log_success("TEST PASSED: Generation delete endpoint is wired correctly")
+            return True
+        
+    except requests.exceptions.Timeout:
+        log_error("Request timed out")
+        return False
+    except Exception as e:
+        log_error(f"Exception occurred: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def test_build_post_regression():
+    """Regression test: POST /api/ai/build-post with format='single' should return exactly 1 asset"""
+    log_test("AI Build Post Regression - Single format should return 1 asset")
     
     payload = {
-        "topic": "morning productivity habits",
+        "topic": "healthy breakfast ideas",
         "platform": "instagram",
         "format": "single"
     }
@@ -75,237 +427,7 @@ def test_build_post_single_instagram():
             return False
         log_success(f"Format is 'single' ✓")
         
-        # Check assets array
-        assets = data.get("assets", [])
-        asset_count = len(assets)
-        
-        log_info(f"Number of assets returned: {asset_count}")
-        
-        if asset_count != 1:
-            log_error(f"Expected exactly 1 asset, got {asset_count}")
-            log_error(f"Assets: {json.dumps(assets, indent=2)}")
-            return False
-        log_success(f"Exactly 1 asset returned ✓")
-        
-        # Check that the single asset is NOT a "slide" template
-        asset = assets[0]
-        template = asset.get("spec", {}).get("template")
-        log_info(f"Asset template: {template}")
-        
-        if template == "slide":
-            log_error(f"Single format should NOT have template='slide', got '{template}'")
-            return False
-        
-        if template not in ["cover", "quote", "infographic"]:
-            log_error(f"Expected template to be one of [cover, quote, infographic], got '{template}'")
-            return False
-        
-        log_success(f"Asset template is '{template}' (valid for single format) ✓")
-        
-        log_success("TEST PASSED: Single format returns exactly 1 asset with correct template")
-        return True
-        
-    except requests.exceptions.Timeout:
-        log_error("Request timed out after 60 seconds")
-        return False
-    except Exception as e:
-        log_error(f"Exception occurred: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-def test_build_post_story_instagram():
-    """Test 2: POST /api/ai/build-post with format='story' on Instagram"""
-    log_test("Story format on Instagram - should return exactly 1 asset")
-    
-    payload = {
-        "topic": "why remote work wins",
-        "platform": "instagram",
-        "format": "story"
-    }
-    
-    try:
-        log_info(f"Calling POST {API_BASE}/ai/build-post")
-        log_info(f"Payload: {json.dumps(payload, indent=2)}")
-        
-        response = requests.post(
-            f"{API_BASE}/ai/build-post",
-            json=payload,
-            timeout=60
-        )
-        
-        log_info(f"Response status: {response.status_code}")
-        
-        if response.status_code != 200:
-            log_error(f"Expected status 200, got {response.status_code}")
-            log_error(f"Response: {response.text[:500]}")
-            return False
-        
-        data = response.json()
-        
-        # Check format
-        returned_format = data.get("format")
-        if returned_format != "story":
-            log_error(f"Expected format='story', got format='{returned_format}'")
-            return False
-        log_success(f"Format is 'story' ✓")
-        
-        # Check assets array
-        assets = data.get("assets", [])
-        asset_count = len(assets)
-        
-        log_info(f"Number of assets returned: {asset_count}")
-        
-        if asset_count != 1:
-            log_error(f"Expected exactly 1 asset, got {asset_count}")
-            log_error(f"Assets: {json.dumps(assets, indent=2)}")
-            return False
-        log_success(f"Exactly 1 asset returned ✓")
-        
-        # Check that the single asset is NOT a "slide" template
-        asset = assets[0]
-        template = asset.get("spec", {}).get("template")
-        log_info(f"Asset template: {template}")
-        
-        if template == "slide":
-            log_error(f"Story format should NOT have template='slide', got '{template}'")
-            return False
-        
-        log_success(f"Asset template is '{template}' (no 'slide' template) ✓")
-        
-        log_success("TEST PASSED: Story format returns exactly 1 asset without 'slide' template")
-        return True
-        
-    except requests.exceptions.Timeout:
-        log_error("Request timed out after 60 seconds")
-        return False
-    except Exception as e:
-        log_error(f"Exception occurred: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-def test_build_post_carousel_instagram():
-    """Test 3: POST /api/ai/build-post with format='carousel' on Instagram"""
-    log_test("Carousel format on Instagram - should return multiple assets (cover + slides)")
-    
-    payload = {
-        "topic": "5 habits of great writers",
-        "platform": "instagram",
-        "format": "carousel"
-    }
-    
-    try:
-        log_info(f"Calling POST {API_BASE}/ai/build-post")
-        log_info(f"Payload: {json.dumps(payload, indent=2)}")
-        
-        response = requests.post(
-            f"{API_BASE}/ai/build-post",
-            json=payload,
-            timeout=60
-        )
-        
-        log_info(f"Response status: {response.status_code}")
-        
-        if response.status_code != 200:
-            log_error(f"Expected status 200, got {response.status_code}")
-            log_error(f"Response: {response.text[:500]}")
-            return False
-        
-        data = response.json()
-        
-        # Check format
-        returned_format = data.get("format")
-        if returned_format != "carousel":
-            log_error(f"Expected format='carousel', got format='{returned_format}'")
-            return False
-        log_success(f"Format is 'carousel' ✓")
-        
-        # Check assets array
-        assets = data.get("assets", [])
-        asset_count = len(assets)
-        
-        log_info(f"Number of assets returned: {asset_count}")
-        
-        if asset_count <= 1:
-            log_error(f"Expected more than 1 asset for carousel, got {asset_count}")
-            log_error(f"Assets: {json.dumps(assets, indent=2)}")
-            return False
-        log_success(f"Multiple assets returned ({asset_count} assets) ✓")
-        
-        # Check first asset is a cover
-        first_asset = assets[0]
-        first_template = first_asset.get("spec", {}).get("template")
-        log_info(f"First asset template: {first_template}")
-        
-        if first_template != "cover":
-            log_error(f"First asset should be 'cover', got '{first_template}'")
-            return False
-        log_success(f"First asset is 'cover' ✓")
-        
-        # Check that subsequent assets are slides
-        slide_count = 0
-        for i, asset in enumerate(assets[1:], start=1):
-            template = asset.get("spec", {}).get("template")
-            if template == "slide":
-                slide_count += 1
-        
-        log_info(f"Number of 'slide' template assets: {slide_count}")
-        
-        if slide_count == 0:
-            log_error("Carousel should have at least one 'slide' template asset after the cover")
-            return False
-        log_success(f"Carousel has {slide_count} 'slide' template assets ✓")
-        
-        log_success("TEST PASSED: Carousel format returns cover + multiple slides")
-        return True
-        
-    except requests.exceptions.Timeout:
-        log_error("Request timed out after 60 seconds")
-        return False
-    except Exception as e:
-        log_error(f"Exception occurred: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-def test_build_post_single_linkedin():
-    """Test 4: Regression test - POST /api/ai/build-post with format='single' on LinkedIn"""
-    log_test("Single image post on LinkedIn - regression test")
-    
-    payload = {
-        "topic": "quick coffee tip",
-        "platform": "linkedin",
-        "format": "single"
-    }
-    
-    try:
-        log_info(f"Calling POST {API_BASE}/ai/build-post")
-        log_info(f"Payload: {json.dumps(payload, indent=2)}")
-        
-        response = requests.post(
-            f"{API_BASE}/ai/build-post",
-            json=payload,
-            timeout=60
-        )
-        
-        log_info(f"Response status: {response.status_code}")
-        
-        if response.status_code != 200:
-            log_error(f"Expected status 200, got {response.status_code}")
-            log_error(f"Response: {response.text[:500]}")
-            return False
-        
-        data = response.json()
-        
-        # Check format
-        returned_format = data.get("format")
-        if returned_format != "single":
-            log_error(f"Expected format='single', got format='{returned_format}'")
-            return False
-        log_success(f"Format is 'single' ✓")
-        
-        # Check assets array
+        # Check assets array length
         assets = data.get("assets", [])
         asset_count = len(assets)
         
@@ -328,7 +450,7 @@ def test_build_post_single_linkedin():
         
         log_success(f"Asset template is '{template}' (no 'slide' template) ✓")
         
-        log_success("TEST PASSED: LinkedIn single format returns exactly 1 asset")
+        log_success("TEST PASSED: Single format regression test passed")
         return True
         
     except requests.exceptions.Timeout:
@@ -342,18 +464,17 @@ def test_build_post_single_linkedin():
 
 def main():
     print(f"\n{BLUE}{'='*80}{RESET}")
-    print(f"{BLUE}CreateOS Backend API Tests - Build Post Endpoint{RESET}")
-    print(f"{BLUE}Testing fix: Single image format should return 1 asset, not a carousel{RESET}")
+    print(f"{BLUE}CreateOS Backend API Tests{RESET}")
+    print(f"{BLUE}Testing: Posts CRUD, Generation Delete, AI Build Post Regression{RESET}")
     print(f"{BLUE}Backend URL: {BACKEND_URL}{RESET}")
     print(f"{BLUE}{'='*80}{RESET}")
     
     results = []
     
     # Run all tests
-    results.append(("Test 1: Single format (Instagram)", test_build_post_single_instagram()))
-    results.append(("Test 2: Story format (Instagram)", test_build_post_story_instagram()))
-    results.append(("Test 3: Carousel format (Instagram)", test_build_post_carousel_instagram()))
-    results.append(("Test 4: Single format (LinkedIn) - Regression", test_build_post_single_linkedin()))
+    results.append(("Test 1: Posts CRUD (POST, GET, PUT, DELETE)", test_posts_crud()))
+    results.append(("Test 2: Generation Delete", test_generation_delete()))
+    results.append(("Test 3: AI Build Post Regression (single format)", test_build_post_regression()))
     
     # Summary
     print(f"\n{BLUE}{'='*80}{RESET}")
