@@ -19,7 +19,7 @@ import { ReelExportDialog } from "@/components/ReelExportDialog";
 import { MediaPicker } from "@/components/MediaPicker";
 import { useTemplateStyles } from "@/lib/templateStyles";
 import { useCustomTemplates } from "@/lib/useCustomTemplates";
-import { elementsFromSpec, newElement, useCardScale, clampPos, slideText, elementsWithText } from "@/lib/slideElements";
+import { elementsFromSpec, newElement, useCardScale, clampPos, slideText, elementsWithText, isFixedText } from "@/lib/slideElements";
 import { materializeTemplateSlides } from "@/lib/templateEdit";
 import { groupFontsByCategory, fontStack, useAllFontsLoaded, useFontCatalog } from "@/lib/fonts";
 import { FontNotice } from "@/components/CustomFonts";
@@ -41,7 +41,7 @@ import {
   Search, Wand, Palette, Upload, FileText, Image as ImageIcon, Presentation,
   Type, Square, LayoutTemplate, Undo2, Redo2, Copy, ChevronsUp, ChevronsDown, AlignLeft, AlignCenter, AlignRight,
   Shapes, CopyPlus, BookmarkPlus, Maximize2, PlayCircle, SquarePen, Lightbulb, Repeat, LayoutGrid,
-  Music, Volume2, VolumeX, RefreshCw, Mic, FolderOpen, Pause,
+  Music, Volume2, VolumeX, RefreshCw, Mic, FolderOpen, Pause, Lock,
 } from "lucide-react";
 
 // The first four are the ones PoYo's TTS model schema documents as its own
@@ -2657,6 +2657,7 @@ function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, 
           {elements.map((e, i) => (
             <button key={e.id} onClick={() => onSelect(e.id)} data-testid={`composer-element-chip-${e.id}`}
               className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${e.id === selectedId ? "border-lime bg-lime/10 text-lime" : "border-white/10 text-zinc-400 hover:text-white"}`}>
+              {e.type === "text" && isFixedText(e) && <Lock size={9} className="mr-1 inline-block align-[-1px] opacity-70" />}
               {e.type === "text" ? (e.text || "Text").slice(0, 14) || `Text ${i + 1}`
                 : e.type === "shape" ? "Shape" : e.type === "video" ? "Clip" : "Image"}
             </button>
@@ -2685,6 +2686,36 @@ function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, 
                 </select>
               </div>
               <FontNotice fontKey={el.fontFamily || "Inter"} testid="composer-font-notice" />
+              {/* Which boxes a design refills, and which it leaves alone.
+                  Saving a slide as a design turns one or two of its text
+                  boxes into copy slots — refilled with fresh words on every
+                  post built from it — and everything else is carried through
+                  as designed. A handle, hashtag row or contact line sits in
+                  a text box like any other, so it used to be eligible: the
+                  guess picks the topmost boxes, which in a real social
+                  layout is exactly where the handle sits.
+                  isFixedText reads the text for the common case; this is the
+                  override, in both directions (see its comment). */}
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <label className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">In a design</label>
+                {[
+                  { k: "copy", label: "Refill", on: false, hint: "fresh copy each post" },
+                  { k: "fixed", label: "Keep as is", on: true, hint: "never replaced" },
+                ].map((o) => (
+                  <button key={o.k} onClick={() => onPatch(el.id, { fixed: o.on })}
+                    data-testid={`composer-element-text-${o.k}`} title={o.hint}
+                    className={`rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
+                      isFixedText(el) === o.on ? "border-lime bg-lime/10 text-lime" : "border-white/10 text-zinc-500 hover:text-white"
+                    }`}>
+                    {o.label}
+                  </button>
+                ))}
+                {el.fixed == null && (
+                  <span className="text-[10px] text-zinc-600">
+                    {isFixedText(el) ? "auto: reads as a handle or link" : "auto: reads as copy"}
+                  </span>
+                )}
+              </div>
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <label className="font-mono text-[10px] text-zinc-500">Size</label>
                 <input type="number" min={8} max={120} value={el.fontSize || 16} onChange={(e) => onPatch(el.id, { fontSize: Number(e.target.value) })}

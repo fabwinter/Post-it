@@ -113,6 +113,38 @@ export function elementsFromSpec(spec, theme, brand) {
 // too — otherwise the two drift and whichever one you're not looking at is
 // silently wrong: an edit that never appears on the card, or a voiceover
 // recorded from a line nobody can see any more.
+
+// Text that is a mark, not copy: a handle, a hashtag row, an email, a link,
+// a phone number. This MIRRORS the backend's _is_mark_text/_is_fixed_text in
+// server.py — the backend is what actually decides which boxes become copy
+// slots when a design is saved, and this copy exists so the element panel
+// can show which boxes are which before you ever rebuild. Keep the two in
+// step; the tests on both sides use the same cases.
+const MARK_PATTERNS = [
+  /^[@#][\w.\-]+$/,                                  // @handle, #hashtag
+  /^[\w.+\-]+@[\w\-]+\.[\w.\-]+$/,                   // email
+  /^(?:https?:\/\/|www\.)\S+$/i,                      // explicit link
+  /^[\w\-]+(?:\.[\w\-]+)*\.[a-z]{2,63}(?:\/\S*)?$/i,  // bare domain
+];
+// Whole-box, not per token: a phone number is written with spaces in it.
+const PHONE_PATTERN = /^\+?[\d\s().\-]{7,}$/;
+
+export function isMarkText(text) {
+  const t = (text || "").trim();
+  if (!t) return false;
+  if (PHONE_PATTERN.test(t)) return true;
+  const tokens = t.split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w));
+  return tokens.length > 0 && tokens.every((w) => MARK_PATTERNS.some((p) => p.test(w)));
+}
+
+// `fixed` is the explicit answer and wins in both directions: true pins a box
+// that doesn't look like a mark (a tagline, a standing CTA, a date stamp),
+// false releases one that does. Unset reads the text.
+export function isFixedText(el) {
+  if (el?.fixed != null) return !!el.fixed;
+  return isMarkText(el?.text || "");
+}
+
 const textRoles = { heading: ["title", "heading"], body: ["body"] };
 
 export function slideText(spec) {

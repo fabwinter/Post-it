@@ -2043,7 +2043,8 @@ def _pptx_extract_design(pptx_bytes: bytes, max_slides: int = 20) -> Dict[str, A
         rest = [t for t in texts if t is not headline]
         # The longest remaining text is the paragraph slot a generated post's
         # body copy belongs in — not whichever label happens to sit highest.
-        body_src = max(rest, key=lambda t: len(t["text"]), default=None)
+        body_src = max((t for t in rest if not _is_mark_text(t["text"])),
+                       key=lambda t: len(t["text"]), default=None)
         if headline:
             headline["element"]["role_hint"] = "title"
         if body_src and len(body_src["text"]) > 24:
@@ -2069,11 +2070,15 @@ def _pptx_pick_headline(texts: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]
     itself."""
     if not texts:
         return None
-    titled = next((t for t in texts if t["is_title"]), None)
+    # A handle or a link is never the headline, however big it is set — see
+    # _is_fixed_text. An uploaded deck's own @handle used to win this on font
+    # size alone and then get overwritten on every post built from it.
+    copy = [t for t in texts if not _is_mark_text(t["text"])] or texts
+    titled = next((t for t in copy if t["is_title"]), None)
     if titled:
         return titled
-    phrases = [t for t in texts if len(t["text"].split()) > 1]
-    return max(phrases or texts, key=lambda t: (t["font_pt"], -t["element"]["y"]))
+    phrases = [t for t in copy if len(t["text"].split()) > 1]
+    return max(phrases or copy, key=lambda t: (t["font_pt"], -t["element"]["y"]))
 
 
 def _pptx_shape_fills(slide, scheme: Dict[str, str], sw: int, sh: int) -> (Optional[str], List[Dict[str, Any]]):
@@ -2752,12 +2757,66 @@ def _apply_template_layouts(assets: List[Dict[str, Any]], template: dict,
     return assets
 
 
+# Text that is a mark, not copy: a handle, a hashtag row, an email, a link,
+# a phone number. Every token has to be one for the whole box to count, so a
+# headline that merely CONTAINS a hashtag ("Why #buildinpublic works") is
+# still a headline. Pure-punctuation separators (a bullet or pipe between a
+# handle and a URL) don't vote either way.
+_MARK_PATTERNS = (
+    re.compile(r"^[@#][\w.\-]+$"),                                   # @handle, #hashtag
+    re.compile(r"^[\w.+\-]+@[\w\-]+\.[\w.\-]+$"),                   # email
+    re.compile(r"^(?:https?://|www\.)\S+$", re.I),                    # explicit link
+    re.compile(r"^[\w\-]+(?:\.[\w\-]+)*\.[a-z]{2,63}(?:/\S*)?$", re.I),  # bare domain
+)
+
+# Checked against the whole box rather than token by token: a phone number
+# is written with spaces in it ("+61 400 123 456"), so its parts read as
+# meaningless short numbers on their own.
+_PHONE_RE = re.compile(r"^\+?[\d\s().\-]{7,}$")
+
+
+def _is_mark_text(text: str) -> bool:
+    text = (text or "").strip()
+    if not text:
+        return False
+    if _PHONE_RE.match(text):
+        return True
+    tokens = [t for t in text.split() if any(c.isalnum() for c in t)]
+    if not tokens:
+        return False
+    return all(any(p.match(t) for p in _MARK_PATTERNS) for t in tokens)
+
+
+def _is_fixed_text(el: Dict[str, Any]) -> bool:
+    """Whether this text element is off-limits as a dynamic copy slot.
+
+    A design's handle, hashtag row or contact line sits in a text box like
+    any other, and the Y-position guess below (which runs whenever nothing
+    else says which box is the headline) took the two topmost text boxes —
+    which in a real social layout is exactly where the handle sits. So
+    "@connected.mothering" became the title slot and every post built from
+    that design overwrote it with a generated heading.
+
+    `fixed` is the explicit answer, set from the element panel, and it wins
+    in BOTH directions: True pins a box that doesn't look like a mark (a
+    tagline, a standing CTA, a date stamp), False releases one that does.
+    Unset falls through to reading the text, so the common case needs no
+    tagging at all. The frontend mirrors this in isFixedText (see
+    lib/slideElements.js) so the panel can show which boxes are which.
+    """
+    if el.get("fixed") is not None:
+        return bool(el.get("fixed"))
+    return _is_mark_text(el.get("text") or "")
+
+
 def _layout_hint(el: Dict[str, Any]) -> Optional[str]:
     """Which dynamic slot (title-ish, or body) an element was already
     established as, from either signal a text element can carry it under:
     role_hint (an extraction's own say-so, see _pptx_extract_design) or role
     (this same function's OWN output from a previous save — see the note on
     _layout_from_elements below for why that second case matters)."""
+    if _is_fixed_text(el):
+        return None
     hint = el.get("role_hint")
     if hint:
         return hint
@@ -2793,12 +2852,15 @@ def _layout_from_elements(elements: List[Dict[str, Any]], is_cover: bool) -> Lis
     is now reached only on a template's first save, when neither signal
     exists at all (a deck drafted straight in the Composer)."""
     texts = [e for e in elements if e.get("type") == "text"]
-    hinted_title = next((e for e in texts if _layout_hint(e) == "title"), None)
-    hinted_body = next((e for e in texts if _layout_hint(e) == "body"), None)
+    # A mark is never a candidate for either slot, by hint or by position —
+    # see _is_fixed_text for what counts and why.
+    copy_texts = [e for e in texts if not _is_fixed_text(e)]
+    hinted_title = next((e for e in copy_texts if _layout_hint(e) == "title"), None)
+    hinted_body = next((e for e in copy_texts if _layout_hint(e) == "body"), None)
     if hinted_title or hinted_body:
         roles = {id(e): role for e, role in ((hinted_title, "title"), (hinted_body, "body")) if e}
     else:
-        topmost = sorted(texts, key=lambda e: e.get("y", 0))[:2]
+        topmost = sorted(copy_texts, key=lambda e: e.get("y", 0))[:2]
         roles = {id(e): ("title" if i == 0 else "body") for i, e in enumerate(topmost)}
     out = []
     for el in elements:
