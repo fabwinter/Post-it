@@ -19,7 +19,7 @@ import { ReelExportDialog } from "@/components/ReelExportDialog";
 import { MediaPicker } from "@/components/MediaPicker";
 import { useTemplateStyles } from "@/lib/templateStyles";
 import { useCustomTemplates } from "@/lib/useCustomTemplates";
-import { elementsFromSpec, newElement, useCardScale, clampPos } from "@/lib/slideElements";
+import { elementsFromSpec, newElement, useCardScale, clampPos, slideText, elementsWithText } from "@/lib/slideElements";
 import { materializeTemplateSlides } from "@/lib/templateEdit";
 import { groupFontsByCategory, fontStack, useAllFontsLoaded, useFontCatalog } from "@/lib/fonts";
 import { FontNotice } from "@/components/CustomFonts";
@@ -323,7 +323,7 @@ export default function Composer() {
   const isReel = format === "reel";
   const anyVoiceError = Object.values(sceneVoiceError).some(Boolean);
   const anyVisualError = Object.values(sceneVisualError).some(Boolean);
-  const voiceableScenes = assets.filter((a) => a.type === "scene" && (a.spec?.body || "").trim());
+  const voiceableScenes = assets.filter((a) => a.type === "scene" && slideText(a.spec).body.trim());
   const scenesWithVoice = voiceableScenes.filter((a) => a.spec?.voice?.url).length;
 
   // Applying a plan is the whole idea→post shortcut landing: copy, hashtags,
@@ -353,11 +353,7 @@ export default function Composer() {
     if (plan.format === "reel" && (plan.assets || []).some((a) => a.type === "scene")) {
       if (opts.includeVoiceover) synthesizeReelVoices(plan.assets);
       if (opts.includeFootage) {
-        autoFillReelVisuals(plan.assets, {
-          source: opts.visualSource.startsWith("ai") ? "generate" : "stock",
-          kind: opts.visualSource.endsWith("image") ? "image" : "video",
-          style: opts.visualStyle,
-        });
+        autoFillReelVisuals(plan.assets, visualOptsFrom(opts));
       }
       if (opts.includeMusic) synthesizeReelMusic(plan.title || plan.hook || plan.caption || "", opts.musicStyle);
     }
@@ -426,9 +422,14 @@ export default function Composer() {
   // such race — the reel is already on screen, state is current — so it
   // omits this and reads state same as ever.
   const synthesizeSceneVoice = async (index, text, headingText) => {
-    const body = (text ?? assets[index]?.spec?.body ?? "").trim();
+    // Falls back to the scene's CURRENT words, which live in its elements
+    // once a design has been applied or the layout hand-edited — reading
+    // spec.body/spec.heading directly would re-record the pre-edit draft
+    // (slideText's own comment spells out why those two go stale).
+    const current = slideText(assets[index]?.spec);
+    const body = (text ?? current.body).trim();
     if (!body) return false;
-    const heading = (headingText ?? assets[index]?.spec?.heading ?? "").trim();
+    const heading = (headingText ?? current.heading).trim();
     const spoken = heading ? `${heading}${/[.?!…]$/.test(heading) ? "" : "."} ${body}` : body;
     setSceneVoiceLoading((s) => ({ ...s, [index]: true }));
     setSceneVoiceError((s) => ({ ...s, [index]: false }));
@@ -475,12 +476,13 @@ export default function Composer() {
   // One bad line only costs that scene its custom timing (and leaves it a
   // retry button), never the reel.
   const synthesizeReelVoices = async (sceneAssets) => {
-    const lines = sceneAssets.filter((a) => (a.spec?.body || "").trim());
+    const words = sceneAssets.map((a) => slideText(a.spec));
+    const lines = words.filter((w) => w.body.trim());
     if (!lines.length) return;
     setVoiceSynthesizing(true);
     try {
       const results = await Promise.all(
-        sceneAssets.map((a, i) => synthesizeSceneVoice(i, a.spec?.body, a.spec?.heading))
+        sceneAssets.map((a, i) => synthesizeSceneVoice(i, words[i].body, words[i].heading))
       );
       const done = results.filter(Boolean).length;
       if (done === lines.length) toast.success("Voiceover recorded for every scene");
@@ -510,7 +512,7 @@ export default function Composer() {
   // control (opacity/fit/effects/transition), it's just not moving.
   const fillSceneVisual = async (index, query, opts = {}) => {
     const asset = assets[index];
-    const q = (query ?? asset?.spec?.video_prompt ?? asset?.spec?.heading ?? "").trim();
+    const q = (query ?? asset?.spec?.video_prompt ?? slideText(asset?.spec).heading).trim();
     if (!q) return false;
     const kind = opts.kind === "image" ? "image" : "video";
     const source = opts.source === "generate" ? "generate" : "stock";
@@ -556,8 +558,20 @@ export default function Composer() {
     }
   };
 
+  // ComposerReelOptions speaks in one combined "where from, and moving or
+  // still" choice; fillSceneVisual takes those as two. One translation, used
+  // by both the build-time auto-fill and the per-scene retry button — the
+  // retry used to pass nothing at all, so a reel set to AI-generated visuals
+  // silently fell back to a stock search (and dropped the style) the moment
+  // one scene was retried.
+  const visualOptsFrom = (opts) => ({
+    source: (opts?.visualSource || "").startsWith("ai") ? "generate" : "stock",
+    kind: (opts?.visualSource || "").endsWith("image") ? "image" : "video",
+    style: opts?.visualStyle || "",
+  });
+
   const retrySceneVisual = async (index, opts) => {
-    const ok = await fillSceneVisual(index, undefined, opts);
+    const ok = await fillSceneVisual(index, undefined, opts || visualOptsFrom(reelOptions));
     if (ok) toast.success(`Scene ${index + 1}'s footage updated`);
     else toast.error(`Couldn't find footage for scene ${index + 1}.`);
   };
@@ -583,12 +597,12 @@ export default function Composer() {
   const autoFillReelVisuals = async (sceneAssets, opts = {}) => {
     const needsFootage = sceneAssets
       .map((a, i) => ({ a, i }))
-      .filter(({ a }) => !a.spec?.clip?.url && (a.spec?.video_prompt || a.spec?.heading || "").trim());
+      .filter(({ a }) => !a.spec?.clip?.url && (a.spec?.video_prompt || slideText(a.spec).heading).trim());
     if (!needsFootage.length) return;
     setVisualFilling(true);
     try {
       const results = await Promise.all(
-        needsFootage.map(({ a, i }) => fillSceneVisual(i, a.spec?.video_prompt || a.spec?.heading, opts))
+        needsFootage.map(({ a, i }) => fillSceneVisual(i, a.spec?.video_prompt || slideText(a.spec).heading, opts))
       );
       const done = results.filter(Boolean).length;
       const noun = opts.source === "generate" ? "Visuals generated" : "Footage found";
@@ -1003,8 +1017,21 @@ export default function Composer() {
     // fresh minimal spec, same shape as before.
     const assets = rows.map((r, i) => {
       const base = r._origIndex != null ? serverAssets[r._origIndex] : null;
+      const heading = r.heading || "";
+      const body = r.body || "";
+      // Keeping base.spec keeps the design — but a design bakes its copy
+      // straight into element text (_fill_layout, server side) and VisualCard
+      // renders elements in preference to heading/body, so writing only the
+      // two plain fields meant an edit made right here never appeared on the
+      // card (while the voiceover, which used to read spec.body, dutifully
+      // recorded it). elementsWithText puts it where it's actually read, and
+      // renumbers number/step elements to the row's NEW position, which is
+      // what a scene deleted from the middle breaks without.
       const spec = base
-        ? { ...base.spec, index: i + 1, total, heading: r.heading || "", body: r.body || "", video_prompt: r.video_prompt || "" }
+        ? {
+            ...base.spec, index: i + 1, total, heading, body, video_prompt: r.video_prompt || "",
+            elements: elementsWithText(base.spec?.elements, { heading, body, index: i + 1 }),
+          }
         : {
             template: "slide", theme: reelReviewPlan.theme || "midnight", index: i + 1, total, coverCounts: false,
             heading: r.heading || "", body: r.body || "", video_prompt: r.video_prompt || "",
@@ -1862,7 +1889,7 @@ export default function Composer() {
                   </span>
                 ) : (musicError && !music.url) ? (
                   <>
-                    <button onClick={() => synthesizeReelMusic(title || content)} data-testid="composer-music-retry"
+                    <button onClick={() => synthesizeReelMusic(title || content, reelOptions.musicStyle)} data-testid="composer-music-retry"
                       title={musicErrorMessage} className="flex items-center gap-1.5 text-magic hover:text-white">
                       <RefreshCw size={12} /> Score failed — retry
                     </button>
@@ -1911,7 +1938,7 @@ export default function Composer() {
                   onChange={(e) => setMusicVolume(Number(e.target.value))} data-testid="composer-music-volume"
                   className="h-1.5 w-24 flex-none accent-lime" />
                 <audio src={music.url} controls className="h-8 flex-1 min-w-[160px]" />
-                <button onClick={() => synthesizeReelMusic(title || content)} data-testid="composer-music-regenerate"
+                <button onClick={() => synthesizeReelMusic(title || content, reelOptions.musicStyle)} data-testid="composer-music-regenerate"
                   title="Generate a different score" className="flex-none text-zinc-500 hover:text-white"><RefreshCw size={13} /></button>
                 <Button variant="ghost" onClick={removeMusic} data-testid="composer-music-remove"
                   className="h-7 flex-none px-2 text-zinc-500 hover:text-magic"><Trash2 size={13} /></Button>

@@ -1387,6 +1387,17 @@ async function confirmReel(page) {
   const savedClipOpacity = await sceneVideoOpacity();
   ok("the clip's own opacity is customized before saving, not left at the auto-fill default",
      savedClipOpacity === '1.00', savedClipOpacity);
+  // Give the design a real LAYOUT as well as a clip. Without this the saved
+  // template carries clips only, _apply_template_layouts never sets
+  // spec.elements on a scene built from it (it only fills a role whose layout
+  // exists), and everything below about element text would be checking a
+  // scene that renders straight from spec.heading — passing whether or not
+  // the code under test works. "Edit layout" is also how a person makes a
+  // design in the first place, so this is the real path, not a contrivance.
+  await tap(page, 'composer-slide-edit-layout');
+  await page.waitForTimeout(400);
+  ok('editing the layout materializes elements to save with the design',
+     (await page.getByTestId('composer-element-panel').count()) === 1);
   await tap(page, 'composer-save-template');
   await page.waitForTimeout(2000);
 
@@ -1421,9 +1432,33 @@ async function confirmReel(page) {
   await page.getByTestId('composer-custom-template-select').selectOption({ index: clipTemplateIdx });
   await page.getByTestId('composer-brief').fill('shipping weekly, e2e design reuse');
   await tap(page, 'composer-autobuild');
-  await confirmReel(page);
+  // Edit scene 1's headline IN the review step, on a build that carries a
+  // design. A design bakes its copy into element text server-side
+  // (_fill_layout) and VisualCard renders elements in preference to
+  // spec.heading, so confirmReelReview writing only the plain fields left
+  // the edit invisible on the card that's actually built, previewed and
+  // exported — while the voiceover recorded it, so the reel said one thing
+  // and showed another. Reading it back off the rendered card (not the
+  // heading input, which was always right) is what tells those apart.
+  await page.getByTestId('composer-reel-review').waitFor({ timeout: 20000 });
+  await page.getByTestId('composer-reel-review-heading-0').fill('E2E designed edit');
+  await tap(page, 'composer-reel-review-confirm');
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForTimeout(1000);
+  ok("an edit made in review reaches the card a design actually renders, not just spec.heading",
+     (await page.getByTestId('composer-visuals').innerText()).includes('E2E designed edit'),
+     await page.getByTestId('composer-visuals').innerText());
+  // What makes the check above mean anything: the scene has to actually CARRY
+  // elements, or spec.heading renders by default and the assertion passes
+  // whether or not the elements were written to. composer-element-panel only
+  // mounts when activeAsset.spec.elements is truthy, so this says so directly
+  // rather than leaving it assumed.
+  await tap(page, 'composer-reel-view-canvas');
+  await page.waitForTimeout(300);
+  ok("...on a scene that really does carry elements, so that check isn't trivially true",
+     (await page.getByTestId('composer-element-panel').count()) === 1);
+  await tap(page, 'composer-reel-view-play');
+  await page.waitForTimeout(300);
   ok("building a fresh reel from a saved design keeps that design's own clip on the scene",
      (await sceneVideoUrl()) === savedClipUrl, { savedClipUrl, built: await sceneVideoUrl() });
   // The URL check above can't tell "the design's clip survived" apart from

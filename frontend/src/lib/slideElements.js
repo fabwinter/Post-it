@@ -79,18 +79,67 @@ export function elementsFromSpec(spec, theme, brand) {
     ];
   }
   // cover / slide
+  //
+  // The two text elements carry the same `role` tags _fill_layout stamps on
+  // its own output (server side), because role is how every other part of
+  // the app finds a slide's words once elements exist: slideText reads
+  // through them, elementsWithText writes through them, templateSlidesPayload
+  // sends the edited copy back to a template through them. Untagged, a slide
+  // materialized by "Edit layout" looks to all three like a slide with no
+  // words at all, and they quietly fall back to the spec.heading/spec.body
+  // this very function just froze a copy of — so an edit on the canvas never
+  // reaches the voiceover, the template, or anything else downstream.
   const isCover = t === "cover";
   const els = [
     mk({
-      type: "text", text: isCover ? (spec.title || "") : (spec.heading || ""),
+      type: "text", role: isCover ? "title" : "heading",
+      text: isCover ? (spec.title || "") : (spec.heading || ""),
       x: PAD, y: isCover ? 40 : 34, w: fullW, h: isCover ? 30 : 20,
       fontFamily: displayFont, fontSize: isCover ? 32 : 24, fontWeight: 800, color: fg, lineHeight: 1.1,
     }),
   ];
   if (!isCover && spec.body) {
-    els.push(mk({ type: "text", text: spec.body, x: PAD, y: 56, w: fullW, h: 22, fontFamily: bodyFont, fontSize: 15, fontWeight: 400, color: sub, lineHeight: 1.4 }));
+    els.push(mk({ type: "text", role: "body", text: spec.body, x: PAD, y: 56, w: fullW, h: 22, fontFamily: bodyFont, fontSize: 15, fontWeight: 400, color: sub, lineHeight: 1.4 }));
   }
   return els;
+}
+
+// Once a slide has freeform elements, THEY are the source of truth for its
+// words — spec.heading/spec.body stop being updated the moment "Edit layout"
+// materializes them (see enterLayoutEdit in Composer.jsx), and a design
+// applied at build time bakes the copy straight into element text
+// (_fill_layout, server side). So anything that READS a slide's words has to
+// ask the elements first, and anything that WRITES them has to write there
+// too — otherwise the two drift and whichever one you're not looking at is
+// silently wrong: an edit that never appears on the card, or a voiceover
+// recorded from a line nobody can see any more.
+const textRoles = { heading: ["title", "heading"], body: ["body"] };
+
+export function slideText(spec) {
+  const els = spec?.elements;
+  const textOf = (roles) => els?.find((el) => el.type === "text" && roles.includes(el.role))?.text;
+  const heading = textOf(textRoles.heading);
+  const body = textOf(textRoles.body);
+  return {
+    heading: heading !== undefined ? heading : (spec?.heading || ""),
+    body: body !== undefined ? body : (spec?.body || ""),
+  };
+}
+
+// The write half of slideText: puts fresh copy back into whichever elements
+// hold it, and renumbers the ones whose text is the slide's own position
+// (number/step) — a design bakes that in at build time too, so a scene moved
+// or removed keeps a stale number without this.
+export function elementsWithText(elements, { heading, body, index }) {
+  if (!elements) return elements;
+  return elements.map((el) => {
+    if (el.type !== "text") return el;
+    if (textRoles.heading.includes(el.role)) return { ...el, text: heading ?? el.text };
+    if (textRoles.body.includes(el.role)) return { ...el, text: body ?? el.text };
+    if (el.role === "number" && index != null) return { ...el, text: String(index) };
+    if (el.role === "step" && index != null) return { ...el, text: `STEP ${index}` };
+    return el;
+  });
 }
 
 export function newElement(type, theme, brand) {
