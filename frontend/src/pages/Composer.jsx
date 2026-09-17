@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { toPng } from "html-to-image";
+import { toPng, getFontEmbedCSS } from "html-to-image";
 import JSZip from "jszip";
 import { api, pollTask, apiErrorMessage } from "@/lib/api";
 import { useTextModels } from "@/lib/useTextModels";
@@ -1570,10 +1570,18 @@ export default function Composer() {
         setTimeout(done, 8000);
       }))));
     try {
+      // Fonts: embed them so exported text matches the preview. Every webfont
+      // sheet is now loaded in CORS mode (see public/index.html) so this can
+      // read their rules — but if some future sheet ever can't be read, skip
+      // font embedding rather than let the whole export throw (a file with
+      // fallback fonts still beats "Export failed").
+      let fontEmbedCSS;
+      try { fontEmbedCSS = await getFontEmbedCSS(node); } catch { fontEmbedCSS = undefined; }
       // cacheBust is deliberately OFF: it appends a query string that would
       // turn every already-proxied same-origin URL back into an uncached
       // cross-origin-looking fetch, reintroducing the taint this fixes.
-      return await toPng(node, { pixelRatio: 2 });
+      const opts = { pixelRatio: 2, ...(fontEmbedCSS != null ? { fontEmbedCSS } : { skipFonts: true }) };
+      return await toPng(node, opts);
     } finally {
       imgs.forEach((img, i) => {
         if (originals[i] == null) img.removeAttribute("src");

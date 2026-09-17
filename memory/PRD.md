@@ -40,3 +40,10 @@ Build a better version of Blotato.com. One platform that ideates, writes, design
 - Add OAuth/Apify posting connectors when keys available.
 - Calendar drag-to-reschedule.
 - Studio advanced model/quality options.
+
+## Updates (2026-09-17)
+- Fixed: "single" format post no longer becomes a carousel (backend _plan_to_assets gates decks to carousel/thread; explicit format now always honored over the model's choice).
+- Fixed: PNG/ZIP export "Export failed" on the create screen. Root cause was html-to-image reading cssRules of cross-origin webfont stylesheets (Fontshare, Google) loaded without CORS mode -> SecurityError. Fonts now load via <link crossorigin> (index.html) + crossOrigin on dynamic font links (fonts.js); export also proxies cross-origin images and has a skipFonts fallback.
+- Added: delete a generated media item in Library (single trash button) + batch multi-select delete (Select mode -> Delete N, via /api/generations/bulk-delete).
+- Added: "Save as project" button in the Composer header (saves current work as a draft/project).
+- Config: app persistence is Cloudflare D1 (CF_ACCOUNT_ID/CF_D1_DATABASE_ID/CF_API_TOKEN) + Vercel Blob; these must be set in backend/.env for data endpoints to work.
