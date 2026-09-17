@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { toPng, getFontEmbedCSS } from "html-to-image";
+import { toPng } from "html-to-image";
 import JSZip from "jszip";
 import { api, pollTask, apiErrorMessage } from "@/lib/api";
 import { useTextModels } from "@/lib/useTextModels";
@@ -18,6 +18,7 @@ import { VideoClipEditor } from "@/components/VideoClipEditor";
 import { ReelExportDialog } from "@/components/ReelExportDialog";
 import { PngExportPreview } from "@/components/PngExportPreview";
 import { proxied } from "@/lib/videoExport";
+import { safeFontEmbedCSS } from "@/lib/fontExport";
 import { MediaPicker } from "@/components/MediaPicker";
 import { useTemplateStyles } from "@/lib/templateStyles";
 import { useCustomTemplates } from "@/lib/useCustomTemplates";
@@ -1577,11 +1578,11 @@ export default function Composer() {
       // font embedding rather than let the whole export throw (a file with
       // fallback fonts still beats "Export failed").
       let fontEmbedCSS;
-      try { fontEmbedCSS = await getFontEmbedCSS(node); } catch { fontEmbedCSS = undefined; }
+      try { fontEmbedCSS = await safeFontEmbedCSS(); } catch { fontEmbedCSS = null; }
       // cacheBust is deliberately OFF: it appends a query string that would
       // turn every already-proxied same-origin URL back into an uncached
       // cross-origin-looking fetch, reintroducing the taint this fixes.
-      const opts = { pixelRatio: 2, ...(fontEmbedCSS != null ? { fontEmbedCSS } : { skipFonts: true }) };
+      const opts = { pixelRatio: 2, ...(fontEmbedCSS ? { fontEmbedCSS } : { skipFonts: true }) };
       return await toPng(node, opts);
     } finally {
       imgs.forEach((img, i) => {
