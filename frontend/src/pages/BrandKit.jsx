@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { toPng } from "html-to-image";
+import { safeFontEmbedCSS } from "@/lib/fontExport";
 import { api, apiErrorMessage } from "@/lib/api";
 import { useBrandKits } from "@/lib/useBrand";
 import { PLATFORM_LIST } from "@/lib/platforms";
@@ -224,7 +225,10 @@ export default function BrandKit() {
     if (!guidelineRef.current) return;
     setDownloadingGuideline(true);
     try {
-      const url = await toPng(guidelineRef.current, { pixelRatio: 2, cacheBust: true });
+      let fontEmbedCSS;
+      try { fontEmbedCSS = await safeFontEmbedCSS(); } catch { fontEmbedCSS = null; }
+      const opts = { pixelRatio: 2, cacheBust: true, ...(fontEmbedCSS ? { fontEmbedCSS } : { skipFonts: true }) };
+      const url = await toPng(guidelineRef.current, opts);
       const a = document.createElement("a");
       a.href = url;
       a.download = `${(form.name || "brand-guideline").replace(/\W+/g, "-").toLowerCase()}-guideline.png`;
