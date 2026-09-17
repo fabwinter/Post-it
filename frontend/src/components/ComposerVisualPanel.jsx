@@ -1,5 +1,6 @@
 import { useRef, useState, useEffect } from "react";
 import { toPng } from "html-to-image";
+import { safeFontEmbedCSS } from "@/lib/fontExport";
 import { api, apiErrorMessage } from "@/lib/api";
 import { useTextModels } from "@/lib/useTextModels";
 import { ModelPicker } from "@/components/ModelPicker";
@@ -63,7 +64,10 @@ export function ComposerVisualPanel({ onApply }) {
     if (!cardRef.current) return;
     setExporting(true);
     try {
-      const url = await toPng(cardRef.current, { pixelRatio: 2, cacheBust: true });
+      let fontEmbedCSS;
+      try { fontEmbedCSS = await safeFontEmbedCSS(); } catch { fontEmbedCSS = null; }
+      const opts = { pixelRatio: 2, cacheBust: true, ...(fontEmbedCSS ? { fontEmbedCSS } : { skipFonts: true }) };
+      const url = await toPng(cardRef.current, opts);
       const a = document.createElement("a");
       a.href = url; a.download = `createos-${template}.png`; a.click();
       toast.success("Downloaded PNG");
