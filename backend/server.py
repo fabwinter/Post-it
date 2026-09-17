@@ -28,6 +28,7 @@ import pdfplumber
 from pptx import Presentation
 from pptx.enum.dml import MSO_COLOR_TYPE, MSO_FILL_TYPE
 from pptx.enum.text import PP_ALIGN
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.opc.constants import RELATIONSHIP_TYPE as PPTX_RT
 from docx import Document as DocxDocument
 
@@ -1895,8 +1896,6 @@ def _pdf_group_text(chars: List[dict], page_w: float, page_h: float) -> List[Dic
         y = round(blk["_top"] / ph * 100, 2)
         w = round((blk["_x1"] - blk["_x0"]) / pw * 100, 2)
         h = round((blk["_bottom"] - blk["_top"] + (blk["_line_h"] * 0.3)) / ph * 100, 2)
-        if w < 30:
-            w = min(92, max(w, 40))
         font_name = _pdf_clean_font(blk["_fontname"])
         elements.append({
             "type": "text", "text": blk["text"],
@@ -1904,7 +1903,7 @@ def _pdf_group_text(chars: List[dict], page_w: float, page_h: float) -> List[Dic
             "fontFamily": font_name,
             "fontSize": round(_pdf_font_px(blk["_size"], pw)),
             "fontWeight": _pdf_font_weight(blk["_fontname"]),
-            "color": blk["_color"] or "#111111",
+            "color": blk["_color"],
             "align": "left",
             "lineHeight": 1.2,
             "rotation": 0, "opacity": 1,
@@ -1912,14 +1911,42 @@ def _pdf_group_text(chars: List[dict], page_w: float, page_h: float) -> List[Dic
     return elements
 
 
+def _blob_put_media(content: bytes, ext: str, content_type: str) -> Optional[str]:
+    """Re-hosts a source file's own media so a converted template carries the
+    real image bytes rather than an empty placeholder box."""
+    if not BLOB_READ_WRITE_TOKEN or not content:
+        return None
+    try:
+        blob = _blob_put(f"template-media/{uuid.uuid4().hex}.{ext}", content, content_type)
+        return blob.get("url")
+    except Exception:
+        logger.exception("Could not upload template media")
+        return None
+
+
+def _pdf_image_url(pdf_img) -> Optional[str]:
+    """One embedded PDF image, re-encoded as PNG and re-hosted."""
+    try:
+        im = pdf_img.image
+        if im.mode not in ("RGB", "RGBA"):
+            im = im.convert("RGB")
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+        return _blob_put_media(buf.getvalue(), "png", "image/png")
+    except Exception:
+        return None
+
+
 def _pdf_extract_design(pdf_bytes: bytes, max_pages: int = 20) -> Dict[str, Any]:
+    reader = PdfReader(io.BytesIO(pdf_bytes))
     pdf = pdfplumber.open(io.BytesIO(pdf_bytes))
     try:
         pages = pdf.pages[:max_pages]
         slides = []
         all_colors: Counter = Counter()
+        bg_for_scheme = None
 
-        for page in pages:
+        for i, page in enumerate(pages):
             pw, ph = page.width or 1, page.height or 1
 
             bg_color = None
@@ -1946,32 +1973,49 @@ def _pdf_extract_design(pdf_bytes: bytes, max_pages: int = 20) -> Dict[str, Any]
                     "color": fill, "rotation": 0, "opacity": 1,
                 })
                 all_colors[fill] += 1
+            if bg_color and bg_for_scheme is None:
+                bg_for_scheme = bg_color
 
-            chars = page.chars or []
-            text_elements = _pdf_group_text(chars, pw, ph)
-            for te in text_elements:
-                if te.get("color") and te["color"] not in ("#000000", "#ffffff"):
-                    all_colors[te["color"]] += 1
-
-            for img in (page.images or [])[:10]:
+            # The page's own pictures, re-hosted so the template carries the
+            # real image. pdfplumber gives the position, pypdf the decoded
+            # bytes; both walk a page's images in stream order, which is how
+            # they're paired. A picture that can't be re-hosted is dropped
+            # entirely rather than left as an empty placeholder box.
+            try:
+                pdf_imgs = list(reader.pages[i].images) if i < len(reader.pages) else []
+            except Exception:
+                pdf_imgs = []
+            for j, img in enumerate((page.images or [])[:10]):
                 x = round(img["x0"] / pw * 100, 2)
                 y = round(img["top"] / ph * 100, 2)
                 w = round((img["x1"] - img["x0"]) / pw * 100, 2)
                 h = round((img["bottom"] - img["top"]) / ph * 100, 2)
                 if x + w <= 1 or y + h <= 1 or x >= 99 or y >= 99:
                     continue
+                url = _pdf_image_url(pdf_imgs[j]) if j < len(pdf_imgs) else None
+                if not url:
+                    continue
                 blocks.append({
                     "type": "image", "x": x, "y": y, "w": w, "h": h,
-                    "url": "", "needs_image": True,
-                    "rotation": 0, "opacity": 1,
+                    "url": url, "fit": "cover", "rotation": 0, "opacity": 1,
                 })
 
-            texts_with_meta = []
+            chars = page.chars or []
+            text_elements = _pdf_group_text(chars, pw, ph)
             for te in text_elements:
-                texts_with_meta.append({
-                    "is_title": False, "text": te["text"], "font_pt": te.get("fontSize", 0),
-                    "element": te,
-                })
+                if te.get("color") and te["color"] not in ("#000000", "#ffffff"):
+                    all_colors[te["color"]] += 1
+            # A text run with no explicit fill gets a color that reads
+            # against this page's own background, not an arbitrary #111111.
+            text_default = "#111111" if _hex_luminance(bg_color or "#ffffff") >= 0.5 else "#ffffff"
+            for te in text_elements:
+                if not te.get("color"):
+                    te["color"] = text_default
+
+            texts_with_meta = [
+                {"is_title": False, "text": te["text"], "font_pt": te.get("fontSize", 0), "element": te}
+                for te in text_elements
+            ]
 
             headline = _pptx_pick_headline(texts_with_meta)
             rest = [t for t in texts_with_meta if t is not headline]
@@ -1983,9 +2027,12 @@ def _pdf_extract_design(pdf_bytes: bytes, max_pages: int = 20) -> Dict[str, Any]
                 body_src["element"]["role_hint"] = "body"
 
             elements = blocks + [t["element"] for t in texts_with_meta]
+            # The outline's body is ONLY the body slot's own text — the other
+            # non-slot text elements carry their wording verbatim in the
+            # layout, so joining everything here would render it twice.
             slides.append({
                 "heading": headline["text"] if headline else "",
-                "body": " ".join(t["text"] for t in rest)[:500],
+                "body": (body_src["text"] if body_src and len(body_src["text"]) > 24 else "")[:500],
                 "bg_color": bg_color, "elements": elements,
             })
     finally:
@@ -1994,8 +2041,8 @@ def _pdf_extract_design(pdf_bytes: bytes, max_pages: int = 20) -> Dict[str, Any]
     scheme = {}
     if all_colors:
         by_freq = [hx for hx, _ in all_colors.most_common(6)]
-        if bg_color:
-            scheme["lt1"] = bg_color
+        if bg_for_scheme:
+            scheme["lt1"] = bg_for_scheme
         else:
             by_lum = sorted(by_freq, key=_hex_luminance)
             avg = sum(_hex_luminance(h) for h in by_freq) / len(by_freq)
@@ -2270,10 +2317,13 @@ def _pptx_extract_design(pptx_bytes: bytes, max_slides: int = 20) -> Dict[str, A
         if body_src and len(body_src["text"]) > 24:
             body_src["element"]["role_hint"] = "body"
 
-        elements = blocks + [t["element"] for t in texts]
+        elements = blocks + _pptx_pictures(slide, sw, sh) + [t["element"] for t in texts]
+        # Same as the PDF branch: the outline's body is the body slot's own
+        # text only, never the join of every other box (they keep their own
+        # wording in the layout verbatim).
         slides.append({
             "heading": headline["text"] if headline else "",
-            "body": " ".join(t["text"] for t in rest)[:500],
+            "body": (body_src["text"] if body_src and len(body_src["text"]) > 24 else "")[:500],
             "bg_color": bg_color, "elements": elements,
         })
     return {"slides": slides, "scheme": scheme, "major_font": theme["major_font"], "minor_font": theme["minor_font"]}
@@ -2336,6 +2386,32 @@ def _pptx_shape_fills(slide, scheme: Dict[str, str], sw: int, sh: int) -> (Optio
         blocks.append({"type": "shape", "shape": "rect", "x": x, "y": y, "w": w, "h": h,
                        "color": color, "rotation": 0, "opacity": 1})
     return bg, blocks
+
+
+def _pptx_pictures(slide, sw: int, sh: int) -> List[Dict[str, Any]]:
+    """The deck's own pictures, re-hosted into Blob storage so a converted
+    template carries the real image. A picture has no text frame, so the
+    text pass in _pptx_extract_design never sees it — without this every
+    image in a deck silently vanished from the converted design."""
+    pics = []
+    for shape in slide.shapes:
+        try:
+            if shape.shape_type not in (MSO_SHAPE_TYPE.PICTURE, MSO_SHAPE_TYPE.LINKED_PICTURE):
+                continue
+            box = _pptx_box(shape.left, shape.top, shape.width, shape.height, sw, sh)
+            if not box:
+                continue
+            img = shape.image
+            ext = (img.ext or "png").lower()
+            url = _blob_put_media(img.blob, ext, img.content_type or f"image/{ext}")
+            if not url:
+                continue
+            x, y, w, h = box
+            pics.append({"type": "image", "x": x, "y": y, "w": w, "h": h,
+                         "url": url, "fit": "cover", "rotation": 0, "opacity": 1})
+        except Exception:
+            continue
+    return pics
 
 
 def _docx_extract(docx_bytes: bytes, max_blocks: int = 4000) -> str:
@@ -3217,7 +3293,11 @@ async def create_template_from_file(req: TemplateFromFileRequest):
         raw_slides = [{"heading": s["heading"], "body": s["body"]} for s in design["slides"]]
         if not raw_slides or not any(s["heading"] or s["body"] for s in raw_slides):
             raise HTTPException(status_code=422, detail="Couldn't find any slide text in that PPTX")
-        slides = await _abstract_slides(raw_slides, model)
+        # Converted templates keep the file's own wording verbatim — the
+        # original text is part of what's being converted, and the extracted
+        # layout elements carry it per-box. Generic instructions replaced it
+        # before, which read as the template losing the user's content.
+        slides = raw_slides
         # The deck's real color scheme and layout, not a generic guess — see
         # _pptx_extract_design. The four built-in theme keys are still a
         # backward-compatible carrier for anything that falls outside the
@@ -3241,7 +3321,11 @@ async def create_template_from_file(req: TemplateFromFileRequest):
             raw_slides = [{"heading": f"Page {i+1}", "body": t[:500]} for i, t in enumerate(pdf["page_texts"]) if t]
             if not raw_slides:
                 raise HTTPException(status_code=422, detail="Couldn't find any text in that PDF")
-        slides = await _abstract_slides(raw_slides, model)
+        # Converted templates keep the file's own wording verbatim — the
+        # original text is part of what's being converted, and the extracted
+        # layout elements carry it per-box. Generic instructions replaced it
+        # before, which read as the template losing the user's content.
+        slides = raw_slides
         scheme_hexes = list(design["scheme"].values())
         if scheme_hexes:
             colors = _suggest_palette(scheme_hexes)
@@ -3256,8 +3340,20 @@ async def create_template_from_file(req: TemplateFromFileRequest):
             hexes = await asyncio.to_thread(_dominant_colors, data)
         except Exception as e:
             raise HTTPException(status_code=422, detail=f"Couldn't read that image: {e}")
-        colors = _suggest_palette(hexes)  # a single visual has no slide structure, just a palette
-        slides, fmt, theme, source_kind = [], "single", "midnight", "image"
+        colors = _suggest_palette(hexes)
+        bg = colors.get("bg") or "#ffffff"
+        # A single visual IS the design: one full-bleed picture using the
+        # already-uploaded source URL, plus its palette — rather than a
+        # palette alone with nothing visual to show.
+        design_slides = [{
+            "heading": "", "body": "", "bg_color": bg,
+            "elements": [{"type": "image", "x": 0, "y": 0, "w": 100, "h": 100,
+                          "url": req.source_url, "fit": "cover", "rotation": 0, "opacity": 1}],
+        }]
+        layouts, bg_colors = await asyncio.to_thread(_layouts_from_design_slides, design_slides)
+        slides = [{"heading": "", "body": ""}]
+        theme = "whiteboard" if _hex_luminance(bg) >= 0.5 else "midnight"
+        fmt, source_kind = "single", "image"
 
     else:
         raise HTTPException(status_code=400, detail="source_type must be pdf, pptx, or image")
