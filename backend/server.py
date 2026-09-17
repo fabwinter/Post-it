@@ -1969,7 +1969,7 @@ def _pdf_extract_design(pdf_bytes: bytes, max_pages: int = 20) -> Dict[str, Any]
             texts_with_meta = []
             for te in text_elements:
                 texts_with_meta.append({
-                    "text": te["text"], "font_pt": te.get("fontSize", 0),
+                    "is_title": False, "text": te["text"], "font_pt": te.get("fontSize", 0),
                     "element": te,
                 })
 
