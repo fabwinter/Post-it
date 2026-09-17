@@ -24,6 +24,7 @@ from urllib.parse import urljoin, urlparse
 from collections import Counter
 from PIL import Image
 from pypdf import PdfReader
+import pdfplumber
 from pptx import Presentation
 from pptx.enum.dml import MSO_COLOR_TYPE, MSO_FILL_TYPE
 from pptx.enum.text import PP_ALIGN
@@ -1788,6 +1789,225 @@ def _pdf_extract(pdf_bytes: bytes, max_pages: int = 20) -> Dict[str, Any]:
             "first_image": first_image, "fonts": fonts, "vector_colors": vector_colors}
 
 
+def _pdf_color_to_hex(color) -> Optional[str]:
+    if color is None:
+        return None
+    try:
+        if isinstance(color, (int, float)):
+            v = round(float(color) * 255)
+            return f"#{v:02x}{v:02x}{v:02x}"
+        if isinstance(color, (tuple, list)):
+            if len(color) >= 3:
+                r, g, b = (round(float(c) * 255) for c in color[:3])
+                return f"#{r:02x}{g:02x}{b:02x}"
+            if len(color) == 1:
+                v = round(float(color[0]) * 255)
+                return f"#{v:02x}{v:02x}{v:02x}"
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
+def _pdf_clean_font(fontname: Optional[str]) -> Optional[str]:
+    if not fontname:
+        return None
+    name = fontname.split("+")[-1]
+    name = re.sub(r"[-,](Bold|Italic|Oblique|Regular|Light|Medium|Semibold|SemiBold|ExtraBold|Black|Thin|Heavy|Book|MT|PS)+$", "", name, flags=re.I)
+    key = re.sub(r"[^a-z]", "", name.lower())
+    return _PDF_STANDARD_FONTS.get(key, name)
+
+
+def _pdf_font_weight(fontname: str) -> int:
+    if not fontname:
+        return 400
+    low = fontname.lower()
+    if any(w in low for w in ("black", "heavy")):
+        return 900
+    if any(w in low for w in ("extrabold", "extra-bold")):
+        return 800
+    if any(w in low for w in ("semibold", "demibold", "semi-bold")):
+        return 600
+    if "bold" in low:
+        return 700
+    if any(w in low for w in ("light", "thin")):
+        return 300
+    return 400
+
+
+def _pdf_font_px(size_pt: float, page_w_pt: float) -> float:
+    if page_w_pt <= 0:
+        return size_pt
+    return size_pt / page_w_pt * CARD_REF_WIDTH
+
+
+def _pdf_group_text(chars: List[dict], page_w: float, page_h: float) -> List[Dict[str, Any]]:
+    if not chars:
+        return []
+    chars = sorted(chars, key=lambda c: (round(c["top"]), c["x0"]))
+    lines, current, last_top = [], [], None
+    for ch in chars:
+        if last_top is not None and abs(ch["top"] - last_top) > 3:
+            lines.append(current)
+            current = []
+        current.append(ch)
+        last_top = ch["top"]
+    if current:
+        lines.append(current)
+    blocks = []
+    for line in lines:
+        if not line:
+            continue
+        text = "".join(ch["text"] for ch in line).strip()
+        if not text:
+            continue
+        fontname = line[0].get("fontname", "")
+        size = line[0].get("size", 0) or 0
+        color = _pdf_color_to_hex(line[0].get("non_stroking_color"))
+        x0 = min(ch["x0"] for ch in line)
+        x1 = max(ch["x1"] for ch in line)
+        top = min(ch["top"] for ch in line)
+        bottom = max(ch["bottom"] for ch in line)
+        line_h = bottom - top or size or 12
+        merged = False
+        if blocks:
+            prev = blocks[-1]
+            gap = top - prev["_bottom"]
+            same_style = (prev["_fontname"] == fontname
+                          and abs(prev["_size"] - size) < 0.5
+                          and prev["_color"] == color)
+            if same_style and 0 < gap < line_h * 1.6:
+                prev["text"] += "\n" + text
+                prev["_bottom"] = bottom
+                prev["_x1"] = max(prev["_x1"], x1)
+                prev["_x0"] = min(prev["_x0"], x0)
+                merged = True
+        if not merged:
+            blocks.append({
+                "text": text,
+                "_fontname": fontname, "_size": size, "_color": color,
+                "_x0": x0, "_top": top, "_x1": x1, "_bottom": bottom,
+                "_line_h": line_h,
+            })
+    pw, ph = page_w or 1, page_h or 1
+    elements = []
+    for blk in blocks:
+        x = round(blk["_x0"] / pw * 100, 2)
+        y = round(blk["_top"] / ph * 100, 2)
+        w = round((blk["_x1"] - blk["_x0"]) / pw * 100, 2)
+        h = round((blk["_bottom"] - blk["_top"] + (blk["_line_h"] * 0.3)) / ph * 100, 2)
+        if w < 30:
+            w = min(92, max(w, 40))
+        font_name = _pdf_clean_font(blk["_fontname"])
+        elements.append({
+            "type": "text", "text": blk["text"],
+            "x": x, "y": y, "w": w, "h": max(h, 4),
+            "fontFamily": font_name,
+            "fontSize": round(_pdf_font_px(blk["_size"], pw)),
+            "fontWeight": _pdf_font_weight(blk["_fontname"]),
+            "color": blk["_color"] or "#111111",
+            "align": "left",
+            "lineHeight": 1.2,
+            "rotation": 0, "opacity": 1,
+        })
+    return elements
+
+
+def _pdf_extract_design(pdf_bytes: bytes, max_pages: int = 20) -> Dict[str, Any]:
+    pdf = pdfplumber.open(io.BytesIO(pdf_bytes))
+    try:
+        pages = pdf.pages[:max_pages]
+        slides = []
+        all_colors: Counter = Counter()
+
+        for page in pages:
+            pw, ph = page.width or 1, page.height or 1
+
+            bg_color = None
+            blocks = []
+            for rect in (page.rects or []):
+                fill = _pdf_color_to_hex(rect.get("non_stroking_color"))
+                if not fill:
+                    continue
+                rw = rect.get("width", 0) or 0
+                rh = rect.get("height", 0) or 0
+                coverage = (rw * rh) / (pw * ph)
+                if coverage >= 0.85:
+                    bg_color = bg_color or fill
+                    continue
+                x = round(rect["x0"] / pw * 100, 2)
+                y = round(rect["top"] / ph * 100, 2)
+                w = round(rw / pw * 100, 2)
+                h = round(rh / ph * 100, 2)
+                if x + w <= 1 or y + h <= 1 or x >= 99 or y >= 99:
+                    continue
+                blocks.append({
+                    "type": "shape", "shape": "rect",
+                    "x": x, "y": y, "w": w, "h": h,
+                    "color": fill, "rotation": 0, "opacity": 1,
+                })
+                all_colors[fill] += 1
+
+            chars = page.chars or []
+            text_elements = _pdf_group_text(chars, pw, ph)
+            for te in text_elements:
+                if te.get("color") and te["color"] not in ("#000000", "#ffffff"):
+                    all_colors[te["color"]] += 1
+
+            for img in (page.images or [])[:10]:
+                x = round(img["x0"] / pw * 100, 2)
+                y = round(img["top"] / ph * 100, 2)
+                w = round((img["x1"] - img["x0"]) / pw * 100, 2)
+                h = round((img["bottom"] - img["top"]) / ph * 100, 2)
+                if x + w <= 1 or y + h <= 1 or x >= 99 or y >= 99:
+                    continue
+                blocks.append({
+                    "type": "image", "x": x, "y": y, "w": w, "h": h,
+                    "url": "", "needs_image": True,
+                    "rotation": 0, "opacity": 1,
+                })
+
+            texts_with_meta = []
+            for te in text_elements:
+                texts_with_meta.append({
+                    "text": te["text"], "font_pt": te.get("fontSize", 0),
+                    "element": te,
+                })
+
+            headline = _pptx_pick_headline(texts_with_meta)
+            rest = [t for t in texts_with_meta if t is not headline]
+            body_src = max((t for t in rest if not _is_mark_text(t["text"])),
+                           key=lambda t: len(t["text"]), default=None)
+            if headline:
+                headline["element"]["role_hint"] = "title"
+            if body_src and len(body_src["text"]) > 24:
+                body_src["element"]["role_hint"] = "body"
+
+            elements = blocks + [t["element"] for t in texts_with_meta]
+            slides.append({
+                "heading": headline["text"] if headline else "",
+                "body": " ".join(t["text"] for t in rest)[:500],
+                "bg_color": bg_color, "elements": elements,
+            })
+    finally:
+        pdf.close()
+
+    scheme = {}
+    if all_colors:
+        by_freq = [hx for hx, _ in all_colors.most_common(6)]
+        if bg_color:
+            scheme["lt1"] = bg_color
+        else:
+            by_lum = sorted(by_freq, key=_hex_luminance)
+            avg = sum(_hex_luminance(h) for h in by_freq) / len(by_freq)
+            scheme["lt1"] = by_lum[0] if avg < 0.5 else by_lum[-1]
+        dk = next((hx for hx in by_freq if hx != scheme.get("lt1")), "#111111")
+        scheme["dk1"] = dk
+        accent = next((hx for hx in by_freq if hx not in (scheme.get("lt1"), dk)), dk)
+        scheme["accent1"] = accent
+
+    return {"slides": slides, "scheme": scheme, "major_font": None, "minor_font": None}
+
+
 def _pptx_extract(pptx_bytes: bytes, max_slides: int = 30) -> List[Dict[str, str]]:
     prs = Presentation(io.BytesIO(pptx_bytes))
     slides = []
@@ -3014,51 +3234,20 @@ async def create_template_from_file(req: TemplateFromFileRequest):
 
     elif req.source_type == "pdf":
         data = await asyncio.to_thread(_fetch_bytes, req.source_url)
-        pdf = await asyncio.to_thread(_pdf_extract, data)
-        raw_slides = [{"heading": f"Page {i+1}", "body": t[:500]} for i, t in enumerate(pdf["page_texts"]) if t]
-        if not raw_slides:
-            raise HTTPException(status_code=422, detail="Couldn't find any text in that PDF")
+        design = await asyncio.to_thread(_pdf_extract_design, data)
+        raw_slides = [{"heading": s["heading"], "body": s["body"]} for s in design["slides"]]
+        if not raw_slides or not any(s["heading"] or s["body"] for s in raw_slides):
+            pdf = await asyncio.to_thread(_pdf_extract, data)
+            raw_slides = [{"heading": f"Page {i+1}", "body": t[:500]} for i, t in enumerate(pdf["page_texts"]) if t]
+            if not raw_slides:
+                raise HTTPException(status_code=422, detail="Couldn't find any text in that PDF")
         slides = await _abstract_slides(raw_slides, model)
-        theme = "midnight"
-        if pdf["vector_colors"]:
-            colors = pdf["vector_colors"]
-        elif pdf["first_image"]:
-            try:
-                hexes = await asyncio.to_thread(_dominant_colors, pdf["first_image"])
-                colors = _suggest_palette(hexes)
-            except Exception:
-                pass
-        font = (pdf.get("fonts") or [None])[0]
-        if colors or font:
-            # No embedded per-shape geometry to recover from a PDF short of a
-            # much heavier PDF-layout dependency — but the real extracted
-            # colors and/or real font now actually reach a generated post
-            # instead of being computed and then discarded; whichever one
-            # wasn't found (a text-only PDF has no image to sample colors
-            # from; some PDFs don't expose real font resources) falls back to
-            # a sane generic default rather than blocking on the other.
-            bg = colors.get("bg", "#0A0A0A") if colors else "#0A0A0A"
-            fg = colors.get("fg", "#FFFFFF") if colors else "#FFFFFF"
-            accent = colors.get("accent", "#E2FF3D") if colors else "#E2FF3D"
-            theme = "whiteboard" if _hex_luminance(bg) >= 0.5 else "midnight"
-            layouts = {
-                "cover": [
-                    {"type": "text", "role": "title", "x": 8, "y": 30, "w": 84, "h": 40,
-                     "fontFamily": font, "fontSize": 38, "fontWeight": 800, "color": fg,
-                     "align": "left", "lineHeight": 1.05},
-                    {"type": "shape", "shape": "rect", "x": 8, "y": 85, "w": 20, "h": 1.4,
-                     "color": accent, "opacity": 1},
-                ],
-                "slide": [
-                    {"type": "text", "role": "heading", "x": 8, "y": 20, "w": 84, "h": 22,
-                     "fontFamily": font, "fontSize": 26, "fontWeight": 800, "color": fg,
-                     "align": "left", "lineHeight": 1.1},
-                    {"type": "text", "role": "body", "x": 8, "y": 48, "w": 84, "h": 34,
-                     "fontFamily": font, "fontSize": 16, "fontWeight": 400, "color": fg,
-                     "align": "left", "lineHeight": 1.4},
-                ],
-            }
-            bg_colors = {"cover": bg, "slide": bg}
+        scheme_hexes = list(design["scheme"].values())
+        if scheme_hexes:
+            colors = _suggest_palette(scheme_hexes)
+        bg_guess = design["scheme"].get("lt1") or "#ffffff"
+        theme = "whiteboard" if _hex_luminance(bg_guess) >= 0.5 else "midnight"
+        layouts, bg_colors = await asyncio.to_thread(_layouts_from_design_slides, design["slides"])
         fmt, source_kind = "carousel", "pdf"
 
     elif req.source_type == "image":
