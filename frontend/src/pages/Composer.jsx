@@ -1656,8 +1656,22 @@ export default function Composer() {
     const slug = (title || "post").replace(/\W+/g, "-").toLowerCase();
     if (pngPreview.mode === "single") {
       const { index, url } = pngPreview.images[0];
-      const a = document.createElement("a");
-      a.href = url; a.download = `${slug}-${index + 1}.png`; a.click();
+      // Convert the data URL to a Blob URL before triggering the download —
+      // a large data URL in an <a download> can silently fail to save in some
+      // browsers (Safari is the worst offender), while a Blob URL of the same
+      // bytes downloads reliably everywhere. The ZIP path below already does
+      // this; the single-PNG path was the only one still using a raw data URL.
+      try {
+        const resp = await fetch(url);
+        const blob = await resp.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = blobUrl; a.download = `${slug}-${index + 1}.png`; a.click();
+        URL.revokeObjectURL(blobUrl);
+      } catch {
+        const a = document.createElement("a");
+        a.href = url; a.download = `${slug}-${index + 1}.png`; a.click();
+      }
       toast.success("Downloaded PNG");
       setPngPreview(null);
       return;
