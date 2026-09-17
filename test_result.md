@@ -101,3 +101,105 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+## user_problem_statement: "Fix single image visual generating a carousel." When a user requests a single-image post via the Composer, the AI build-post flow sometimes returned a multi-slide carousel instead of one visual.
+
+## backend:
+##   - task: "ai/build-post single format returns one visual, not a carousel"
+##     implemented: true
+##     working: true
+##     file: "backend/server.py"
+##     stuck_count: 0
+##     priority: "high"
+##     needs_retesting: false
+##     status_history:
+##         -working: "NA"
+##         -agent: "main"
+##         -comment: "_plan_to_assets now only builds a cover+slide deck when format is a DECK_FORMAT (carousel/thread). For single/story it emits exactly one visual asset (quote/infographic/photo/cover), with a cover fallback when the model returns only slides. Model previously returned a slides[] array even for single, which was honored and produced a carousel."
+##         -working: false
+##         -agent: "testing"
+##         -comment: "Initial testing revealed the issue was NOT fully fixed. While _plan_to_assets correctly handles format logic, the problem was at line 4745-4746 where plan['format'] was only overridden if NOT in allowed list. When user requested format='single' but model returned format='carousel' (which IS allowed), it wasn't being overridden. Fixed by changing logic to: if fmt != 'auto', always use user's requested format; else if model's format not in allowed, use default."
+##         -working: true
+##         -agent: "testing"
+##         -comment: "After fix at lines 4745-4750, all tests pass. Test 1: format='single' on Instagram returns exactly 1 asset with template='cover'. Test 2: format='story' on Instagram returns exactly 1 asset with template='cover'. Test 3: format='carousel' on Instagram returns 7 assets (1 cover + 6 slides). Test 4: format='single' on LinkedIn returns exactly 1 asset. No 'slide' template assets appear in single/story formats. Carousel functionality preserved."
+##         -working: true
+##         -agent: "testing"
+##         -comment: "Regression test confirmed. POST /api/ai/build-post with {topic:'healthy breakfast ideas', platform:'instagram', format:'single'} returned 200 with format='single' and exactly 1 asset with template='cover'. No 'slide' template assets present. The fix continues to work correctly."
+
+## metadata:
+##   created_by: "main_agent"
+##   version: "1.2"
+##   test_sequence: 2
+##   run_ui: false
+
+## test_plan:
+##   current_focus: []
+##   stuck_tasks: []
+##   test_all: false
+##   test_priority: "high_first"
+
+## agent_communication:
+##     -agent: "main"
+##     -message: "Please test POST /api/ai/build-post. Verify: (1) format='single' on instagram returns assets with exactly ONE item (not a cover+multiple slides). (2) format='story' returns one asset. (3) format='carousel' still returns a cover + multiple slide assets. (4) The single asset has a valid spec (template cover/quote/infographic). Uses PoYo/LLM key already in backend/.env."
+##     -agent: "testing"
+##     -message: "Bug found and fixed. The main agent's fix in _plan_to_assets was correct but incomplete. The root cause was that when user explicitly requested format='single', the model was returning format='carousel', and the code at line 4745 only overrode invalid formats, not valid-but-wrong ones. Fixed by always honoring user's explicit format choice when fmt != 'auto'. All 4 test cases now pass: single/story return 1 asset each, carousel returns multiple assets with correct structure."
+
+## ---- 2026-09-16 session: download fix, delete media, save-as-project ----
+## metadata:
+##   created_by: "main_agent"
+##   version: "1.4"
+##   test_sequence: 4
+##   run_ui: false
+
+## test_plan:
+##   current_focus: []
+##   stuck_tasks: []
+##   test_all: false
+##   test_priority: "high_first"
+
+## agent_communication:
+##     -agent: "main"
+##     -message: "DB restored (Cloudflare D1 creds added). Please verify backend: (1) POST /api/posts creates a post (returns id) and it appears in GET /api/posts; PUT /api/posts/{id} updates it. (2) Create a generation or use an existing one from GET /api/media, then DELETE /api/generations/{id} returns ok and the item disappears from GET /api/media. (3) Re-confirm POST /api/ai/build-post with format=single returns exactly one asset (regression)."
+##     -agent: "testing"
+##     -message: "All backend tests passed successfully. (1) Posts CRUD: POST creates post with id, GET lists it, PUT updates it (title changed from 'Test project' to 'Test project edited'), DELETE removes it. All operations return 200 and work correctly. (2) Generation delete: DELETE /api/generations/{id} returns 200 with {'ok': true} and the specific generation is removed from the database (verified by checking GET /api/media - the deleted ID is no longer present). (3) Regression test: POST /api/ai/build-post with format='single' returns exactly 1 asset with template='cover', no 'slide' templates. All three backend features are working correctly with Cloudflare D1."
+
+## ---- 2026-09-17 update: PNG export root cause + multi-select delete ----
+## frontend:
+##   - task: "PNG/ZIP export root cause = cross-origin webfont cssRules SecurityError"
+##     implemented: true
+##     working: true
+##     file: "frontend/public/index.html, frontend/src/index.css, frontend/src/lib/fonts.js, frontend/src/pages/Composer.jsx"
+##     needs_retesting: false
+##     status_history:
+##         -working: "NA"
+##         -agent: "main"
+##         -comment: "REAL root cause (not image tainting): html-to-image embedWebFonts read cssRules of cross-origin webfont stylesheets (Fontshare Cabinet Grotesk/Satoshi via @import, Google Fonts) loaded WITHOUT CORS mode -> SecurityError -> toPng rejected -> 'Export failed' for EVERY visual (even text-only). Fix: load all webfont sheets in CORS mode: moved the two @import rules from index.css into <link crossorigin> in index.html, added crossorigin to Inter link, added crossOrigin to fonts.js dynamic links. Both hosts send ACAO:*. Composer captureCardPng now also precomputes getFontEmbedCSS with a skipFonts fallback, and still proxies cross-origin images to avoid canvas taint. Verified via browser automation: PNG download fired (file: 3-gentle-shifts-for-peaceful-sleep-1.png), 0 SecurityErrors."
+##         -working: true
+##         -agent: "testing"
+##         -comment: "Tested PNG export (single visual) and ZIP export (carousel). PNG: Built post with topic '3 tips for better sleep', PNG download button appeared, clicked it, file '3-gentle-sleep-tips-for-exhausted-mothers-1.png' downloaded successfully, 'Downloaded PNG' toast appeared, NO 'Export failed' error. ZIP: Built carousel with '5 productivity tips', 'All N' button appeared, clicked it, file '5-quiet-productivity-shifts-for-moms-slides.zip' downloaded successfully, success toast appeared. No SecurityError in console logs - the crossOrigin fix is working perfectly. Both export features are fully functional."
+##   - task: "Multi-select (batch) delete for generated media in Library"
+##     implemented: true
+##     working: true
+##     file: "frontend/src/pages/Library.jsx"
+##     needs_retesting: false
+##     status_history:
+##         -working: "NA"
+##         -agent: "main"
+##         -comment: "Added Select mode on the Generated tab (testid library-media-select-mode). In select mode each card is a checkbox (lime check overlay), and Delete (N) (library-media-delete-selected) calls POST /api/generations/bulk-delete; Cancel exits. Single-item trash button retained when not selecting. Verified select UI via browser (Delete (2) shown)."
+##         -working: true
+##         -agent: "testing"
+##         -comment: "Tested both single and multi-select delete in Library Generated tab. Single delete: Clicked trash button (library-media-delete-{id}) on first item, confirmed dialog, item deleted successfully (60→59 items), 'Deleted' toast appeared. Multi-select: Clicked 'Select' button (library-media-select-mode), selected 2 items (lime border/check appeared), 'Delete (2)' button showed correct count, clicked it, confirmed dialog, both items deleted successfully (59→57 items), 'Deleted 2 generations' toast appeared. Deleted 3 generations total. Both single and batch delete features working correctly."
+##   - task: "Save as project button in Composer header"
+##     implemented: true
+##     working: true
+##     file: "frontend/src/pages/Composer.jsx"
+##     needs_retesting: false
+##     status_history:
+##         -working: true
+##         -agent: "testing"
+##         -comment: "Tested 'Save as project' feature. After building a carousel post, clicked 'Save as project' button (composer-save-project), 'Draft saved' toast appeared immediately, no error toast. Navigated to /projects page, verified the saved post appears in the list - 'All' tab shows '(4)' projects, found text containing 'productivity' confirming the saved carousel is visible. Save functionality working correctly."
+
+## agent_communication:
+##     -agent: "main"
+##     -message: "Please run FRONTEND verification: (1) Composer: choose 'Single visual', fill topic (testid composer-brief), click composer-autobuild, wait for the cover; click PNG (composer-slide-download) and confirm a .png downloads with NO 'Export failed' toast. (2) Switch format to Carousel, build, then click the 'All N' button (composer-slide-download-all) and confirm a .zip downloads. (3) Library Generated tab: single delete via library-media-delete-{id}; then Select mode (library-media-select-mode), pick 2 cards, Delete (library-media-delete-selected), confirm they disappear (this deletes REAL generations — delete at most 2-3). (4) Composer header 'Save as project' (composer-save-project) after building a post -> success toast, no error. NOTE: DB is Cloudflare D1 (creds now set). Only delete a handful of items."
+     -agent: "testing"
+     -message: "All 4 frontend features tested and PASSED. (1) PNG export: Downloaded '3-gentle-sleep-tips-for-exhausted-mothers-1.png' successfully with 'Downloaded PNG' toast, no 'Export failed' error. (2) ZIP export: Downloaded '5-quiet-productivity-shifts-for-moms-slides.zip' successfully with success toast. (3) Save as project: 'Draft saved' toast appeared, no error, verified project appears in /projects (All tab shows 4 projects, found 'productivity' text confirming the saved post is visible). (4) Delete media: Single delete worked (60→59 items, 'Deleted' toast), multi-select worked (selected 2 items, 'Delete (2)' button appeared, deleted successfully 59→57 items, 'Deleted 2 generations' toast). No SecurityError or webfont cssRules errors detected in console - the crossOrigin fix is working. Deleted 3 generations total as instructed."

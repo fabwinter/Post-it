@@ -4457,8 +4457,14 @@ def _plan_to_assets(plan: dict, theme: str) -> List[Dict[str, Any]]:
             })
         return assets
 
+    # A deck of slides belongs only to a carousel. The JSON schema always
+    # lists the "slides" key, so the model often returns a slides array even
+    # for a single/story/photo post — honoring it there turned a requested
+    # SINGLE image into a full carousel (the bug this guards). Only build the
+    # cover + slide deck when the chosen format actually asks for one.
+    DECK_FORMATS = {"carousel", "thread"}
     slides = visual.get("slides") or []
-    if slides:
+    if slides and fmt in DECK_FORMATS:
         total = len(slides) + 1
         assets.append({
             "type": "visual", "caption": "",
@@ -4497,6 +4503,20 @@ def _plan_to_assets(plan: dict, theme: str) -> List[Dict[str, Any]]:
         assets.append({"type": "visual", "caption": "", "spec": {
             "template": "cover", "theme": theme, "index": 0, "total": 1,
             "title": visual.get("title") or plan.get("hook") or plan.get("title") or "",
+            "image_prompt": visual.get("cover_image_prompt") or visual.get("image_prompt") or "",
+        }})
+    else:
+        # A single/story post whose plan carried neither a quote, an
+        # infographic nor an image prompt (e.g. the model left style on
+        # "carousel" while the format is single) still needs exactly one
+        # card — fall back to a cover built from the best available title,
+        # optionally seeded from the first slide's heading, rather than
+        # returning an empty canvas.
+        first = slides[0] if slides else {}
+        assets.append({"type": "visual", "caption": "", "spec": {
+            "template": "cover", "theme": theme, "index": 0, "total": 1,
+            "title": (visual.get("title") or plan.get("title") or first.get("heading")
+                      or plan.get("hook") or ""),
             "image_prompt": visual.get("cover_image_prompt") or visual.get("image_prompt") or "",
         }})
     return assets
@@ -4722,8 +4742,12 @@ async def ai_build_post(req: BuildPostRequest):
         plan = {"format": "single", "title": req.topic[:60], "hook": "", "caption": content.strip(),
                 "hashtags": [], "cta": "", "visual": {}}
 
-    if plan.get("format") not in allowed:
-        plan["format"] = fmt if fmt != "auto" else spec["default_format"]
+    # When the user explicitly requests a format (not "auto"), always honor it
+    # regardless of what the model returns. Only let the model choose when fmt is "auto".
+    if fmt != "auto":
+        plan["format"] = fmt
+    elif plan.get("format") not in allowed:
+        plan["format"] = spec["default_format"]
     # A template's theme was a deliberate choice when it was converted —
     # honor it over whatever the model happened to pick. Otherwise, a real
     # saved brand kit wins by default: the model is never even offered

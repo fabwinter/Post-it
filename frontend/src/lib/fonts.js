@@ -170,6 +170,7 @@ export function ensureFontLoaded(fontKey) {
   loaded.add(f.key);
   const link = document.createElement("link");
   link.rel = "stylesheet";
+  link.crossOrigin = "anonymous"; // CORS mode so html-to-image can read cssRules for export
   link.href = `https://fonts.googleapis.com/css2?family=${f.family}&display=swap`;
   document.head.appendChild(link);
 }
@@ -212,6 +213,7 @@ export function ensureAllFontsLoaded() {
   families.forEach((f) => loaded.add(f.key));
   const link = document.createElement("link");
   link.rel = "stylesheet";
+  link.crossOrigin = "anonymous"; // CORS mode so html-to-image can read cssRules for export
   link.href = `https://fonts.googleapis.com/css2?${families.map((f) => `family=${f.family}`).join("&")}&display=swap`;
   document.head.appendChild(link);
 }

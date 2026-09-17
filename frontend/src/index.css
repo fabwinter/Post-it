@@ -1,6 +1,7 @@
-@import url('https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@400,500,700,800&f[]=satoshi@400,500,700,900&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
-
+/* Webfonts (Cabinet Grotesk, Satoshi, JetBrains Mono, Inter) are loaded via
+   <link crossorigin> in public/index.html — NOT @import here — so their
+   cssRules are CORS-readable and html-to-image can embed them during PNG/
+   canvas export. @import cannot request CORS mode, which broke every export. */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

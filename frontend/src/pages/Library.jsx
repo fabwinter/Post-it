@@ -49,8 +49,15 @@ export default function Library() {
   const [loading, setLoading] = useState(true);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [adding, setAdding] = useState(false);
+  // Multi-select delete for the Generated tab. Its own state (not "any
+  // selected") so an empty selection with the mode on still shows the
+  // checkboxes and Cancel, distinct from the mode never having turned on.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState(() => new Set());
 
   useEffect(() => {
+    // Switching tabs clears any in-progress selection.
+    setSelectMode(false); setSelected(new Set());
     if (tab !== "generated" && tab !== "uploads") return;
     setLoading(true);
     const req = tab === "uploads" ? api.get("/uploads") : api.get("/media");
@@ -65,6 +72,39 @@ export default function Library() {
     setUploads((s) => s.filter((u) => u.id !== upload.id));
     try { await api.delete(`/uploads/${upload.id}`); toast.success("Deleted"); }
     catch (e) { toast.error(apiErrorMessage(e, "Delete failed.")); setUploads(prev); }
+  };
+
+  // Generated media lives in the `generations` table, deleted via its own
+  // endpoint (uploads use /uploads/:id — a different store). Optimistic:
+  // drop it from the grid immediately, put it back if the server refuses.
+  const removeMedia = async (m) => {
+    if (!window.confirm("Delete this generation? This can't be undone.")) return;
+    const prev = media;
+    setMedia((s) => s.filter((x) => x.id !== m.id));
+    try { await api.delete(`/generations/${m.id}`); toast.success("Deleted"); }
+    catch (e) { toast.error(apiErrorMessage(e, "Delete failed.")); setMedia(prev); }
+  };
+
+  const toggleSelectMode = () => { setSelectMode((s) => !s); setSelected(new Set()); };
+  const toggleSelected = (id) => setSelected((s) => {
+    const next = new Set(s);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  // Batch delete of generated media via the bulk-delete endpoint. Optimistic:
+  // drop the chosen items immediately, restore them all if the server refuses.
+  const removeSelectedMedia = async () => {
+    const ids = [...selected];
+    if (!ids.length) return;
+    if (!window.confirm(`Delete ${ids.length} generation${ids.length === 1 ? "" : "s"}? This can't be undone.`)) return;
+    const prev = media;
+    setMedia((s) => s.filter((m) => !selected.has(m.id)));
+    setSelectMode(false); setSelected(new Set());
+    try {
+      const { data } = await api.post("/generations/bulk-delete", { ids });
+      toast.success(`Deleted ${data?.deleted ?? ids.length} generation${(data?.deleted ?? ids.length) === 1 ? "" : "s"}`);
+    } catch (e) { toast.error(apiErrorMessage(e, "Delete failed.")); setMedia(prev); }
   };
 
   // The "+" opens the same picker as every "Add media" moment elsewhere in
@@ -141,6 +181,28 @@ export default function Library() {
 
       {(tab === "generated" || tab === "uploads") && (
         <>
+          {tab === "generated" && !loading && media.length > 0 && (
+            <div className="mt-6 flex flex-wrap items-center gap-2" data-testid="library-media-select-controls">
+              {selectMode ? (
+                <>
+                  <Button onClick={removeSelectedMedia} disabled={selected.size === 0} data-testid="library-media-delete-selected"
+                    className="gap-1.5 rounded-lg bg-magic font-semibold text-white hover:bg-magic/90 disabled:opacity-40">
+                    <Trash2 size={14} /> Delete {selected.size > 0 ? `(${selected.size})` : ""}
+                  </Button>
+                  <Button variant="secondary" onClick={toggleSelectMode} data-testid="library-media-select-cancel"
+                    className="gap-1.5 rounded-lg border border-white/10 bg-white/5 text-white hover:bg-white/10">
+                    <X size={14} /> Cancel
+                  </Button>
+                </>
+              ) : (
+                <Button variant="secondary" onClick={toggleSelectMode} data-testid="library-media-select-mode"
+                  className="gap-1.5 rounded-lg border border-white/10 bg-white/5 text-white hover:bg-white/10">
+                  <CheckSquare size={14} /> Select
+                </Button>
+              )}
+            </div>
+          )}
+
           {loading && <div className="mt-10 text-sm text-zinc-600">Loading…</div>}
 
           {!loading && items.length === 0 && (
@@ -168,7 +230,13 @@ export default function Library() {
               if (!file) return null;
               const Icon = KIND_ICON[m.kind] || ImageIcon;
               return (
-                <div key={m.id} className="group overflow-hidden rounded-xl border border-white/10 bg-[#121212]" data-testid={`library-item-${m.id}`}>
+                <div key={m.id}
+                  onClick={() => (selectMode ? toggleSelected(m.id) : null)}
+                  role={selectMode ? "checkbox" : undefined} aria-checked={selectMode ? selected.has(m.id) : undefined}
+                  tabIndex={selectMode ? 0 : undefined}
+                  onKeyDown={selectMode ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleSelected(m.id); } } : undefined}
+                  className={`group relative overflow-hidden rounded-xl border bg-[#121212] ${selectMode ? "cursor-pointer" : ""} ${selectMode && selected.has(m.id) ? "border-lime" : "border-white/10"}`}
+                  data-testid={`library-item-${m.id}`}>
                   <div className="flex aspect-video items-center justify-center overflow-hidden bg-[#0A0A0A]">
                     {m.kind === "image" && <img src={file.file_url} alt={m.prompt} className="h-full w-full object-cover" />}
                     {m.kind === "video" && <video src={file.file_url} className="h-full w-full object-cover" muted />}
@@ -178,20 +246,30 @@ export default function Library() {
                       </div>
                     )}
                   </div>
+                  {selectMode && (
+                    <span className={`absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-md ${selected.has(m.id) ? "bg-lime text-[#0A0A0A]" : "bg-black/60 text-white"}`}>
+                      {selected.has(m.id) ? <CheckSquare size={14} /> : <Circle size={14} />}
+                    </span>
+                  )}
                   <div className="p-4">
                     <div className="flex items-center gap-2">
                       <Icon size={13} className="text-lime" />
                       <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">{m.kind}</span>
                     </div>
                     <p className="mt-2 line-clamp-2 text-sm text-zinc-300">{m.prompt}</p>
-                    {(m.kind === "music" || m.kind === "voice") && <audio src={file.file_url} controls className="mt-3 w-full" />}
+                    {!selectMode && (m.kind === "music" || m.kind === "voice") && <audio src={file.file_url} controls className="mt-3 w-full" />}
+                    {!selectMode && (
                     <div className="mt-3 flex gap-2">
                       <a href={file.file_url} target="_blank" rel="noreferrer" className="flex-1">
                         <Button variant="secondary" className="h-8 w-full gap-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white hover:bg-white/10"><Download size={13} /> Open</Button>
                       </a>
                       <Button onClick={() => navigate("/composer", { state: { start: { from: "media", value: { url: file.file_url, type: m.kind } } } })}
                         className="h-8 flex-1 gap-1.5 rounded-lg bg-lime text-xs font-semibold text-[#0A0A0A] hover:bg-lime-hover" data-testid={`library-use-${m.id}`}><Send size={13} /> Use</Button>
+                      <Button variant="ghost" onClick={() => removeMedia(m)} data-testid={`library-media-delete-${m.id}`}
+                        title="Delete this generation"
+                        className="h-8 px-2.5 text-zinc-500 hover:text-magic"><Trash2 size={14} /></Button>
                     </div>
+                    )}
                   </div>
                 </div>
               );

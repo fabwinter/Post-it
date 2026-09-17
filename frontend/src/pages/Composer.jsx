@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { toPng } from "html-to-image";
+import { toPng, getFontEmbedCSS } from "html-to-image";
 import JSZip from "jszip";
 import { api, pollTask, apiErrorMessage } from "@/lib/api";
 import { useTextModels } from "@/lib/useTextModels";
@@ -16,6 +16,8 @@ import { CanvasEditor } from "@/components/CanvasEditor";
 import { ReelPlayer } from "@/components/ReelPlayer";
 import { VideoClipEditor } from "@/components/VideoClipEditor";
 import { ReelExportDialog } from "@/components/ReelExportDialog";
+import { PngExportPreview } from "@/components/PngExportPreview";
+import { proxied } from "@/lib/videoExport";
 import { MediaPicker } from "@/components/MediaPicker";
 import { useTemplateStyles } from "@/lib/templateStyles";
 import { useCustomTemplates } from "@/lib/useCustomTemplates";
@@ -1542,41 +1544,136 @@ export default function Composer() {
     toast.success(item.credit ? `Added — photo by ${item.credit}` : "Added");
   };
 
+  // html-to-image can only rasterize a card whose images it can read back
+  // out of the canvas. A slide's backdrop and element images are usually
+  // cross-origin (PoYo art, Pexels stock) and served without CORS headers,
+  // so the browser taints the canvas and toPng throws "Export failed" — the
+  // reason PNG/ZIP export silently failed for every visual that had a
+  // picture in it. Route each image through our own same-origin proxy (the
+  // exact trick the reel video export already uses) for the duration of the
+  // capture, wait for the swapped sources to decode, then restore the
+  // originals so the live preview is untouched.
+  const captureCardPng = async (node) => {
+    const imgs = Array.from(node.querySelectorAll("img"));
+    const originals = imgs.map((img) => img.getAttribute("src"));
+    imgs.forEach((img) => {
+      const src = img.getAttribute("src");
+      const p = proxied(src);
+      if (p !== src) { img.crossOrigin = "anonymous"; img.setAttribute("src", p); }
+    });
+    // Give the proxied sources a moment to load before capturing.
+    await Promise.all(imgs.map((img) => (img.complete && img.naturalWidth
+      ? Promise.resolve()
+      : new Promise((resolve) => {
+        const done = () => resolve();
+        img.addEventListener("load", done, { once: true });
+        img.addEventListener("error", done, { once: true });
+        setTimeout(done, 8000);
+      }))));
+    try {
+      // Fonts: embed them so exported text matches the preview. Every webfont
+      // sheet is now loaded in CORS mode (see public/index.html) so this can
+      // read their rules — but if some future sheet ever can't be read, skip
+      // font embedding rather than let the whole export throw (a file with
+      // fallback fonts still beats "Export failed").
+      let fontEmbedCSS;
+      try { fontEmbedCSS = await getFontEmbedCSS(node); } catch { fontEmbedCSS = undefined; }
+      // cacheBust is deliberately OFF: it appends a query string that would
+      // turn every already-proxied same-origin URL back into an uncached
+      // cross-origin-looking fetch, reintroducing the taint this fixes.
+      const opts = { pixelRatio: 2, ...(fontEmbedCSS != null ? { fontEmbedCSS } : { skipFonts: true }) };
+      return await toPng(node, opts);
+    } finally {
+      imgs.forEach((img, i) => {
+        if (originals[i] == null) img.removeAttribute("src");
+        else img.setAttribute("src", originals[i]);
+      });
+    }
+  };
+
+  // A rasterised PNG can silently fall back to a system font while still
+  // looking like a valid file — the exact failure mode captureCardPng's own
+  // comment describes. Rather than hand the file straight to the browser's
+  // save dialog, both download paths below land here first: capture, then
+  // hold for a look (PngExportPreview, side by side with the live card) so
+  // a font that quietly swapped is caught before it's the thing that gets
+  // saved and shared. `slideIndex` is the download's own reference — since
+  // "all slides" re-renders `active` through every slide while capturing,
+  // this remembers which one to compare on the "single" path rather than
+  // reading whatever `active` happens to be by the time the dialog opens.
+  const [pngPreview, setPngPreview] = useState(null); // { mode, loading, error, images, slideIndex }
+
   const downloadSlide = async () => {
     if (!cardRef.current) return;
+    const slideIndex = active;
+    setPngPreview({ mode: "single", loading: true, error: null, images: [], slideIndex });
     try {
-      const url = await toPng(cardRef.current, { pixelRatio: 2, cacheBust: true });
-      const a = document.createElement("a");
-      a.href = url; a.download = `${(title || "post").replace(/\W+/g, "-").toLowerCase()}-${active + 1}.png`; a.click();
-      toast.success("Downloaded PNG");
-    } catch (e) { toast.error(apiErrorMessage(e, "Export failed.")); }
+      const url = await captureCardPng(cardRef.current);
+      setPngPreview({ mode: "single", loading: false, error: null, images: [{ index: slideIndex, url }], slideIndex });
+    } catch (e) {
+      setPngPreview({ mode: "single", loading: false, error: apiErrorMessage(e, "Export failed."), images: [], slideIndex });
+    }
   };
 
   // Every slide, one at a time onto the same card ref used for a single
-  // download, zipped together — the only way to get a whole carousel or
-  // reel storyboard out of the browser as files.
+  // download — the only way to get a whole carousel or reel storyboard out
+  // of the browser as files. Held in the same preview dialog as a grid,
+  // rather than zipped immediately, for the same reason a single slide is:
+  // a font that fell back on one slide is otherwise only found by unzipping
+  // and opening every file.
   const [downloadingAll, setDownloadingAll] = useState(false);
   const downloadAllSlides = async () => {
     if (assets.length < 2) return;
     const startedOn = active;
     setDownloadingAll(true);
+    setPngPreview({ mode: "all", loading: true, error: null, images: [], slideIndex: startedOn });
     try {
-      const zip = new JSZip();
+      const images = [];
       for (let i = 0; i < assets.length; i++) {
         setActive(i);
         await new Promise((r) => setTimeout(r, 260)); // let the card re-render for slide i
         if (!cardRef.current) continue;
-        const dataUrl = await toPng(cardRef.current, { pixelRatio: 2, cacheBust: true });
-        zip.file(`slide-${String(i + 1).padStart(2, "0")}.png`, dataUrl.split(",")[1], { base64: true });
+        const url = await captureCardPng(cardRef.current);
+        images.push({ index: i, url });
       }
+      setPngPreview({ mode: "all", loading: false, error: null, images, slideIndex: startedOn });
+    } catch (e) {
+      setPngPreview({ mode: "all", loading: false, error: apiErrorMessage(e, "Export failed."), images: [], slideIndex: startedOn });
+    } finally { setActive(startedOn); setDownloadingAll(false); }
+  };
+
+  const closePngPreview = () => setPngPreview(null);
+
+  const retryPngPreview = () => {
+    if (pngPreview?.mode === "all") downloadAllSlides(); else downloadSlide();
+  };
+
+  // The dialog's own confirm — the actual file only ever gets written to
+  // disk from here, after a look, never straight out of capture above.
+  const confirmPngPreview = async () => {
+    if (!pngPreview?.images?.length) return;
+    const slug = (title || "post").replace(/\W+/g, "-").toLowerCase();
+    if (pngPreview.mode === "single") {
+      const { index, url } = pngPreview.images[0];
+      const a = document.createElement("a");
+      a.href = url; a.download = `${slug}-${index + 1}.png`; a.click();
+      toast.success("Downloaded PNG");
+      setPngPreview(null);
+      return;
+    }
+    try {
+      const zip = new JSZip();
+      pngPreview.images.forEach(({ index, url }) => {
+        zip.file(`slide-${String(index + 1).padStart(2, "0")}.png`, url.split(",")[1], { base64: true });
+      });
       const blob = await zip.generateAsync({ type: "blob" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      a.href = url; a.download = `${(title || "post").replace(/\W+/g, "-").toLowerCase()}-slides.zip`; a.click();
+      a.href = url; a.download = `${slug}-slides.zip`; a.click();
       URL.revokeObjectURL(url);
-      toast.success(`Downloaded all ${assets.length} slides as a zip`);
+      toast.success(`Downloaded all ${pngPreview.images.length} slides as a zip`);
     } catch (e) { toast.error(apiErrorMessage(e, "Export failed.")); }
-    finally { setActive(startedOn); setDownloadingAll(false); }
+    setPngPreview(null);
   };
 
   const buildPayload = (status) => ({
@@ -1675,6 +1772,12 @@ export default function Composer() {
           <h1 className="mt-2 font-display text-4xl font-semibold tracking-tight">Craft & schedule</h1>
         </div>
         <div className="flex items-center gap-1">
+          <Button variant="secondary" onClick={() => persist("draft")} disabled={saving}
+            data-testid="composer-save-project"
+            className="mr-1 gap-2 rounded-lg border border-white/10 bg-white/5 text-white hover:bg-white/10">
+            {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+            <span className="hidden sm:inline">Save as project</span>
+          </Button>
           <Button variant="ghost" onClick={() => openHistory()} data-testid="composer-history"
             className="gap-2 text-zinc-500 hover:text-lime"><History size={16} /><span className="hidden sm:inline">History</span></Button>
           {postId && (
@@ -2518,6 +2621,9 @@ export default function Composer() {
           library (z-50 sheets) still open over the top of it. */}
       <ReelExportDialog open={exportOpen} onClose={() => setExportOpen(false)}
         assets={assets} brand={brand} aspect={aspect} title={title} music={music} />
+
+      <PngExportPreview preview={pngPreview} asset={assets[pngPreview?.slideIndex]} brand={brand} aspectCls={aspectCls}
+        onCancel={closePngPreview} onConfirm={confirmPngPreview} onRetry={retryPngPreview} />
 
       {reelReviewPlan && (
         <ComposerReelReview title={reelReviewPlan.title}
