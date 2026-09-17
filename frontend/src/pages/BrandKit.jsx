@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { toPng } from "html-to-image";
 import { safeFontEmbedCSS } from "@/lib/fontExport";
+import { proxied } from "@/lib/videoExport";
 import { api, apiErrorMessage } from "@/lib/api";
 import { useBrandKits } from "@/lib/useBrand";
 import { PLATFORM_LIST } from "@/lib/platforms";
@@ -225,14 +226,54 @@ export default function BrandKit() {
     if (!guidelineRef.current) return;
     setDownloadingGuideline(true);
     try {
-      let fontEmbedCSS;
-      try { fontEmbedCSS = await safeFontEmbedCSS(); } catch { fontEmbedCSS = null; }
-      const opts = { pixelRatio: 2, cacheBust: true, ...(fontEmbedCSS ? { fontEmbedCSS } : { skipFonts: true }) };
-      const url = await toPng(guidelineRef.current, opts);
+      // Same capture rules as the Composer's PNG export (captureCardPng):
+      // route cross-origin images through our own same-origin proxy so the
+      // canvas isn't tainted, wait for the swapped sources to decode, then
+      // restore. cacheBust stays OFF — the query string it appends turns an
+      // already-proxied same-origin URL back into an uncached fetch, which
+      // re-taints the canvas and makes toPng throw. A logo drawn from a
+      // different origin is the one thing that can taint this capture.
+      const node = guidelineRef.current;
+      const imgs = Array.from(node.querySelectorAll("img"));
+      const originals = imgs.map((img) => img.getAttribute("src"));
+      imgs.forEach((img) => {
+        const src = img.getAttribute("src");
+        const p = proxied(src);
+        if (p !== src) { img.crossOrigin = "anonymous"; img.setAttribute("src", p); }
+      });
+      await Promise.all(imgs.map((img) => (img.complete && img.naturalWidth
+        ? Promise.resolve()
+        : new Promise((resolve) => {
+          const done = () => resolve();
+          img.addEventListener("load", done, { once: true });
+          img.addEventListener("error", done, { once: true });
+          setTimeout(done, 8000);
+        }))));
+      let url;
+      try {
+        let fontEmbedCSS;
+        try { fontEmbedCSS = await safeFontEmbedCSS(); } catch { fontEmbedCSS = null; }
+        const opts = { pixelRatio: 2, ...(fontEmbedCSS ? { fontEmbedCSS } : { skipFonts: true }) };
+        url = await toPng(node, opts);
+      } finally {
+        imgs.forEach((img, i) => {
+          if (originals[i] == null) img.removeAttribute("src");
+          else img.setAttribute("src", originals[i]);
+        });
+      }
+      // A data: URL handed straight to <a download> silently fails in some
+      // browsers once it's large — the Composer already fixed this by
+      // converting to a Blob URL first.
+      let href = url;
+      try {
+        const blob = await (await fetch(url)).blob();
+        href = URL.createObjectURL(blob);
+      } catch { /* keep the data URL */ }
       const a = document.createElement("a");
-      a.href = url;
+      a.href = href;
       a.download = `${(form.name || "brand-guideline").replace(/\W+/g, "-").toLowerCase()}-guideline.png`;
       a.click();
+      if (href !== url) setTimeout(() => URL.revokeObjectURL(href), 30000);
       toast.success("Downloaded brand guideline");
     } catch (e) { toast.error(apiErrorMessage(e, "Couldn't export the guideline.")); }
     finally { setDownloadingGuideline(false); }
