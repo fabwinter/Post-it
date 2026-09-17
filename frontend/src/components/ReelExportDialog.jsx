@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { toPng, getFontEmbedCSS } from "html-to-image";
+import { toPng } from "html-to-image";
 import { Download, Loader2, X, Film, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { VisualCard, themeFor } from "@/components/VisualCard";
 import { CARD_REF_WIDTH } from "@/lib/slideElements";
 import { reelTimeline, formatSeconds } from "@/lib/videoClip";
+import { safeFontEmbedCSS } from "@/lib/fontExport";
 import {
   EXPORT_PRESETS, exportDimensions, exportSupported, pickRecorderMime,
   prepareScenes, recordReel, downloadBlob, loadMusic, missingMedia,
@@ -227,7 +228,7 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
         if (fontEmbedCSS === undefined) {
           try {
             // eslint-disable-next-line no-await-in-loop
-            fontEmbedCSS = await getFontEmbedCSS(contentRefs.current[it.index] || bgRefs.current[it.index]);
+            fontEmbedCSS = await safeFontEmbedCSS();
           } catch { fontEmbedCSS = null; }
         }
 
