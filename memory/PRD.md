@@ -47,3 +47,6 @@ Build a better version of Blotato.com. One platform that ideates, writes, design
 - Added: delete a generated media item in Library (single trash button) + batch multi-select delete (Select mode -> Delete N, via /api/generations/bulk-delete).
 - Added: "Save as project" button in the Composer header (saves current work as a draft/project).
 - Config: app persistence is Cloudflare D1 (CF_ACCOUNT_ID/CF_D1_DATABASE_ID/CF_API_TOKEN) + Vercel Blob; these must be set in backend/.env for data endpoints to work.
+
+## Updates (2026-08, this session)
+- Added: Font Fidelity Check — PNG/ZIP export in Composer now opens a confirmation dialog (`PngExportPreview.jsx`) BEFORE the file is written to disk, showing the exported raster next to the live on-screen card (single slide) or a thumbnail grid with zoom (all slides), so a webfont that silently fell back during capture is caught before saving. `downloadSlide`/`downloadAllSlides` now only capture into `pngPreview` state; the actual `<a download>`/ZIP write happens in `confirmPngPreview`. Testing agent verified end-to-end (single + all-slides flows, cancel path, no regressions).
