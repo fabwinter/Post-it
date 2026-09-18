@@ -1603,6 +1603,7 @@ export default function Composer() {
   // this remembers which one to compare on the "single" path rather than
   // reading whatever `active` happens to be by the time the dialog opens.
   const [pngPreview, setPngPreview] = useState(null); // { mode, loading, error, images, slideIndex }
+  const DOWNLOAD_URL_REVOKE_DELAY_MS = 30000;
 
   const downloadSlide = async () => {
     if (!cardRef.current) return;
@@ -1667,7 +1668,7 @@ export default function Composer() {
         const blobUrl = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = blobUrl; a.download = `${slug}-${index + 1}.png`; a.click();
-        URL.revokeObjectURL(blobUrl);
+        setTimeout(() => URL.revokeObjectURL(blobUrl), DOWNLOAD_URL_REVOKE_DELAY_MS);
       } catch {
         const a = document.createElement("a");
         a.href = url; a.download = `${slug}-${index + 1}.png`; a.click();
@@ -1685,7 +1686,7 @@ export default function Composer() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url; a.download = `${slug}-slides.zip`; a.click();
-      URL.revokeObjectURL(url);
+      setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_URL_REVOKE_DELAY_MS);
       toast.success(`Downloaded all ${pngPreview.images.length} slides as a zip`);
     } catch (e) { toast.error(apiErrorMessage(e, "Export failed.")); }
     setPngPreview(null);
