@@ -1667,7 +1667,7 @@ export default function Composer() {
         const blobUrl = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = blobUrl; a.download = `${slug}-${index + 1}.png`; a.click();
-        URL.revokeObjectURL(blobUrl);
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
       } catch {
         const a = document.createElement("a");
         a.href = url; a.download = `${slug}-${index + 1}.png`; a.click();
@@ -1685,7 +1685,7 @@ export default function Composer() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url; a.download = `${slug}-slides.zip`; a.click();
-      URL.revokeObjectURL(url);
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
       toast.success(`Downloaded all ${pngPreview.images.length} slides as a zip`);
     } catch (e) { toast.error(apiErrorMessage(e, "Export failed.")); }
     setPngPreview(null);
