@@ -14,7 +14,7 @@ def d1_query_sync(sql: str, params: Optional[list], cf_account_id: str, cf_d1_da
     url = f"https://api.cloudflare.com/client/v4/accounts/{cf_account_id}/d1/database/{cf_d1_database_id}/query"
     resp = requests.post(
         url,
-        headers={"Authorization": f"******", "Content-Type": "application/json"},
+        headers={"Authorization": f"Bearer {cf_api_token}", "Content-Type": "application/json"},
         json={"sql": sql, "params": params or []},
         timeout=30,
     )

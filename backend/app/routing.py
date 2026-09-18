@@ -8,10 +8,11 @@ def register_routers(app, api_router, cron_router, require_app_token):
 
 
 def configure_cors(app, cors_origins_csv: str):
+    origins = [origin.strip() for origin in cors_origins_csv.split(",")]
     app.add_middleware(
         CORSMiddleware,
         allow_credentials=False,
-        allow_origins=cors_origins_csv.split(","),
+        allow_origins=origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )

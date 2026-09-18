@@ -14,7 +14,7 @@
 
 From repository root:
 
-`pytest backend/tests/test_migration.py backend/tests/test_api.py`
+`pytest backend/tests/test_modular_helpers.py backend/tests/test_migration.py backend/tests/test_api.py`
 
 # Deployment entry point
 
