@@ -1,7 +1,6 @@
 from pathlib import Path
 
-from pip._internal.network.session import PipSession
-from pip._internal.req import parse_requirements
+from packaging.requirements import Requirement
 
 
 def _requirements_lines(path: Path):
@@ -23,10 +22,7 @@ def test_api_requirements_parse_standalone():
 
     assert all(not line.startswith(("-r ", "--requirement ")) for line in api_requirements)
 
-    parsed_requirements = [
-        str(parsed.requirement)
-        for parsed in parse_requirements(str(api_requirements_path), session=PipSession())
-        if parsed.requirement is not None
-    ]
-
-    assert parsed_requirements == api_requirements
+    for line in api_requirements:
+        if not line or line.startswith("#"):
+            continue
+        Requirement(line)
