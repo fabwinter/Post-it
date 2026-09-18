@@ -1,7 +1,5 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Request, UploadFile, File, Form, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import Response, JSONResponse
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
 import os
 import asyncio
 import json
@@ -15,11 +13,9 @@ import math
 import zipfile
 import ipaddress
 import socket
-from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import uuid
-from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
 from collections import Counter
 from PIL import Image
@@ -32,23 +28,29 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.opc.constants import RELATIONSHIP_TYPE as PPTX_RT
 from docx import Document as DocxDocument
 
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+from app.config import settings
+from app.persistence.d1 import d1_query as d1_query_with_settings
+from app.routing import configure_cors, register_routers
+from app.services.generations import row_to_generation as _row_to_generation
+from app.services.projects import JSON_POST_FIELDS, post_row as _post_row, row_to_post as _row_to_post
+from app.services.templates import row_to_visual_template as _row_to_visual_template
+from app.utils.json_utils import maybe_json as _maybe_json
+from app.utils.time import now_iso as shared_now_iso
 
-CF_ACCOUNT_ID = os.environ.get('CF_ACCOUNT_ID')
-CF_D1_DATABASE_ID = os.environ.get('CF_D1_DATABASE_ID')
-CF_API_TOKEN = os.environ.get('CF_API_TOKEN')
+CF_ACCOUNT_ID = settings.cf_account_id
+CF_D1_DATABASE_ID = settings.cf_d1_database_id
+CF_API_TOKEN = settings.cf_api_token
 
-POYO_API_KEY = os.environ.get('POYO_API_KEY')
-POYO_BASE_URL = os.environ.get('POYO_BASE_URL', 'https://api.poyo.ai')
+POYO_API_KEY = settings.poyo_api_key
+POYO_BASE_URL = settings.poyo_base_url
 
-PEXELS_API_KEY = os.environ.get('PEXELS_API_KEY')
+PEXELS_API_KEY = settings.pexels_api_key
 
 # Vercel Blob — where a user's own uploads live. Enabled per-project in the
 # Vercel dashboard (Storage -> Blob -> Create), which sets this token
 # automatically; no separate third-party account needed since the app is
 # already hosted on Vercel.
-BLOB_READ_WRITE_TOKEN = os.environ.get('BLOB_READ_WRITE_TOKEN')
+BLOB_READ_WRITE_TOKEN = settings.blob_read_write_token
 
 # Optional but strongly recommended: without it every /api route is open to
 # anyone who has the URL — this app has no per-user accounts, so a single
@@ -56,7 +58,7 @@ BLOB_READ_WRITE_TOKEN = os.environ.get('BLOB_READ_WRITE_TOKEN')
 # it back as `Authorization: Bearer <token>` (the frontend's lock screen does
 # this once the visitor enters it). Left unset, nothing is enforced, matching
 # how every other optional integration in this file degrades.
-APP_ACCESS_TOKEN = os.environ.get('APP_ACCESS_TOKEN')
+APP_ACCESS_TOKEN = settings.app_access_token
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -83,34 +85,11 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 
 def now_iso():
-    return datetime.now(timezone.utc).isoformat()
-
-
-# ---------------- Cloudflare D1 client (HTTP query API, run in threadpool) ----------------
-def _d1_query(sql: str, params: Optional[list] = None):
-    if not (CF_ACCOUNT_ID and CF_D1_DATABASE_ID and CF_API_TOKEN):
-        raise HTTPException(
-            status_code=500,
-            detail="Cloudflare D1 is not configured (need CF_ACCOUNT_ID, CF_D1_DATABASE_ID, CF_API_TOKEN)",
-        )
-    url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/d1/database/{CF_D1_DATABASE_ID}/query"
-    resp = requests.post(
-        url,
-        headers={"Authorization": f"Bearer {CF_API_TOKEN}", "Content-Type": "application/json"},
-        json={"sql": sql, "params": params or []},
-        timeout=30,
-    )
-    if resp.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"D1 error {resp.status_code}: {resp.text[:400]}")
-    body = resp.json()
-    if not body.get("success"):
-        raise HTTPException(status_code=502, detail=f"D1 query failed: {str(body.get('errors'))[:400]}")
-    result = (body.get("result") or [{}])[0]
-    return result.get("results", []), result.get("meta", {})
+    return shared_now_iso()
 
 
 async def d1_query(sql: str, params: Optional[list] = None):
-    return await asyncio.to_thread(_d1_query, sql, params)
+    return await d1_query_with_settings(sql, params, CF_ACCOUNT_ID, CF_D1_DATABASE_ID, CF_API_TOKEN)
 
 
 # The app provisions its own tables and columns. D1's dashboard console silently
@@ -585,65 +564,6 @@ class PostUpdate(BaseModel):
     content_by_platform: Optional[Dict[str, str]] = None
     brand_kit_id: Optional[str] = None
     music: Optional[Dict[str, Any]] = None
-
-
-# Post columns whose Python value is a list/dict and whose D1 value is JSON text.
-JSON_POST_FIELDS = ("platforms", "media_urls", "assets", "hashtags", "content_by_platform", "music")
-
-
-def _post_row(post: dict):
-    return [
-        post["id"], post.get("title") or "Untitled post", post.get("content") or "",
-        json.dumps(post.get("platforms") or []), post.get("status") or "draft", post.get("scheduled_time"),
-        json.dumps(post.get("media_urls") or []), post.get("media_type"),
-        json.dumps(post.get("assets") or []), post.get("format") or "single",
-        json.dumps(post.get("hashtags") or []), post.get("alt_text") or "",
-        json.dumps(post.get("content_by_platform") or {}), post.get("brand_kit_id"),
-        json.dumps(post.get("music") or {}),
-        post["created_at"], post["updated_at"],
-    ]
-
-
-def _row_to_post(row: dict):
-    return {
-        "id": row["id"],
-        "title": row["title"],
-        "content": row["content"],
-        "platforms": json.loads(row["platforms"] or "[]"),
-        "status": row["status"],
-        "scheduled_time": row["scheduled_time"],
-        "media_urls": json.loads(row["media_urls"] or "[]"),
-        "media_type": row["media_type"],
-        "assets": json.loads(row.get("assets") or "[]"),
-        "format": row.get("format") or "single",
-        "hashtags": json.loads(row.get("hashtags") or "[]"),
-        "alt_text": row.get("alt_text") or "",
-        "content_by_platform": json.loads(row.get("content_by_platform") or "{}"),
-        "brand_kit_id": row.get("brand_kit_id"),
-        "music": json.loads(row.get("music") or "{}"),
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
-    }
-
-
-def _row_to_generation(row: dict):
-    return {
-        "id": row["id"],
-        "kind": row["kind"],
-        "title": row.get("title") or (row["prompt"] or "")[:80],
-        "prompt": row["prompt"],
-        "model": row["model"],
-        "task_id": row["task_id"],
-        "status": row["status"],
-        "files": json.loads(row["files"] or "[]"),
-        "output": row.get("output"),
-        "meta": json.loads(row.get("meta") or "{}"),
-        "favorite": bool(row.get("favorite")),
-        "progress": row.get("progress") or 0,
-        "error_message": row.get("error_message"),
-        "created_at": row["created_at"],
-        "updated_at": row.get("updated_at") or row["created_at"],
-    }
 
 
 # Text kinds have no PoYo task behind them, so they land already finished with
@@ -2729,24 +2649,6 @@ class TemplateFromComposerRequest(BaseModel):
     theme: Optional[str] = "midnight"
     model: Optional[str] = None
     slides: List[Dict[str, Any]]  # raw Composer asset specs (heading/body/title + elements when customized)
-
-
-def _maybe_json(v, default):
-    """Accepts either an already-parsed value (building a response straight
-    from a freshly-inserted record) or the JSON text a D1 row stores it as."""
-    return v if isinstance(v, (list, dict)) else json.loads(v or default)
-
-
-def _row_to_visual_template(row: dict):
-    return {
-        "id": row["id"], "name": row["name"], "source_kind": row["source_kind"],
-        "source_url": row["source_url"], "format": row["format"], "theme": row["theme"],
-        "colors": _maybe_json(row.get("colors"), "{}"),
-        "slides": _maybe_json(row.get("slides"), "[]"),
-        "layouts": _maybe_json(row.get("layouts"), "{}"),
-        "bg_colors": _maybe_json(row.get("bg_colors"), "{}"),
-        "clips": _maybe_json(row.get("clips"), "{}"), "created_at": row["created_at"],
-    }
 
 
 # ---------------- Starter templates ----------------
@@ -5216,17 +5118,9 @@ async def cron_publish_due(request: Request):
     return {"checked_at": now_iso(), "due_count": len(rows), "results": results}
 
 
-app.include_router(api_router, dependencies=[Depends(require_app_token)])
-app.include_router(cron_router)
+register_routers(app, api_router, cron_router, require_app_token)
 
 # allow_credentials=True together with a wildcard origin is a combination
 # browsers reject outright (and shouldn't be relied on if they didn't) —
 # nothing here uses cookie-based auth, so credentialed CORS is simply off.
-_cors_origins = os.environ.get('CORS_ORIGINS', '*').split(',')
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=False,
-    allow_origins=_cors_origins,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+configure_cors(app, os.environ.get('CORS_ORIGINS', '*'))
