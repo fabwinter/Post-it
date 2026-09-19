@@ -2379,7 +2379,10 @@ export default function Composer() {
                             onChangeElement={patchElement} />
                         ) : (
                           <div ref={previewBoxRef} className={`${aspectCls} w-full overflow-hidden rounded-xl`}>
-                            <div ref={canvasOpen ? null : cardRef} className="h-full w-full">
+                            {/* The exact node captureCardPng rasterises, so a
+                                test that measures this is measuring what the
+                                exported file will be. */}
+                            <div ref={canvasOpen ? null : cardRef} data-testid="composer-card" className="h-full w-full">
                               <VisualCard spec={activeAsset.spec} brand={brand} scale={previewScale} />
                             </div>
                           </div>
