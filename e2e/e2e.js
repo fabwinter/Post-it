@@ -2081,6 +2081,56 @@ async function confirmReel(page) {
   // only explains why those fetches then fail; the app should never be making
   // them. Exports supply their own scoped fontEmbedCSS now (lib/cardExport),
   // so the messages are gone and their return means the walk is back.
+  // ---- a voice sample is made once, not once per session ----
+  // The preview used to be remembered only in this page's memory, so every
+  // reload threw away all ten answers and hearing them again cost ten more
+  // text-to-speech generations. They are saved server-side now and seeded on
+  // mount, so the second visit spends nothing.
+  //
+  // A reload is the whole point of the check — an in-memory cache passes any
+  // test that never leaves the page.
+  await page.goto(B + '/calendar', { waitUntil: 'domcontentloaded' });
+  await page.goto(B + '/composer', { waitUntil: 'domcontentloaded' });
+  await page.getByTestId('composer-page').waitFor({ timeout: 10000 });
+  await tap(page, 'composer-format-reel');
+  await page.waitForTimeout(600);
+
+  const reloadedVoiceCalls = [];
+  await page.route('**/api/ai/generate', async (route) => {
+    const body = route.request().postDataJSON();
+    if (body?.kind === 'voice') reloadedVoiceCalls.push(body);
+    await route.continue();
+  });
+  // Sarah was previewed (and therefore banked) earlier in this run.
+  await tap(page, 'composer-voice-preset-pre-sarah-preview');
+  await page.waitForTimeout(1500);
+  ok('a voice previewed in an earlier session costs no new generation after a reload',
+     reloadedVoiceCalls.length === 0, JSON.stringify(reloadedVoiceCalls));
+  const replayed = await page.evaluate(() => {
+    const a = document.querySelector('[data-testid="composer-voice-preview-audio"]');
+    return a ? { paused: a.paused, src: a.currentSrc } : null;
+  });
+  // Playing is what makes the saving worth anything — a banked URL nobody
+  // can hear is the same as no preview at all.
+  ok('...and still plays, from the copy this app saved rather than the generator\'s own',
+     !!replayed && !replayed.paused && !!replayed.src, JSON.stringify(replayed));
+
+  // A voice never previewed before still generates, exactly as it always
+  // did — otherwise "costs nothing" could just mean "does nothing".
+  await tap(page, 'composer-voice-preset-pre-laura-preview');
+  await page.waitForTimeout(2500);
+  ok('a voice nobody has heard yet is still generated on demand',
+     reloadedVoiceCalls.length === 1 && reloadedVoiceCalls[0].options?.voice === 'Laura',
+     JSON.stringify(reloadedVoiceCalls));
+  await page.unroute('**/api/ai/generate');
+
+  // ...and banking it means the NEXT reload is free too.
+  const banked = await page.evaluate(async () => {
+    const res = await fetch('/api/voice-previews');
+    return (await res.json()).map((r) => r.voice);
+  });
+  ok('every voice heard so far is banked for next time', banked.includes('Sarah') && banked.includes('Laura'), JSON.stringify(banked));
+
   // ---- exporting a card as a PNG ----
   // Reported: "the error when exporting png files". A card carrying footage —
   // a reel scene, or any slide with a stock clip on it — is rasterised by
