@@ -191,6 +191,10 @@ _CREATE_TABLES = [
     """CREATE TABLE IF NOT EXISTS voice_previews (
         voice TEXT PRIMARY KEY, line TEXT NOT NULL, url TEXT NOT NULL,
         pathname TEXT, created_at TEXT NOT NULL)""",
+    # Favorited voices surface as quick-select chips in the voice picker,
+    # ahead of the full browse-by-gender menu — one starred row per voice key.
+    """CREATE TABLE IF NOT EXISTS voice_favorites (
+        voice TEXT PRIMARY KEY, created_at TEXT NOT NULL)""",
     # One row per retrievable passage. `embedding` stays NULL under lexical
     # retrieval and is where vectors land if an embedding provider is ever
     # configured — the retriever reads whichever is present.
@@ -1315,6 +1319,44 @@ async def delete_voice_preview(voice: str):
     if not rows:
         raise HTTPException(status_code=404, detail="No saved preview for that voice")
     await d1_query("DELETE FROM voice_previews WHERE voice = ?", [voice])
+    return {"ok": True}
+
+
+# ---------------- Voice favorites ----------------
+# Starring a voice from the browse menu pins it as a quick-select chip
+# everywhere the voice picker shows up — a flat table of keys is all that
+# needs to persist, the presets themselves stay in the frontend's own list.
+class VoiceFavoriteRequest(BaseModel):
+    voice: str
+
+
+@api_router.get("/voice-favorites")
+async def list_voice_favorites():
+    await ensure_schema()
+    rows, _ = await d1_query("SELECT voice FROM voice_favorites ORDER BY created_at")
+    return [r["voice"] for r in rows]
+
+
+@api_router.post("/voice-favorites")
+async def add_voice_favorite(req: VoiceFavoriteRequest):
+    await ensure_schema()
+    voice = (req.voice or "").strip()
+    if not voice:
+        raise HTTPException(status_code=400, detail="Which voice is this favoriting?")
+    await d1_query(
+        "INSERT OR IGNORE INTO voice_favorites (voice, created_at) VALUES (?, ?)",
+        [voice, now_iso()],
+    )
+    return {"ok": True}
+
+
+@api_router.delete("/voice-favorites/{voice}")
+async def remove_voice_favorite(voice: str):
+    await ensure_schema()
+    rows, _ = await d1_query("SELECT voice FROM voice_favorites WHERE voice = ?", [voice])
+    if not rows:
+        raise HTTPException(status_code=404, detail="That voice isn't favorited")
+    await d1_query("DELETE FROM voice_favorites WHERE voice = ?", [voice])
     return {"ok": True}
 
 
