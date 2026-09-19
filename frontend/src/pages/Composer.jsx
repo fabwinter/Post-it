@@ -42,7 +42,7 @@ import {
   Search, Wand, Palette, Upload, FileText, Image as ImageIcon, Presentation,
   Type, Square, LayoutTemplate, Undo2, Redo2, Copy, ChevronsUp, ChevronsDown, AlignLeft, AlignCenter, AlignRight,
   Shapes, CopyPlus, BookmarkPlus, Maximize2, PlayCircle, SquarePen, Lightbulb, Repeat, LayoutGrid,
-  Music, Volume2, VolumeX, RefreshCw, Mic, FolderOpen, Pause, Lock,
+  Music, Volume2, VolumeX, RefreshCw, Mic, FolderOpen, Pause, Lock, Star,
 } from "lucide-react";
 
 // The first four are the ones PoYo's TTS model schema documents as its own
@@ -85,22 +85,41 @@ const DEFAULT_REEL_OPTIONS = {
 // theme colour, since a background here is a colour, not a picture.
 const DEFAULT_DESIGN_MEDIA = { images: "reuse", videos: "reuse", backgrounds: "reuse" };
 
-// Three of these voice IDs came with no name or public description
-// attached anywhere in the account that created them — Nova/Jade/Wren are
-// names picked for this app so the picker has something better than
-// "Custom voice 1" to show, not a claim about what ElevenLabs calls them.
-// The preview button (below) is what actually tells them apart.
+// Several of these voice IDs came with no name or public description
+// attached anywhere in the account that created them — names like Nova,
+// Jade, Wren, Ethan and Marcus below are picked for this app so the picker
+// has something better than "Custom voice 1" to show, not a claim about
+// what ElevenLabs calls them. The preview button is what actually tells
+// them apart. `gender` drives the browse menu's male/female filter; voices
+// whose gender genuinely isn't known from anywhere in the source account
+// stay "unspecified" rather than guessed.
 const VOICE_PRESETS = [
-  { key: "Rachel", label: "Rachel", desc: "Warm, professional — the default" },
-  { key: "Aria", label: "Aria", desc: "Bright, expressive" },
-  { key: "Sarah", label: "Sarah", desc: "Calm, measured" },
-  { key: "Laura", label: "Laura", desc: "Confident, upbeat" },
-  { key: "Qggl4b0xRMiqOwhPtVWT", label: "Clara", desc: "Warm, soothing, American accent" },
-  { key: "M7ya1YbaeFaPXljg9BpK", label: "Hannah", desc: "Natural Australian accent" },
-  { key: "jQQiXyFE3PBHLF8znAIb", label: "Custom voice — AU", desc: "Australian, urban Sydney accent, early-mid 30s" },
-  { key: "vChnJZ1Cu89g2XXumPfT", label: "Nova", desc: "Unlabeled custom voice — tap the preview button to hear it" },
-  { key: "uWAhmTxbFR3p3HsniNS9", label: "Jade", desc: "Unlabeled custom voice — tap the preview button to hear it" },
-  { key: "VyyyOgRmsqOzaZXnKWnI", label: "Wren", desc: "Unlabeled custom voice — tap the preview button to hear it" },
+  { key: "Rachel", label: "Rachel", desc: "Warm, professional — the default", gender: "female" },
+  { key: "Aria", label: "Aria", desc: "Bright, expressive", gender: "female" },
+  { key: "Sarah", label: "Sarah", desc: "Calm, measured", gender: "female" },
+  { key: "Laura", label: "Laura", desc: "Confident, upbeat", gender: "female" },
+  { key: "Qggl4b0xRMiqOwhPtVWT", label: "Clara", desc: "Warm, soothing, American accent", gender: "female" },
+  { key: "M7ya1YbaeFaPXljg9BpK", label: "Hannah", desc: "Natural Australian accent", gender: "female" },
+  { key: "jQQiXyFE3PBHLF8znAIb", label: "Custom voice — AU", desc: "Australian, urban Sydney accent, early-mid 30s", gender: "unspecified" },
+  { key: "vChnJZ1Cu89g2XXumPfT", label: "Nova", desc: "Unlabeled custom voice — tap the preview button to hear it", gender: "unspecified" },
+  { key: "uWAhmTxbFR3p3HsniNS9", label: "Jade", desc: "Unlabeled custom voice — tap the preview button to hear it", gender: "unspecified" },
+  { key: "VyyyOgRmsqOzaZXnKWnI", label: "Wren", desc: "Unlabeled custom voice — tap the preview button to hear it", gender: "unspecified" },
+  // Male voices, added from the ElevenLabs voice library.
+  { key: "SCbIlR40EEyW2I6quW1h", label: "Ethan", desc: "Unlabeled custom voice — tap the preview button to hear it", gender: "male" },
+  { key: "hIreuBly94QFepU63yel", label: "Marcus", desc: "Unlabeled custom voice — tap the preview button to hear it", gender: "male" },
+  { key: "9B2Vd5yQ7rKaqNmzGdy1", label: "Leo", desc: "Unlabeled custom voice — tap the preview button to hear it", gender: "male" },
+  { key: "CFN1FeTIoSu4xm6mDCkI", label: "Owen", desc: "Unlabeled custom voice — tap the preview button to hear it", gender: "male" },
+  { key: "pDoe9k94N27tidKG2ssb", label: "Felix", desc: "Unlabeled custom voice — tap the preview button to hear it", gender: "male" },
+  { key: "q7VZEIc6Sfunon4tcOtk", label: "Theo", desc: "Unlabeled custom voice — tap the preview button to hear it", gender: "male" },
+  { key: "DYkrAHD8iwork3YSUBbs", label: "Jasper", desc: "Unlabeled custom voice — tap the preview button to hear it", gender: "male" },
+  { key: "gZR4sGJmJaoBOVzKgZ8j", label: "Miles", desc: "Unlabeled custom voice — tap the preview button to hear it", gender: "male" },
+  { key: "l6n6LykkXcsgJMSqKnme", label: "Arlo", desc: "Unlabeled custom voice — tap the preview button to hear it", gender: "male" },
+];
+
+const VOICE_GENDER_FILTERS = [
+  { key: "all", label: "All" },
+  { key: "female", label: "Female" },
+  { key: "male", label: "Male" },
 ];
 
 // One short, voice-agnostic line every preset gets synthesized with — long
@@ -326,6 +345,33 @@ export default function Composer() {
   // A preview that outlives the page it was started on plays over whatever
   // comes next — leaving Composer entirely, not just switching slides.
   useEffect(() => () => voicePreviewAudioRef.current?.pause(), []);
+
+  // Starred voices from the browse menu — surfaced as quick-select chips so
+  // the ones actually used don't need re-finding in the full list every
+  // time. Persisted server-side (voice_favorites) so a star sticks across
+  // reloads and devices, the same reasoning as the previews cache above.
+  const [favoriteVoices, setFavoriteVoices] = useState([]);
+  useEffect(() => {
+    let live = true;
+    api.get("/voice-favorites")
+      .then(({ data }) => { if (live) setFavoriteVoices(data || []); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, []);
+
+  const toggleFavoriteVoice = async (key) => {
+    const isFav = favoriteVoices.includes(key);
+    // Optimistic: starring a voice is not worth a spinner, and the failure
+    // path below just puts it back.
+    setFavoriteVoices((prev) => (isFav ? prev.filter((k) => k !== key) : [...prev, key]));
+    try {
+      if (isFav) await api.delete(`/voice-favorites/${encodeURIComponent(key)}`);
+      else await api.post("/voice-favorites", { voice: key });
+    } catch (e) {
+      setFavoriteVoices((prev) => (isFav ? [...prev, key] : prev.filter((k) => k !== key)));
+      toast.error(apiErrorMessage(e, "Couldn't update favorites."));
+    }
+  };
 
   // Every choice ComposerReelOptions offers, set before a reel is even
   // scripted — scene structure, which of voiceover/music/footage to spend a
@@ -1998,7 +2044,8 @@ export default function Composer() {
                 {isReel && (
                   <>
                     <VoicePresetPicker value={voicePreset} onChange={setVoicePreset} idPrefix="composer-voice-preset-pre"
-                      previewState={voicePreviewState} onPreview={previewVoice} />
+                      previewState={voicePreviewState} onPreview={previewVoice}
+                      favoriteVoices={favoriteVoices} onToggleFavorite={toggleFavoriteVoice} />
                     <ComposerReelOptions options={reelOptions} onChange={setReelOptions}
                       sceneRange={pspec.slides || { min: 3, max: 8, default: 5 }} />
                   </>
@@ -2213,7 +2260,8 @@ export default function Composer() {
 
             {isReel && assets.length > 0 && (
               <VoicePresetPicker value={voicePreset} onChange={setVoicePreset} idPrefix="composer-voice-preset"
-                previewState={voicePreviewState} onPreview={previewVoice} />
+                previewState={voicePreviewState} onPreview={previewVoice}
+                favoriteVoices={favoriteVoices} onToggleFavorite={toggleFavoriteVoice} />
             )}
 
             {isReel && assets.length > 0 && (
@@ -2657,43 +2705,83 @@ const IconBtn = ({ children, onClick, disabled, testid, danger, title }) => (
   </button>
 );
 
+// One pill: the select button, a preview button beside it (sibling, not
+// nested — an invalid <button> inside a <button> was the alternative), and a
+// star toggle. Shared by the quick-select favorites row and the full
+// gender-filtered list below so both read and behave identically.
+const VoicePresetPill = ({ v, value, onChange, idPrefix, previewState, onPreview, isFavorite, onToggleFavorite }) => {
+  const isLoading = previewState?.loading === v.key;
+  const isPlaying = previewState?.playing === v.key;
+  return (
+    <div className="flex items-center gap-1">
+      <button onClick={() => onChange(v.key)} title={v.desc}
+        data-testid={`${idPrefix}-${v.key.toLowerCase()}`}
+        className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+          value === v.key ? "border-lime bg-lime/10 text-lime" : "border-white/10 text-zinc-400 hover:text-white"
+        }`}>
+        {v.label}
+      </button>
+      <button onClick={() => onPreview?.(v.key)} disabled={isLoading}
+        data-testid={`${idPrefix}-${v.key.toLowerCase()}-preview`}
+        title={isPlaying ? "Stop preview" : "Preview this voice"}
+        className="flex h-6 w-6 flex-none items-center justify-center rounded-full border border-white/10 text-zinc-500 hover:text-white disabled:opacity-50">
+        {isLoading ? <Loader2 size={11} className="animate-spin" /> : isPlaying ? <Pause size={11} /> : <PlayCircle size={11} />}
+      </button>
+      <button onClick={() => onToggleFavorite?.(v.key)}
+        data-testid={`${idPrefix}-${v.key.toLowerCase()}-favorite`}
+        title={isFavorite ? "Remove from favorites" : "Add to favorites for quick selection"}
+        className={`flex h-6 w-6 flex-none items-center justify-center rounded-full border transition-colors ${
+          isFavorite ? "border-lime/40 text-lime" : "border-white/10 text-zinc-600 hover:text-white"
+        }`}>
+        <Star size={11} fill={isFavorite ? "currentColor" : "none"} />
+      </button>
+    </div>
+  );
+};
+
 // Shared by both places a reel's voice can be picked: before a build (so
 // the first take already comes back in the right voice) and after one
 // (for a per-scene retake in a different voice). `idPrefix` keeps their
 // testids distinct without duplicating this markup twice.
 //
-// The select button is untouched from before the preview existed — same
-// element, same classes, same testid — with a small preview button now
-// sitting beside it as a sibling rather than nested inside it. Siblings
-// rather than one button inside another: nesting would mean either an
-// invalid <button> inside a <button>, or relying on stopPropagation and
-// exact click coordinates to keep a tap on one from also firing the other.
-const VoicePresetPicker = ({ value, onChange, idPrefix, previewState, onPreview }) => (
-  <div className="mt-3 flex flex-wrap items-center gap-1.5">
-    <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Voice</span>
-    {VOICE_PRESETS.map((v) => {
-      const isLoading = previewState?.loading === v.key;
-      const isPlaying = previewState?.playing === v.key;
-      return (
-        <div key={v.key} className="flex items-center gap-1">
-          <button onClick={() => onChange(v.key)} title={v.desc}
-            data-testid={`${idPrefix}-${v.key.toLowerCase()}`}
-            className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
-              value === v.key ? "border-lime bg-lime/10 text-lime" : "border-white/10 text-zinc-400 hover:text-white"
-            }`}>
-            {v.label}
-          </button>
-          <button onClick={() => onPreview?.(v.key)} disabled={isLoading}
-            data-testid={`${idPrefix}-${v.key.toLowerCase()}-preview`}
-            title={isPlaying ? "Stop preview" : "Preview this voice"}
-            className="flex h-6 w-6 flex-none items-center justify-center rounded-full border border-white/10 text-zinc-500 hover:text-white disabled:opacity-50">
-            {isLoading ? <Loader2 size={11} className="animate-spin" /> : isPlaying ? <Pause size={11} /> : <PlayCircle size={11} />}
-          </button>
+// Favorited voices (starred from the full list) get their own row up top —
+// the quick-select shortcut — regardless of the gender filter below, since a
+// voice someone already picked out shouldn't disappear behind a filter they
+// set for browsing. The full list underneath is what the gender dropdown
+// narrows: All/Female/Male, so picking a fresh voice for a new reel doesn't
+// mean scrolling past every one of the other gender first.
+const VoicePresetPicker = ({ value, onChange, idPrefix, previewState, onPreview, favoriteVoices, onToggleFavorite }) => {
+  const [genderFilter, setGenderFilter] = useState("all");
+  const favorites = VOICE_PRESETS.filter((v) => favoriteVoices?.includes(v.key));
+  const filtered = genderFilter === "all" ? VOICE_PRESETS : VOICE_PRESETS.filter((v) => v.gender === genderFilter);
+
+  return (
+    <div className="mt-3 space-y-2">
+      {favorites.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Favorites</span>
+          {favorites.map((v) => (
+            <VoicePresetPill key={v.key} v={v} value={value} onChange={onChange} idPrefix={`${idPrefix}-fav`}
+              previewState={previewState} onPreview={onPreview} isFavorite onToggleFavorite={onToggleFavorite} />
+          ))}
         </div>
-      );
-    })}
-  </div>
-);
+      )}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Voice</span>
+        <select value={genderFilter} onChange={(e) => setGenderFilter(e.target.value)}
+          data-testid={`${idPrefix}-gender-filter`}
+          className="rounded-full border border-white/10 bg-[#0A0A0A] px-2 py-1 text-[11px] text-zinc-300 outline-none focus:border-iris [color-scheme:dark]">
+          {VOICE_GENDER_FILTERS.map((g) => <option key={g.key} value={g.key}>{g.label}</option>)}
+        </select>
+        {filtered.map((v) => (
+          <VoicePresetPill key={v.key} v={v} value={value} onChange={onChange} idPrefix={idPrefix}
+            previewState={previewState} onPreview={onPreview}
+            isFavorite={favoriteVoices?.includes(v.key)} onToggleFavorite={onToggleFavorite} />
+        ))}
+      </div>
+    </div>
+  );
+};
 
 const SlideField = ({ label, value, onChange, rows, testid }) => (
   <div className="mt-3">

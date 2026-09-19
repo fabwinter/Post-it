@@ -1718,6 +1718,34 @@ r = c.delete("/api/voice-previews/Rachel")
 check("deleting one that isn't there 404s", r.status_code == 404, r.text[:160])
 
 
+# --- voice favorites: starred voices for quick selection ---
+r = c.get("/api/voice-favorites")
+check("no favorites yet", r.json() == [], r.json())
+
+r = c.post("/api/voice-favorites", json={"voice": "Aria"})
+check("favoriting a voice succeeds", r.status_code == 200, r.text)
+check("...and it shows up in the list", c.get("/api/voice-favorites").json() == ["Aria"], c.get("/api/voice-favorites").json())
+
+r = c.post("/api/voice-favorites", json={"voice": "Aria"})
+check("favoriting the same voice twice is idempotent, not a duplicate", r.status_code == 200, r.text)
+check("...still just one entry", c.get("/api/voice-favorites").json() == ["Aria"], c.get("/api/voice-favorites").json())
+
+r = c.post("/api/voice-favorites", json={"voice": "SCbIlR40EEyW2I6quW1h"})
+check("a second voice can be favorited", r.status_code == 200, r.text)
+check("both favorites are listed, oldest first", c.get("/api/voice-favorites").json() == ["Aria", "SCbIlR40EEyW2I6quW1h"],
+      c.get("/api/voice-favorites").json())
+
+r = c.post("/api/voice-favorites", json={"voice": ""})
+check("favoriting with no voice is refused", r.status_code == 400, r.text[:160])
+
+r = c.delete("/api/voice-favorites/Aria")
+check("un-favoriting succeeds", r.status_code == 200, r.text)
+check("...and it's gone from the list", c.get("/api/voice-favorites").json() == ["SCbIlR40EEyW2I6quW1h"],
+      c.get("/api/voice-favorites").json())
+r = c.delete("/api/voice-favorites/Aria")
+check("un-favoriting one that isn't favorited 404s", r.status_code == 404, r.text[:160])
+
+
 # --- app access token: off by default, enforced once set, cron route exempt ---
 check("no token configured: every route is open", c.get("/api/stats").status_code == 200)
 server.APP_ACCESS_TOKEN = "super-secret"

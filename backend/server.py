@@ -191,6 +191,10 @@ _CREATE_TABLES = [
     """CREATE TABLE IF NOT EXISTS voice_previews (
         voice TEXT PRIMARY KEY, line TEXT NOT NULL, url TEXT NOT NULL,
         pathname TEXT, created_at TEXT NOT NULL)""",
+    # Favorited voices surface as quick-select chips in the voice picker,
+    # ahead of the full browse-by-gender menu — one starred row per voice key.
+    """CREATE TABLE IF NOT EXISTS voice_favorites (
+        voice TEXT PRIMARY KEY, created_at TEXT NOT NULL)""",
     # One row per retrievable passage. `embedding` stays NULL under lexical
     # retrieval and is where vectors land if an embedding provider is ever
     # configured — the retriever reads whichever is present.
@@ -1315,6 +1319,44 @@ async def delete_voice_preview(voice: str):
     if not rows:
         raise HTTPException(status_code=404, detail="No saved preview for that voice")
     await d1_query("DELETE FROM voice_previews WHERE voice = ?", [voice])
+    return {"ok": True}
+
+
+# ---------------- Voice favorites ----------------
+# Starring a voice from the browse menu pins it as a quick-select chip
+# everywhere the voice picker shows up — a flat table of keys is all that
+# needs to persist, the presets themselves stay in the frontend's own list.
+class VoiceFavoriteRequest(BaseModel):
+    voice: str
+
+
+@api_router.get("/voice-favorites")
+async def list_voice_favorites():
+    await ensure_schema()
+    rows, _ = await d1_query("SELECT voice FROM voice_favorites ORDER BY created_at")
+    return [r["voice"] for r in rows]
+
+
+@api_router.post("/voice-favorites")
+async def add_voice_favorite(req: VoiceFavoriteRequest):
+    await ensure_schema()
+    voice = (req.voice or "").strip()
+    if not voice:
+        raise HTTPException(status_code=400, detail="Which voice is this favoriting?")
+    await d1_query(
+        "INSERT OR IGNORE INTO voice_favorites (voice, created_at) VALUES (?, ?)",
+        [voice, now_iso()],
+    )
+    return {"ok": True}
+
+
+@api_router.delete("/voice-favorites/{voice}")
+async def remove_voice_favorite(voice: str):
+    await ensure_schema()
+    rows, _ = await d1_query("SELECT voice FROM voice_favorites WHERE voice = ?", [voice])
+    if not rows:
+        raise HTTPException(status_code=404, detail="That voice isn't favorited")
+    await d1_query("DELETE FROM voice_favorites WHERE voice = ?", [voice])
     return {"ok": True}
 
 
@@ -3381,11 +3423,9 @@ async def create_template_from_file(req: TemplateFromFileRequest):
         raw_slides = [{"heading": s["heading"], "body": s["body"]} for s in design["slides"]]
         if not raw_slides or not any(s["heading"] or s["body"] for s in raw_slides):
             raise HTTPException(status_code=422, detail="Couldn't find any slide text in that PPTX")
-        # Converted templates keep the file's own wording verbatim — the
-        # original text is part of what's being converted, and the extracted
-        # layout elements carry it per-box. Generic instructions replaced it
-        # before, which read as the template losing the user's content.
-        slides = raw_slides
+        # Abstract the deck's specific content into a reusable outline so the
+        # template fits any future topic, not just this deck's literal wording.
+        slides = await _abstract_slides(raw_slides, model)
         # The deck's real color scheme and layout, not a generic guess — see
         # _pptx_extract_design. The four built-in theme keys are still a
         # backward-compatible carrier for anything that falls outside the
@@ -3403,23 +3443,27 @@ async def create_template_from_file(req: TemplateFromFileRequest):
     elif req.source_type == "pdf":
         data = await asyncio.to_thread(_fetch_bytes, req.source_url)
         design = await asyncio.to_thread(_pdf_extract_design, data)
-        raw_slides = [{"heading": s["heading"], "body": s["body"]} for s in design["slides"]]
-        if not raw_slides or not any(s["heading"] or s["body"] for s in raw_slides):
+        design_slides = design["slides"]
+        raw_slides = [{"heading": s["heading"], "body": s["body"]} for s in design_slides]
+        # Try to abstract the content via AI. If it returns invalid JSON or the
+        # same content unchanged, fall back to simple page text like "Page 1".
+        abstracted = await _abstract_slides(raw_slides, model)
+        if abstracted != raw_slides:
+            # AI successfully abstracted
+            slides = abstracted
+        else:
+            # AI failed (returned invalid JSON or same content) — fall back to real page text
             pdf = await asyncio.to_thread(_pdf_extract, data)
-            raw_slides = [{"heading": f"Page {i+1}", "body": t[:500]} for i, t in enumerate(pdf["page_texts"]) if t]
-            if not raw_slides:
+            fallback_slides = [{"heading": f"Page {i+1}", "body": t[:500]} for i, t in enumerate(pdf["page_texts"]) if t]
+            if not fallback_slides:
                 raise HTTPException(status_code=422, detail="Couldn't find any text in that PDF")
-        # Converted templates keep the file's own wording verbatim — the
-        # original text is part of what's being converted, and the extracted
-        # layout elements carry it per-box. Generic instructions replaced it
-        # before, which read as the template losing the user's content.
-        slides = raw_slides
+            slides = fallback_slides
         scheme_hexes = list(design["scheme"].values())
         if scheme_hexes:
             colors = _suggest_palette(scheme_hexes)
         bg_guess = design["scheme"].get("lt1") or "#ffffff"
         theme = "whiteboard" if _hex_luminance(bg_guess) >= 0.5 else "midnight"
-        layouts, bg_colors = await asyncio.to_thread(_layouts_from_design_slides, design["slides"])
+        layouts, bg_colors = await asyncio.to_thread(_layouts_from_design_slides, design_slides)
         fmt, source_kind = "carousel", "pdf"
 
     elif req.source_type == "image":
@@ -3429,18 +3473,17 @@ async def create_template_from_file(req: TemplateFromFileRequest):
         except Exception as e:
             raise HTTPException(status_code=422, detail=f"Couldn't read that image: {e}")
         colors = _suggest_palette(hexes)
-        bg = colors.get("bg") or "#ffffff"
+        # For image templates, prefer dark theme by picking the darkest color
+        # instead of relying on palette's algorithm which can flip to light
+        # depending on average brightness.
+        darkest = min(hexes, key=_hex_luminance) if hexes else "#000000"
         # A single visual IS the design: one full-bleed picture using the
-        # already-uploaded source URL, plus its palette — rather than a
-        # palette alone with nothing visual to show.
-        design_slides = [{
-            "heading": "", "body": "", "bg_color": bg,
-            "elements": [{"type": "image", "x": 0, "y": 0, "w": 100, "h": 100,
-                          "url": req.source_url, "fit": "cover", "rotation": 0, "opacity": 1}],
-        }]
-        layouts, bg_colors = await asyncio.to_thread(_layouts_from_design_slides, design_slides)
-        slides = [{"heading": "", "body": ""}]
-        theme = "whiteboard" if _hex_luminance(bg) >= 0.5 else "midnight"
+        # already-uploaded source URL, plus its palette. Image templates have no
+        # slide structure or outline — they are pure visual with no layouts or preview.
+        slides = []
+        layouts = {}
+        bg_colors = {}
+        theme = "whiteboard" if _hex_luminance(darkest) >= 0.5 else "midnight"
         fmt, source_kind = "single", "image"
 
     else:
