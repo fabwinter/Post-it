@@ -1,4 +1,4 @@
-import { useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 // A slide can carry a freeform `elements` array instead of (alongside) its
 // fixed template fields (title/heading/body/...). Every element is
@@ -16,21 +16,42 @@ export const CARD_REF_WIDTH = 440;
 // Hardcoding it (the canvas used to pass 0.86 into a 200px-wide box) draws
 // every element about twice its authored size, so text overruns the box it
 // was measured into and the card clips it.
+//
+// The box being measured usually mounts LATER than the component that reads
+// this hook: the Composer renders an empty-state placeholder until a post
+// has been generated, so on the render that first runs this, ref.current is
+// still null. A `[ref]` dependency can never catch that — a ref object keeps
+// its identity forever, so the effect runs once, finds nothing to observe,
+// and never looks again. Every card then rendered at the bare `fallback` for
+// the rest of the session, which is what "the PNG doesn't match the design"
+// actually was: a card laid out for a 198px box (0.45) sitting in a box
+// twice that wide, with the export faithfully capturing it. So this runs on
+// every render and re-observes whenever the element underneath changes,
+// which costs a reference comparison when nothing has.
 export function useCardScale(ref, fallback = 1) {
   const [scale, setScale] = useState(null);
+  const observedRef = useRef(null);
+  const observerRef = useRef(null);
+
   useLayoutEffect(() => {
     const el = ref.current;
-    if (!el) return undefined;
+    if (el === observedRef.current) return;
+    observedRef.current = el;
+    observerRef.current?.disconnect();
+    observerRef.current = null;
+    if (!el) return;
     const measure = () => {
       const width = el.getBoundingClientRect().width;
       if (width) setScale(width / CARD_REF_WIDTH);
     };
     measure();
-    if (typeof ResizeObserver === "undefined") return undefined;
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [ref]);
+    if (typeof ResizeObserver === "undefined") return;
+    observerRef.current = new ResizeObserver(measure);
+    observerRef.current.observe(el);
+  });
+
+  useEffect(() => () => observerRef.current?.disconnect(), []);
+
   return scale ?? fallback;
 }
 
