@@ -246,6 +246,35 @@ async function confirmReel(page) {
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 10000 });
   ok('visual studio deck becomes editable slides', (await page.getByTestId('composer-slide-strip').locator('button').count()) === 5);
 
+  // A card handed over this way carries no freeform elements, so it renders
+  // through the plain template branch — the one a PNG export rasterises
+  // straight off the screen — and it has to be laid out for the box it is
+  // ACTUALLY in. VisualCard sizes every bit of type and spacing as
+  // `authored * scale`, where the scale is useCardScale measuring that box.
+  // When that measurement never happens the card renders at the bare
+  // fallback (0.45) inside a box twice as wide, and the export faithfully
+  // captures the half-size result. That shipped: the hook's effect depended
+  // on [ref], which never changes identity, so it ran once on mount — while
+  // the Composer was still showing its empty state and the box did not exist
+  // yet — and never looked again.
+  //
+  // None of the PNG checks further down catch this. The file still lands on
+  // disk, at the right pixel dimensions, in the right fonts; only the ratio
+  // between the type and the box around it is wrong. Padding is the cleanest
+  // probe, being a plain `36 * scale` with nothing else folded into it, and
+  // composer-card is the very node captureCardPng rasterises.
+  await page.waitForTimeout(300);
+  const scaleCheck = await page.evaluate(() => {
+    const card = document.querySelector('[data-testid="composer-card"]');
+    const drawn = card && card.firstElementChild;
+    if (!drawn) return null;
+    const width = card.getBoundingClientRect().width;
+    return { width, rendered: parseFloat(getComputedStyle(drawn).paddingLeft) / 36, expected: width / 440 };
+  });
+  ok('the card is laid out for the box it is actually in, not a fallback scale',
+     !!scaleCheck && scaleCheck.width > 0 && Math.abs(scaleCheck.rendered - scaleCheck.expected) < 0.02,
+     JSON.stringify(scaleCheck));
+
   // ---------- 5. duplicate slide ----------
   const stripBefore = await page.locator('[data-testid="composer-slide-strip"] button').count();
   await tap(page, 'composer-slide-duplicate');
