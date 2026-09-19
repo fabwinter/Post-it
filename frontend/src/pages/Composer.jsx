@@ -2352,14 +2352,23 @@ export default function Composer() {
                       </div>
                     </div>
 
-                    <div className="mt-4 md:grid md:grid-cols-[minmax(0,1fr)_minmax(230px,280px)] md:items-start md:gap-5">
+                    <div className="mt-4 md:grid md:grid-cols-[minmax(0,1fr)_min(280px,40%)] md:items-start md:gap-5">
                       {/* Canvas — the flexible track, so it grows into
                           whatever the column actually has, capped only by
-                          how tall this aspect may get. Both tracks use
-                          minmax(0, …) so neither can be forced wider than
-                          the column by its own content (a flex `flex-1`
-                          could, and silently stole clicks meant for the
-                          right-hand platform-preview column). */}
+                          how tall this aspect may get. The controls column
+                          used to be minmax(230px,280px): a plain length range
+                          competes with a 1fr track on EQUAL footing during
+                          CSS Grid's "maximize tracks" step, so it always
+                          claimed its full 280px first and left the canvas
+                          whatever scraps were left — on a real editor width
+                          (a live post-preview column plus this split) that
+                          was as little as ~180px, a design rendered (and
+                          exported) at a small fraction of its authored size.
+                          min(280px,40%) still caps the controls column at a
+                          comfortable width when there's room, but shrinks it
+                          proportionally instead of greedily claiming that cap
+                          when space is tight, so the canvas actually gets the
+                          lion's share it's meant to. */}
                       <div className="mx-auto w-full md:mx-0" style={{ maxWidth: inlineCanvasMaxW }}>
                         {isReel && reelView === "play" ? (
                           <ReelPlayer assets={assets} brand={brand} aspectCls={aspectCls} music={music}
