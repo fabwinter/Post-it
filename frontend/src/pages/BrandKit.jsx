@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
-import { captureCardPng } from "@/lib/cardExport";
+import { captureCardPng, saveExport } from "@/lib/cardExport";
 import { api, apiErrorMessage } from "@/lib/api";
 import { useBrandKits } from "@/lib/useBrand";
 import { PLATFORM_LIST } from "@/lib/platforms";
@@ -205,12 +205,7 @@ export default function BrandKit() {
     try {
       const { data } = await api.get(`/brand-kits/${form.id}/export`);
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${(form.name || "brand-kit").replace(/\W+/g, "-").toLowerCase()}-backup.json`;
-      a.click();
-      URL.revokeObjectURL(url);
+      await saveExport(blob, `${(form.name || "brand-kit").replace(/\W+/g, "-").toLowerCase()}-backup.json`);
       toast.success("Downloaded — brand kit and knowledge base, in one file.");
     } catch (e) { toast.error(apiErrorMessage(e, "Couldn't export the brand kit.")); }
     finally { setExporting(false); }
@@ -226,19 +221,7 @@ export default function BrandKit() {
     try {
       // Shared with every other PNG export — see lib/cardExport.
       const url = await captureCardPng(guidelineRef.current);
-      // A data: URL handed straight to <a download> silently fails in some
-      // browsers once it's large — the Composer already fixed this by
-      // converting to a Blob URL first.
-      let href = url;
-      try {
-        const blob = await (await fetch(url)).blob();
-        href = URL.createObjectURL(blob);
-      } catch { /* keep the data URL */ }
-      const a = document.createElement("a");
-      a.href = href;
-      a.download = `${(form.name || "brand-guideline").replace(/\W+/g, "-").toLowerCase()}-guideline.png`;
-      a.click();
-      if (href !== url) setTimeout(() => URL.revokeObjectURL(href), 30000);
+      await saveExport(url, `${(form.name || "brand-guideline").replace(/\W+/g, "-").toLowerCase()}-guideline.png`);
       toast.success("Downloaded brand guideline");
     } catch (e) { toast.error(apiErrorMessage(e, "Couldn't export the guideline.")); }
     finally { setDownloadingGuideline(false); }

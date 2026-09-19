@@ -1,5 +1,5 @@
 import { useRef, useState, useEffect } from "react";
-import { captureCardPng } from "@/lib/cardExport";
+import { captureCardPng, saveExport } from "@/lib/cardExport";
 import { api, apiErrorMessage } from "@/lib/api";
 import { useTextModels } from "@/lib/useTextModels";
 import { ModelPicker } from "@/components/ModelPicker";
@@ -68,17 +68,7 @@ export function ComposerVisualPanel({ onApply }) {
       // doesn't kill the capture outright, fonts embedded scoped to the
       // faces actually on the card, and no cacheBust.
       const url = await captureCardPng(cardRef.current);
-      // A data: URL handed straight to <a download> silently fails in some
-      // browsers once it's large — the fix the Composer already made
-      // (convert to a Blob URL first). Small captures keep the data URL.
-      let href = url;
-      try {
-        const blob = await (await fetch(url)).blob();
-        href = URL.createObjectURL(blob);
-      } catch { /* keep the data URL */ }
-      const a = document.createElement("a");
-      a.href = href; a.download = `createos-${template}.png`; a.click();
-      if (href !== url) setTimeout(() => URL.revokeObjectURL(href), 30000);
+      await saveExport(url, `createos-${template}.png`);
       toast.success("Downloaded PNG");
     } catch (e) { toast.error(apiErrorMessage(e, "Export failed")); } finally { setExporting(false); }
   };

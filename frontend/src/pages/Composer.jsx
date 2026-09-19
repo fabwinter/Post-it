@@ -16,7 +16,7 @@ import { ReelPlayer } from "@/components/ReelPlayer";
 import { VideoClipEditor } from "@/components/VideoClipEditor";
 import { ReelExportDialog } from "@/components/ReelExportDialog";
 import { PngExportPreview } from "@/components/PngExportPreview";
-import { captureCardPng } from "@/lib/cardExport";
+import { captureCardPng, saveExport, exportErrorMessage } from "@/lib/cardExport";
 import { MediaPicker } from "@/components/MediaPicker";
 import { useTemplateStyles } from "@/lib/templateStyles";
 import { useCustomTemplates } from "@/lib/useCustomTemplates";
@@ -1607,23 +1607,13 @@ export default function Composer() {
     const slug = (title || "post").replace(/\W+/g, "-").toLowerCase();
     if (pngPreview.mode === "single") {
       const { index, url } = pngPreview.images[0];
-      // Convert the data URL to a Blob URL before triggering the download —
-      // a large data URL in an <a download> can silently fail to save in some
-      // browsers (Safari is the worst offender), while a Blob URL of the same
-      // bytes downloads reliably everywhere. The ZIP path below already does
-      // this; the single-PNG path was the only one still using a raw data URL.
+      // saveExport is the one saver (lib/cardExport): a Blob URL rather than a
+      // large data URL, an anchor that is actually in the document, and the
+      // URL kept alive until the browser has read it.
       try {
-        const resp = await fetch(url);
-        const blob = await resp.blob();
-        const blobUrl = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = blobUrl; a.download = `${slug}-${index + 1}.png`; a.click();
-        URL.revokeObjectURL(blobUrl);
-      } catch {
-        const a = document.createElement("a");
-        a.href = url; a.download = `${slug}-${index + 1}.png`; a.click();
-      }
-      toast.success("Downloaded PNG");
+        await saveExport(url, `${slug}-${index + 1}.png`);
+        toast.success("Downloaded PNG");
+      } catch (e) { toast.error(exportErrorMessage(e)); }
       setPngPreview(null);
       return;
     }
@@ -1633,12 +1623,9 @@ export default function Composer() {
         zip.file(`slide-${String(index + 1).padStart(2, "0")}.png`, url.split(",")[1], { base64: true });
       });
       const blob = await zip.generateAsync({ type: "blob" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = `${slug}-slides.zip`; a.click();
-      URL.revokeObjectURL(url);
+      await saveExport(blob, `${slug}-slides.zip`);
       toast.success(`Downloaded all ${pngPreview.images.length} slides as a zip`);
-    } catch (e) { toast.error(apiErrorMessage(e, "Export failed.")); }
+    } catch (e) { toast.error(exportErrorMessage(e)); }
     setPngPreview(null);
   };
 

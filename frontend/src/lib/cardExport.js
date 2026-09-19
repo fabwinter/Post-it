@@ -37,7 +37,7 @@
 //    file in it, thousands of fetches, on every single export.
 import { toPng } from "html-to-image";
 import { BRAND_FONTS } from "./fonts";
-import { proxied } from "./videoExport";
+import { proxied, downloadBlob } from "./videoExport";
 
 const EXPORT_SKIP_ATTR = "data-export-skip";
 const normalizeFamily = (f) => f.trim().replace(/["']/g, "");
@@ -303,4 +303,31 @@ export function exportErrorMessage(e) {
     return "Couldn't reach some of the media on this card. Check your connection and try again.";
   }
   return raw ? `Export failed: ${raw}` : "Export failed.";
+}
+
+/**
+ * Hands a finished export to the browser's save dialog.
+ *
+ * Every PNG path used to hand-roll this, and three of them got it wrong the
+ * same way:
+ *
+ *   a.click();
+ *   URL.revokeObjectURL(blobUrl);   // <- synchronous
+ *
+ * A click only STARTS a download; the browser reads the object URL afterwards,
+ * so revoking on the next line can pull the bytes out from under it. The click
+ * still registers — the toast says "Downloaded PNG" — and no file ever lands.
+ * That is what "it looks like it downloaded but there's no file anywhere" is.
+ * The anchor was also never put in the document, which some browsers require
+ * before they will honour `download` at all.
+ *
+ * downloadBlob (lib/videoExport) already does both correctly and is what the
+ * reel export has always used, which is why saving a reel worked while saving
+ * a PNG did not. Everything goes through it now.
+ */
+export async function saveExport(source, filename) {
+  const blob = typeof source === "string" ? await (await fetch(source)).blob() : source;
+  if (!blob || !blob.size) throw new Error("The export came back empty, so there was nothing to save.");
+  downloadBlob(blob, filename);
+  return blob.size;
 }

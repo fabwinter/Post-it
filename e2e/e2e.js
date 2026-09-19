@@ -2117,11 +2117,24 @@ async function confirmReel(page) {
     await tap(page, 'png-export-confirm');
     const dl = await wait;
     await page.getByTestId('png-export-preview').waitFor({ state: 'detached', timeout: 10000 }).catch(() => {});
-    return { file: dl ? dl.suggestedFilename() : null };
+    if (!dl) return { file: null, bytes: 0 };
+    // A download EVENT is not a saved file. The browser fires one the moment
+    // the anchor is clicked; if the object URL behind it is revoked before
+    // the bytes have been read, the download fails and nothing lands on disk
+    // — which is exactly what "it says Downloaded, but there's no file
+    // anywhere" is. Only the file on disk proves it, so read its size.
+    let bytes = 0;
+    let failure = null;
+    try {
+      failure = await dl.failure();
+      const path = await dl.path();
+      if (path) bytes = require('fs').statSync(path).size;
+    } catch (e) { failure = failure || String(e && e.message); }
+    return { file: dl.suggestedFilename(), bytes, failure };
   };
 
   const plain = await exportPng('composer-slide-download');
-  ok('a plain slide exports a PNG', /\.png$/.test(plain.file || ''), JSON.stringify(plain));
+  ok('a plain slide exports a PNG that really lands on disk', /\.png$/.test(plain.file || '') && plain.bytes > 1000, JSON.stringify(plain));
 
   if (await page.getByTestId('composer-slide-edit-layout').count()) await tap(page, 'composer-slide-edit-layout');
   await page.getByTestId('composer-element-panel').waitFor({ timeout: 8000 });
@@ -2153,7 +2166,7 @@ async function confirmReel(page) {
      tainted === 'SecurityError', String(tainted));
 
   const withClip = await exportPng('composer-slide-download');
-  ok('a slide carrying unreadable footage still exports a PNG', /\.png$/.test(withClip.file || ''), JSON.stringify(withClip));
+  ok('a slide carrying unreadable footage still exports a PNG', /\.png$/.test(withClip.file || '') && withClip.bytes > 1000, JSON.stringify(withClip));
   // The capture borrows the card's own DOM to stand a still in for the video.
   // Borrowing it and not giving it back leaves the editor showing a frozen
   // frame where the clip was.
@@ -2163,7 +2176,7 @@ async function confirmReel(page) {
   })).then((r) => r.videos === 1 && r.leftovers === 0));
 
   const zipped = await exportPng('composer-slide-download-all');
-  ok('every slide zips up together, footage and all', /\.zip$/.test(zipped.file || ''), JSON.stringify(zipped));
+  ok('every slide zips up together, footage and all', /\.zip$/.test(zipped.file || '') && zipped.bytes > 1000, JSON.stringify(zipped));
 
   const real = errs.filter(e => !/favicon|manifest|404|Failed to load resource/i.test(e));
   ok('no console errors', real.length === 0, real.slice(0, 3).join(' | '));

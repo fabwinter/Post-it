@@ -14,6 +14,9 @@ fi
 # Pure-maths checks first — they need no server, and a timeline model that is
 # already wrong makes every browser failure below harder to read.
 (cd "$ROOT" && node e2e/clip-maths.mjs)
+# Source-level rules the browser can't show us — see the file for why the
+# download bug is one of them.
+(cd "$ROOT" && node e2e/source-checks.mjs)
 
 RUN_DIR="$(mktemp -d)"
 export E2E_RUN_DIR="$RUN_DIR"
