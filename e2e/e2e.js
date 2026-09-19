@@ -42,9 +42,17 @@ async function confirmReel(page) {
   const page = await ctx.newPage();
   // External fonts and analytics are blocked by the sandbox proxy and hang the
   // document load; the app must not depend on them anyway.
+  //
+  // localhost:8123 is this same server under its other name. It is allowed
+  // through because that difference is the only way to get a genuinely
+  // cross-origin asset out of a one-origin harness: to the browser the two
+  // spellings are different origins, so a clip served from the localhost one
+  // taints a canvas exactly as real stock footage does (see the PNG export
+  // checks near the end of this file).
+  const LOCAL = ['http://127.0.0.1:8123', 'http://localhost:8123'];
   await (page).route('**/*', (route) => {
     const u = route.request().url();
-    return u.startsWith('http://127.0.0.1:8123') ? route.continue() : route.abort();
+    return LOCAL.some((origin) => u.startsWith(origin)) ? route.continue() : route.abort();
   });
   const errs = [];
   page.on('pageerror', e => errs.push(String(e)));
@@ -2065,10 +2073,99 @@ async function confirmReel(page) {
      && (await page.getByTestId(`library-elements-item-${elId1}`).count()) === 0
      && (await page.getByTestId(`library-elements-item-${elId2}`).count()) === 0);
 
-  // html-to-image reaches for the Google Fonts stylesheet while rasterising
-  // the overlay layer; this harness blocks every off-origin request, so those
-  // failures are the sandbox, not the app.
-  const real = errs.filter(e => !/favicon|manifest|404|Failed to load resource|remote css|remote stylesheet|cssRules/i.test(e));
+  // "remote css", "remote stylesheet" and "cssRules" used to be filtered out
+  // here too, as sandbox noise. They weren't: they are html-to-image walking
+  // every stylesheet on the page during an export, failing to read a
+  // cross-origin font sheet, and re-downloading the whole ~90-family Google
+  // catalogue to inline it — thousands of font fetches per PNG. The sandbox
+  // only explains why those fetches then fail; the app should never be making
+  // them. Exports supply their own scoped fontEmbedCSS now (lib/cardExport),
+  // so the messages are gone and their return means the walk is back.
+  // ---- exporting a card as a PNG ----
+  // Reported: "the error when exporting png files". A card carrying footage —
+  // a reel scene, or any slide with a stock clip on it — is rasterised by
+  // drawing the <video> into a canvas and reading it back, and a cross-origin
+  // clip taints that canvas: toDataURL throws "Tainted canvases may not be
+  // exported" and the whole export dies with nothing downloaded. Routing the
+  // card's <img> sources through the media proxy (which is what fixed the
+  // same problem for pictures) never touched <video> at all.
+  //
+  // Stock footage is cross-origin on a real deployment but same-origin in this
+  // harness, so the taint has to be arranged deliberately: localhost:8123 and
+  // 127.0.0.1:8123 are the same server and different origins to the browser,
+  // and the clip route sets no CORS header. That is exactly what a Pexels clip
+  // is in production — playable, unreadable.
+  await page.goto(B + '/calendar', { waitUntil: 'domcontentloaded' });
+  await page.goto(B + '/composer', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(500);
+  await page.getByTestId('composer-brief').fill('a carousel about exporting artwork');
+  await tap(page, 'composer-autobuild');
+  await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
+  await page.waitForTimeout(1200);
+
+  // Capture opens the preview dialog; the file is only written after a look.
+  const exportPng = async (testid) => {
+    await tap(page, testid);
+    await page.getByTestId('png-export-preview').waitFor({ timeout: 20000 });
+    await page.waitForSelector('[data-testid="png-export-loading"]', { state: 'detached', timeout: 40000 }).catch(() => {});
+    if (await page.getByTestId('png-export-error').count()) {
+      const why = await page.getByTestId('png-export-error').innerText();
+      await tap(page, 'png-export-cancel');
+      return { error: why };
+    }
+    const wait = page.waitForEvent('download', { timeout: 30000 }).catch(() => null);
+    await tap(page, 'png-export-confirm');
+    const dl = await wait;
+    await page.getByTestId('png-export-preview').waitFor({ state: 'detached', timeout: 10000 }).catch(() => {});
+    return { file: dl ? dl.suggestedFilename() : null };
+  };
+
+  const plain = await exportPng('composer-slide-download');
+  ok('a plain slide exports a PNG', /\.png$/.test(plain.file || ''), JSON.stringify(plain));
+
+  if (await page.getByTestId('composer-slide-edit-layout').count()) await tap(page, 'composer-slide-edit-layout');
+  await page.getByTestId('composer-element-panel').waitFor({ timeout: 8000 });
+  await tap(page, 'composer-add-element-video');
+  await page.waitForTimeout(400);
+  await page.getByTestId('composer-element-url').fill('http://localhost:8123/e2e-video.mp4');
+  // Wait for the clip to actually decode rather than guessing at a delay — a
+  // flat timeout passes on a quiet machine and reports "no video" on a busy
+  // one, which says nothing about the export either way.
+  await page.waitForFunction(
+    () => !!document.querySelector('[data-testid="slide-editor-canvas"] video')?.videoWidth,
+    null, { timeout: 15000 },
+  ).catch(() => {});
+  const tainted = await page.evaluate(() => {
+    const v = document.querySelector('[data-testid="slide-editor-canvas"] video');
+    if (!v) return 'no video element';
+    if (!v.videoWidth) return `not decoded (readyState ${v.readyState})`;
+    try {
+      const c = document.createElement('canvas');
+      c.width = 4; c.height = 4;
+      c.getContext('2d').drawImage(v, 0, 0, 4, 4);
+      c.toDataURL();
+      return 'readable';
+    } catch (e) { return e.name; }
+  });
+  // Without this the check below proves nothing: a clip the page is allowed
+  // to read never had the problem in the first place.
+  ok("the clip really is one the page can't read back, like real stock footage",
+     tainted === 'SecurityError', String(tainted));
+
+  const withClip = await exportPng('composer-slide-download');
+  ok('a slide carrying unreadable footage still exports a PNG', /\.png$/.test(withClip.file || ''), JSON.stringify(withClip));
+  // The capture borrows the card's own DOM to stand a still in for the video.
+  // Borrowing it and not giving it back leaves the editor showing a frozen
+  // frame where the clip was.
+  ok('...and hands the card back exactly as it was', await page.evaluate(() => ({
+    videos: document.querySelectorAll('[data-testid="slide-editor-canvas"] video').length,
+    leftovers: document.querySelectorAll('[data-export-still],[data-export-skip]').length,
+  })).then((r) => r.videos === 1 && r.leftovers === 0));
+
+  const zipped = await exportPng('composer-slide-download-all');
+  ok('every slide zips up together, footage and all', /\.zip$/.test(zipped.file || ''), JSON.stringify(zipped));
+
+  const real = errs.filter(e => !/favicon|manifest|404|Failed to load resource/i.test(e));
   ok('no console errors', real.length === 0, real.slice(0, 3).join(' | '));
 
   await browser.close();

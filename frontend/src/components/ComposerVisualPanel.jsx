@@ -1,7 +1,5 @@
 import { useRef, useState, useEffect } from "react";
-import { toPng } from "html-to-image";
-import { safeFontEmbedCSS } from "@/lib/fontExport";
-import { proxied } from "@/lib/videoExport";
+import { captureCardPng } from "@/lib/cardExport";
 import { api, apiErrorMessage } from "@/lib/api";
 import { useTextModels } from "@/lib/useTextModels";
 import { ModelPicker } from "@/components/ModelPicker";
@@ -65,40 +63,11 @@ export function ComposerVisualPanel({ onApply }) {
     if (!cardRef.current) return;
     setExporting(true);
     try {
-      // Same capture rules as the Composer's PNG export (captureCardPng):
-      // route cross-origin images through our own same-origin proxy so the
-      // canvas isn't tainted, wait for the swapped sources to decode, then
-      // restore. cacheBust stays OFF — the query string it appends turns an
-      // already-proxied same-origin URL back into an uncached fetch, which
-      // re-taints the canvas and makes toPng throw "Export failed".
-      const node = cardRef.current;
-      const imgs = Array.from(node.querySelectorAll("img"));
-      const originals = imgs.map((img) => img.getAttribute("src"));
-      imgs.forEach((img) => {
-        const src = img.getAttribute("src");
-        const p = proxied(src);
-        if (p !== src) { img.crossOrigin = "anonymous"; img.setAttribute("src", p); }
-      });
-      await Promise.all(imgs.map((img) => (img.complete && img.naturalWidth
-        ? Promise.resolve()
-        : new Promise((resolve) => {
-          const done = () => resolve();
-          img.addEventListener("load", done, { once: true });
-          img.addEventListener("error", done, { once: true });
-          setTimeout(done, 8000);
-        }))));
-      let url;
-      try {
-        let fontEmbedCSS;
-        try { fontEmbedCSS = await safeFontEmbedCSS(); } catch { fontEmbedCSS = null; }
-        const opts = { pixelRatio: 2, ...(fontEmbedCSS ? { fontEmbedCSS } : { skipFonts: true }) };
-        url = await toPng(node, opts);
-      } finally {
-        imgs.forEach((img, i) => {
-          if (originals[i] == null) img.removeAttribute("src");
-          else img.setAttribute("src", originals[i]);
-        });
-      }
+      // Shared with every other PNG export — see lib/cardExport: images
+      // proxied so the canvas isn't tainted, footage snapshotted so a clip
+      // doesn't kill the capture outright, fonts embedded scoped to the
+      // faces actually on the card, and no cacheBust.
+      const url = await captureCardPng(cardRef.current);
       // A data: URL handed straight to <a download> silently fails in some
       // browsers once it's large — the fix the Composer already made
       // (convert to a Blob URL first). Small captures keep the data URL.

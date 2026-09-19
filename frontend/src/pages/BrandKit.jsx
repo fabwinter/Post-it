@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
-import { toPng } from "html-to-image";
-import { safeFontEmbedCSS } from "@/lib/fontExport";
-import { proxied } from "@/lib/videoExport";
+import { captureCardPng } from "@/lib/cardExport";
 import { api, apiErrorMessage } from "@/lib/api";
 import { useBrandKits } from "@/lib/useBrand";
 import { PLATFORM_LIST } from "@/lib/platforms";
@@ -226,41 +224,8 @@ export default function BrandKit() {
     if (!guidelineRef.current) return;
     setDownloadingGuideline(true);
     try {
-      // Same capture rules as the Composer's PNG export (captureCardPng):
-      // route cross-origin images through our own same-origin proxy so the
-      // canvas isn't tainted, wait for the swapped sources to decode, then
-      // restore. cacheBust stays OFF — the query string it appends turns an
-      // already-proxied same-origin URL back into an uncached fetch, which
-      // re-taints the canvas and makes toPng throw. A logo drawn from a
-      // different origin is the one thing that can taint this capture.
-      const node = guidelineRef.current;
-      const imgs = Array.from(node.querySelectorAll("img"));
-      const originals = imgs.map((img) => img.getAttribute("src"));
-      imgs.forEach((img) => {
-        const src = img.getAttribute("src");
-        const p = proxied(src);
-        if (p !== src) { img.crossOrigin = "anonymous"; img.setAttribute("src", p); }
-      });
-      await Promise.all(imgs.map((img) => (img.complete && img.naturalWidth
-        ? Promise.resolve()
-        : new Promise((resolve) => {
-          const done = () => resolve();
-          img.addEventListener("load", done, { once: true });
-          img.addEventListener("error", done, { once: true });
-          setTimeout(done, 8000);
-        }))));
-      let url;
-      try {
-        let fontEmbedCSS;
-        try { fontEmbedCSS = await safeFontEmbedCSS(); } catch { fontEmbedCSS = null; }
-        const opts = { pixelRatio: 2, ...(fontEmbedCSS ? { fontEmbedCSS } : { skipFonts: true }) };
-        url = await toPng(node, opts);
-      } finally {
-        imgs.forEach((img, i) => {
-          if (originals[i] == null) img.removeAttribute("src");
-          else img.setAttribute("src", originals[i]);
-        });
-      }
+      // Shared with every other PNG export — see lib/cardExport.
+      const url = await captureCardPng(guidelineRef.current);
       // A data: URL handed straight to <a download> silently fails in some
       // browsers once it's large — the Composer already fixed this by
       // converting to a Blob URL first.

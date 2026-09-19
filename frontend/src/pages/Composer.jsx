@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { toPng } from "html-to-image";
 import JSZip from "jszip";
 import { api, pollTask, apiErrorMessage } from "@/lib/api";
 import { useTextModels } from "@/lib/useTextModels";
@@ -17,8 +16,7 @@ import { ReelPlayer } from "@/components/ReelPlayer";
 import { VideoClipEditor } from "@/components/VideoClipEditor";
 import { ReelExportDialog } from "@/components/ReelExportDialog";
 import { PngExportPreview } from "@/components/PngExportPreview";
-import { proxied } from "@/lib/videoExport";
-import { safeFontEmbedCSS } from "@/lib/fontExport";
+import { captureCardPng } from "@/lib/cardExport";
 import { MediaPicker } from "@/components/MediaPicker";
 import { useTemplateStyles } from "@/lib/templateStyles";
 import { useCustomTemplates } from "@/lib/useCustomTemplates";
@@ -1543,53 +1541,6 @@ export default function Composer() {
       patchElement(selectedElementId, { url: item.url, type: item.type === "video" ? "video" : "image" });
     }
     toast.success(item.credit ? `Added — photo by ${item.credit}` : "Added");
-  };
-
-  // html-to-image can only rasterize a card whose images it can read back
-  // out of the canvas. A slide's backdrop and element images are usually
-  // cross-origin (PoYo art, Pexels stock) and served without CORS headers,
-  // so the browser taints the canvas and toPng throws "Export failed" — the
-  // reason PNG/ZIP export silently failed for every visual that had a
-  // picture in it. Route each image through our own same-origin proxy (the
-  // exact trick the reel video export already uses) for the duration of the
-  // capture, wait for the swapped sources to decode, then restore the
-  // originals so the live preview is untouched.
-  const captureCardPng = async (node) => {
-    const imgs = Array.from(node.querySelectorAll("img"));
-    const originals = imgs.map((img) => img.getAttribute("src"));
-    imgs.forEach((img) => {
-      const src = img.getAttribute("src");
-      const p = proxied(src);
-      if (p !== src) { img.crossOrigin = "anonymous"; img.setAttribute("src", p); }
-    });
-    // Give the proxied sources a moment to load before capturing.
-    await Promise.all(imgs.map((img) => (img.complete && img.naturalWidth
-      ? Promise.resolve()
-      : new Promise((resolve) => {
-        const done = () => resolve();
-        img.addEventListener("load", done, { once: true });
-        img.addEventListener("error", done, { once: true });
-        setTimeout(done, 8000);
-      }))));
-    try {
-      // Fonts: embed them so exported text matches the preview. Every webfont
-      // sheet is now loaded in CORS mode (see public/index.html) so this can
-      // read their rules — but if some future sheet ever can't be read, skip
-      // font embedding rather than let the whole export throw (a file with
-      // fallback fonts still beats "Export failed").
-      let fontEmbedCSS;
-      try { fontEmbedCSS = await safeFontEmbedCSS(); } catch { fontEmbedCSS = null; }
-      // cacheBust is deliberately OFF: it appends a query string that would
-      // turn every already-proxied same-origin URL back into an uncached
-      // cross-origin-looking fetch, reintroducing the taint this fixes.
-      const opts = { pixelRatio: 2, ...(fontEmbedCSS ? { fontEmbedCSS } : { skipFonts: true }) };
-      return await toPng(node, opts);
-    } finally {
-      imgs.forEach((img, i) => {
-        if (originals[i] == null) img.removeAttribute("src");
-        else img.setAttribute("src", originals[i]);
-      });
-    }
   };
 
   // A rasterised PNG can silently fall back to a system font while still
