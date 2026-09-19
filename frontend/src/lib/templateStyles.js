@@ -22,3 +22,23 @@ export function useTemplateStyles() {
   }, []);
   return templates;
 }
+
+// Mirrors SCRIPT_STYLES in backend/server.py — the shape a reel/Short's
+// scenes get written to. Same deal as above: this copy paints first, the
+// server's list replaces it, and the keys are what build-post reads.
+export const FALLBACK_SCRIPT_STYLES = [
+  { key: "standard", label: "Standard", desc: "Hook, problem, payoff, one-line CTA" },
+  { key: "viral-short", label: "Viral YouTube Short", desc: "Hook → rehook → twist → payoff, then a hard cut" },
+];
+
+export function useScriptStyles() {
+  const [styles, setStyles] = useState(FALLBACK_SCRIPT_STYLES);
+  useEffect(() => {
+    let live = true;
+    api.get("/script-styles")
+      .then(({ data }) => { if (live && data?.styles?.length) setStyles(data.styles); })
+      .catch(() => { /* fallback list already rendered */ });
+    return () => { live = false; };
+  }, []);
+  return styles;
+}

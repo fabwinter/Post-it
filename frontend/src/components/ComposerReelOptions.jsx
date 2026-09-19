@@ -1,4 +1,5 @@
 import { Minus, Plus } from "lucide-react";
+import { useScriptStyles } from "@/lib/templateStyles";
 
 // What a reel build asks for before it spends anything — scene count and
 // structure, which of voiceover/music/footage to bother generating at all,
@@ -32,9 +33,36 @@ export function ComposerReelOptions({ options, onChange, sceneRange }) {
   const patch = (p) => onChange({ ...options, ...p });
   const count = options.sceneCount || sceneRange.default;
   const setCount = (n) => patch({ sceneCount: Math.max(sceneRange.min, Math.min(sceneRange.max, n)) });
+  const scriptStyles = useScriptStyles();
+  const scriptStyle = options.scriptStyle || "standard";
+  const active = scriptStyles.find((s) => s.key === scriptStyle);
+  // This style's whole shape is "stop dead on the payoff", so an outro CTA
+  // scene is the one thing it can't have. Rather than let the two contradict
+  // each other in the prompt, picking it clears the outro toggle and the
+  // control below says why it's gone.
+  const noOutro = scriptStyle === "viral-short";
 
   return (
     <div className="mt-3 rounded-lg border border-white/10 bg-[#0A0A0A] p-3" data-testid="composer-reel-options">
+      <div className="mb-3">
+        <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Script style</span>
+        <div className="mt-1.5 flex flex-wrap gap-1.5">
+          {scriptStyles.map((s) => (
+            <button key={s.key} type="button" title={s.desc}
+              onClick={() => patch({ scriptStyle: s.key, ...(s.key === "viral-short" ? { outro: false } : {}) })}
+              data-testid={`composer-reel-script-${s.key}`}
+              className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                scriptStyle === s.key ? "border-lime bg-lime/10 text-lime" : "border-white/10 text-zinc-500 hover:text-white"
+              }`}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+        {active?.desc && (
+          <p className="mt-1.5 text-[11px] text-zinc-500" data-testid="composer-reel-script-desc">{active.desc}</p>
+        )}
+      </div>
+
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Scenes</span>
@@ -56,7 +84,7 @@ export function ComposerReelOptions({ options, onChange, sceneRange }) {
           <Toggle on={options.intro} onClick={() => patch({ intro: !options.intro })}
             label="+ Intro hook" testid="composer-reel-intro" />
           <Toggle on={options.outro} onClick={() => patch({ outro: !options.outro })}
-            label="+ Outro CTA" testid="composer-reel-outro" />
+            label={noOutro ? "+ Outro CTA (ends on the payoff)" : "+ Outro CTA"} testid="composer-reel-outro" />
         </div>
       </div>
 

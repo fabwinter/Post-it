@@ -64,6 +64,10 @@ import {
 // in here, since that default differs per platform.
 const DEFAULT_REEL_OPTIONS = {
   sceneCount: null,
+  // Which script shape the scenes get written to — the keys come from the
+  // backend's own SCRIPT_STYLES (GET /script-styles), so the picker can't
+  // offer a style the prompt side doesn't know how to write.
+  scriptStyle: "standard",
   intro: false,
   outro: false,
   includeVoiceover: true,
@@ -1192,6 +1196,7 @@ export default function Composer() {
         ...(format === "reel" ? {
           reel_intro: reelOptions.intro, reel_outro: reelOptions.outro,
           include_voiceover: reelOptions.includeVoiceover,
+          script_style: reelOptions.scriptStyle,
         } : {}),
       });
       if (data.format === "reel" && (data.assets || []).some((a) => a.type === "scene")) {

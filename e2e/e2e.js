@@ -772,9 +772,30 @@ async function confirmReel(page) {
      (await page.getByTestId('composer-reel-music-style').count()) === 0);
   await tap(page, 'composer-reel-include-music'); // back on
 
+  // The script style picker: standard is the default, picking viral-short
+  // selects it, and — since that style ends on the payoff — picking it
+  // clears an already-set outro toggle rather than leaving two contradicting
+  // instructions (an outro scene + "no outro") to reach the same prompt.
+  ok('standard is the default script style',
+     (await page.getByTestId('composer-reel-script-standard').getAttribute('class')).includes('border-lime'));
+  await tap(page, 'composer-reel-outro');
+  await tap(page, 'composer-reel-script-viral-short');
+  ok('picking a script style selects it',
+     (await page.getByTestId('composer-reel-script-viral-short').getAttribute('class')).includes('border-lime'));
+  ok('...and an already-set outro toggle is cleared, since this style ends on the payoff',
+     !(await page.getByTestId('composer-reel-outro').getAttribute('class')).includes('border-lime'));
+
+  const buildRequests = [];
+  await page.route('**/api/ai/build-post', async (route) => {
+    buildRequests.push(route.request().postDataJSON());
+    await route.continue();
+  });
   await page.getByTestId('composer-brief').fill('shipping weekly, e2e review step');
   await tap(page, 'composer-autobuild');
   await page.getByTestId('composer-reel-review').waitFor({ timeout: 20000 });
+  await page.unroute('**/api/ai/build-post');
+  ok('the picked script style actually reaches the build request',
+     buildRequests[0]?.script_style === 'viral-short', JSON.stringify(buildRequests[0]));
 
   // The whole point of the step: nothing has recorded, shot or scored
   // anything while this is up.

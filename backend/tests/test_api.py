@@ -338,6 +338,46 @@ b = r.json()
 check("reel assets are scenes", [a["type"] for a in b["assets"]] == ["scene", "scene"], b["assets"])
 check("scene keeps video prompt", b["assets"][0]["spec"]["video_prompt"] == "vp1", b["assets"][0])
 
+# --- script styles: which shape a reel's scenes get written to ---
+r = c.get("/api/script-styles")
+styles = r.json()
+check("script styles are listed", [s["key"] for s in styles["styles"]] == ["standard", "viral-short"], styles)
+check("...with display copy for the picker", all(s["label"] and s["desc"] for s in styles["styles"]), styles)
+check("...and name their default", styles["default"] == "standard", styles)
+check("the guide itself is not shipped to the client", all("guide" not in s for s in styles["styles"]), styles)
+
+# The style has to actually reach the prompt — that is the entire feature.
+c.post("/api/ai/build-post", json={"topic": "x", "platform": "tiktok", "format": "reel", "script_style": "viral-short"})
+sent_viral = SENT_MESSAGES[-1][0]["content"]
+check("a viral-short reel is briefed on the hook/rehook/turn/payoff structure",
+      "rehook" in sent_viral and "payoff" in sent_viral, sent_viral[-400:])
+check("...and told to end on the payoff rather than an outro",
+      "no recap" in sent_viral, sent_viral[-400:])
+
+c.post("/api/ai/build-post", json={"topic": "x", "platform": "tiktok", "format": "reel"})
+sent_standard = SENT_MESSAGES[-1][0]["content"]
+check("the default style leaves the plain short-form brief alone", "rehook" not in sent_standard, sent_standard[-400:])
+check("...while still briefing short-form pacing at all", "Short-form video script rules" in sent_standard)
+
+# An outro was asked for explicitly, so the style must not overrule it — two
+# contradicting instructions in one prompt is worse than either alone.
+c.post("/api/ai/build-post", json={"topic": "x", "platform": "tiktok", "format": "reel",
+                                    "script_style": "viral-short", "reel_outro": True})
+sent_both = SENT_MESSAGES[-1][0]["content"]
+check("ticking the outro box wins over the style's hard cut",
+      "distinct outro" in sent_both and "no recap" not in sent_both, sent_both[-400:])
+
+# A carousel has no scenes, so no script style belongs in its prompt.
+c.post("/api/ai/build-post", json={"topic": "x", "platform": "linkedin", "format": "carousel",
+                                    "script_style": "viral-short"})
+check("a carousel is never briefed with a reel script style", "rehook" not in SENT_MESSAGES[-1][0]["content"])
+
+# A stale client sending a style this build dropped still gets a reel.
+r = c.post("/api/ai/build-post", json={"topic": "x", "platform": "tiktok", "format": "reel",
+                                        "script_style": "no-such-style"})
+check("an unknown script style falls back instead of failing the build", r.status_code == 200, r.text[:160])
+check("...to the plain short-form brief", "rehook" not in SENT_MESSAGES[-1][0]["content"])
+
 CHAT_REPLY["value"] = "not json at all"
 r = c.post("/api/ai/build-post", json={"topic": "x", "platform": "linkedin"})
 check("build-post survives non-JSON", r.status_code == 200 and r.json()["caption"] == "not json at all", r.text[:200])
