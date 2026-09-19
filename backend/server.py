@@ -183,6 +183,14 @@ _CREATE_TABLES = [
         source_kind TEXT NOT NULL DEFAULT 'paste', source_url TEXT,
         pinned INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+    # A synthesized sample of each voice preset, kept so that hearing what a
+    # voice sounds like costs one generation ever rather than one per session.
+    # `line` is the sentence it was generated from: change the sample text and
+    # the stored clip no longer matches what it claims to be, so it is
+    # regenerated rather than silently served as the wrong preview.
+    """CREATE TABLE IF NOT EXISTS voice_previews (
+        voice TEXT PRIMARY KEY, line TEXT NOT NULL, url TEXT NOT NULL,
+        pathname TEXT, created_at TEXT NOT NULL)""",
     # One row per retrievable passage. `embedding` stays NULL under lexical
     # retrieval and is where vectors land if an embedding provider is ever
     # configured — the retriever reads whichever is present.
@@ -1228,6 +1236,86 @@ async def create_upload_from_url(req: UploadFromUrlRequest):
          record["kind"], record["size"], record["created_at"]],
     )
     return _row_to_upload(record)
+
+
+# ---------------- Voice previews ----------------
+# "What does this voice actually sound like" used to cost a text-to-speech
+# generation every single time, because the answer only lived in one page's
+# memory — reload, or come back tomorrow, and all ten presets were unknown
+# again. The sample never changes, so it only ever needs making once.
+#
+# The clip is re-hosted rather than bookmarked. What a generation hands back
+# is a URL on the provider's own CDN, which is theirs to expire; a row
+# pointing at one of those is a dead preview button some weeks from now. The
+# bytes are pulled into this app's storage (the same _fetch_with_cap/_blob_put
+# path an upload takes, SSRF-checked and size-capped) so the row keeps
+# working for as long as the app does.
+class VoicePreviewRequest(BaseModel):
+    voice: str
+    # Where the freshly generated sample currently lives — the provider URL
+    # the client just polled for.
+    source_url: str
+    line: str = ""
+
+
+def _row_to_voice_preview(r: dict) -> dict:
+    return {"voice": r["voice"], "line": r.get("line") or "", "url": r["url"]}
+
+
+@api_router.get("/voice-previews")
+async def list_voice_previews():
+    """Every sample already made, so the client can seed its whole picker in
+    one request instead of discovering each voice the expensive way."""
+    await ensure_schema()
+    rows, _ = await d1_query("SELECT * FROM voice_previews")
+    return [_row_to_voice_preview(r) for r in rows]
+
+
+@api_router.post("/voice-previews")
+async def save_voice_preview(req: VoicePreviewRequest):
+    await ensure_schema()
+    voice = (req.voice or "").strip()
+    if not voice:
+        raise HTTPException(status_code=400, detail="Which voice is this a preview of?")
+    line = (req.line or "").strip()
+
+    # Someone else (another tab, another device) may have banked this exact
+    # sample already while this one was still generating. Theirs is just as
+    # good, so keep it rather than spending a second upload on a duplicate.
+    rows, _ = await d1_query("SELECT * FROM voice_previews WHERE voice = ?", [voice])
+    if rows and (not line or (rows[0].get("line") or "") == line):
+        return _row_to_voice_preview(rows[0])
+
+    content, content_type = await asyncio.to_thread(_fetch_with_cap, req.source_url, MAX_UPLOAD_BYTES, 30)
+    if not content:
+        raise HTTPException(status_code=400, detail="That preview came back empty")
+    if _upload_kind(content_type) != "audio":
+        raise HTTPException(status_code=400, detail="That link isn't an audio file")
+    ext = (content_type.split("/")[-1] or "mp3").split(";")[0]
+    filename = _safe_filename(f"voice-preview-{voice}.{ext}")
+    blob = await asyncio.to_thread(_blob_put, f"voice-previews/{filename}", content, content_type)
+    record = {"voice": voice, "line": line, "url": blob.get("url"),
+              "pathname": blob.get("pathname"), "created_at": now_iso()}
+    # REPLACE, not INSERT: re-recording a voice whose sample line has changed
+    # has to overwrite the stale clip, not collide with it.
+    await d1_query(
+        "INSERT OR REPLACE INTO voice_previews (voice, line, url, pathname, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        [record["voice"], record["line"], record["url"], record["pathname"], record["created_at"]],
+    )
+    return _row_to_voice_preview(record)
+
+
+@api_router.delete("/voice-previews/{voice}")
+async def delete_voice_preview(voice: str):
+    """Throws one sample away so the next preview makes a fresh one — for when
+    a voice itself has been retuned behind the same id."""
+    await ensure_schema()
+    rows, _ = await d1_query("SELECT voice FROM voice_previews WHERE voice = ?", [voice])
+    if not rows:
+        raise HTTPException(status_code=404, detail="No saved preview for that voice")
+    await d1_query("DELETE FROM voice_previews WHERE voice = ?", [voice])
+    return {"ok": True}
 
 
 # ---------------- Custom fonts ----------------

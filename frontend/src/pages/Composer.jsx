@@ -247,18 +247,37 @@ export default function Composer() {
   // "Which of these am I actually going to sound like" — three of the
   // presets above are custom voice IDs with no name attached anywhere, so
   // picking blind was the only option before this. One shared <audio>
-  // (voicePreviewAudioRef) plays whichever preset was tapped; previewUrlsRef
-  // caches each preset's synthesized sample for the rest of this session so
-  // clicking the same voice twice in a row doesn't spend a second
-  // generation on it. voicePreviewState is the small bit of UI state that
-  // actually needs a re-render: which key is loading, and which is playing.
-  // A real <audio> element (rendered hidden, below) rather than a bare
-  // `new Audio()` — the latter plays fine detached from the document, but
-  // nothing outside this component (a test, a screen reader) could ever
-  // find it to check what it's doing.
+  // (voicePreviewAudioRef) plays whichever preset was tapped.
+  //
+  // previewUrlsRef holds each preset's sample. It used to be filled only by
+  // this page, in memory, which meant the answer was thrown away on every
+  // reload and hearing the same ten voices tomorrow cost ten more
+  // generations. The samples are saved server-side now (voice_previews) and
+  // seeded here on mount, so a sample is made once ever rather than once per
+  // session — and once it is in this ref, replaying it costs nothing at all.
+  //
+  // voicePreviewState is the small bit of UI state that actually needs a
+  // re-render: which key is loading, and which is playing. A real <audio>
+  // element (rendered hidden, below) rather than a bare `new Audio()` — the
+  // latter plays fine detached from the document, but nothing outside this
+  // component (a test, a screen reader) could ever find it to check what it
+  // is doing.
   const voicePreviewAudioRef = useRef(null);
   const previewUrlsRef = useRef({});
   const [voicePreviewState, setVoicePreviewState] = useState({ loading: null, playing: null });
+
+  useEffect(() => {
+    let live = true;
+    api.get("/voice-previews")
+      .then(({ data }) => {
+        if (!live) return;
+        (data || []).forEach((row) => { if (row?.voice && row?.url) previewUrlsRef.current[row.voice] = row.url; });
+      })
+      // Nothing to tell anyone: a preview that isn't banked yet just gets
+      // generated the first time it's asked for, exactly as before.
+      .catch(() => {});
+    return () => { live = false; };
+  }, []);
 
   const previewVoice = async (key) => {
     const audio = voicePreviewAudioRef.current;
@@ -279,8 +298,22 @@ export default function Composer() {
     try {
       const { data } = await api.post("/ai/generate", { kind: "voice", prompt: VOICE_PREVIEW_LINE, options: { voice: key } });
       const result = await pollTask(data.task_id);
-      const url = (result.files || []).find((f) => f.file_url)?.file_url;
-      if (!url) throw new Error("No preview came back");
+      const fresh = (result.files || []).find((f) => f.file_url)?.file_url;
+      if (!fresh) throw new Error("No preview came back");
+      // Bank it, and prefer the copy that comes back: the generator's URL is
+      // on its own CDN and expires, while the saved one is re-hosted here and
+      // is what every later session will be handed. Failing to save is not
+      // worth interrupting the playback for — it just means the next session
+      // makes this one again.
+      let url = fresh;
+      try {
+        // Absolute: the generator returns an absolute URL in production, but
+        // this is what the server has to fetch, and it has no page to resolve
+        // a relative one against.
+        const source = new URL(fresh, window.location.href).href;
+        const { data: saved } = await api.post("/voice-previews", { voice: key, source_url: source, line: VOICE_PREVIEW_LINE });
+        if (saved?.url) url = saved.url;
+      } catch { /* keep the fresh URL for this session */ }
       previewUrlsRef.current[key] = url;
       audio.src = url;
       audio.play();

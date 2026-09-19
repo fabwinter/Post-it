@@ -1651,6 +1651,73 @@ check("a non-media link is rejected rather than silently added", r.status_code =
 r = c.delete(f"/api/uploads/{stock_upload['id']}")
 check("cleanup: the downloaded stock item can be deleted like any upload", r.status_code == 200, r.text)
 
+# --- voice previews: made once, not once per session ---
+# Hearing what a voice sounds like used to cost a text-to-speech generation
+# every time, because the answer only lived in one page's memory: reload and
+# all ten presets were unknown again. The sample never changes, so it only
+# ever needs making once.
+r = c.get("/api/voice-previews")
+check("a fresh install has no saved previews yet", r.status_code == 200 and r.json() == [], r.text[:200])
+
+PREVIEW_LINE = "Hi there — this is a quick preview of how I sound."
+BLOBS["https://poyo.cdn/voice-abc.mp3"] = b"fake-voice-sample-bytes"
+BLOB_CONTENT_TYPES["https://poyo.cdn/voice-abc.mp3"] = "audio/mpeg"
+r = c.post("/api/voice-previews", json={"voice": "Rachel", "source_url": "https://poyo.cdn/voice-abc.mp3", "line": PREVIEW_LINE})
+check("a generated sample can be banked", r.status_code == 200, r.text)
+saved = r.json()
+check("...and comes back with a url to play", bool(saved.get("url")), saved)
+# The generator hands back a URL on its OWN CDN, which is theirs to expire. A
+# row pointing at one of those is a dead preview button some weeks from now,
+# so the bytes have to be re-hosted here — the same thing "downloaded from
+# Stock" means for a photo.
+check("the sample's real bytes are re-hosted, not just the provider's link bookmarked",
+      saved["url"] != "https://poyo.cdn/voice-abc.mp3" and BLOBS.get(saved["url"]) == b"fake-voice-sample-bytes",
+      saved)
+
+r = c.get("/api/voice-previews")
+listed = r.json()
+check("the saved sample is listed for the next session to seed from",
+      len(listed) == 1 and listed[0]["voice"] == "Rachel" and listed[0]["url"] == saved["url"], listed)
+
+# The whole point: a second ask for the same voice must not spend another
+# upload. Priming a DIFFERENT body at the same source url proves the stored
+# row was returned rather than the link re-fetched.
+BLOBS["https://poyo.cdn/voice-abc.mp3"] = b"a-second-generation-that-should-never-be-used"
+r = c.post("/api/voice-previews", json={"voice": "Rachel", "source_url": "https://poyo.cdn/voice-abc.mp3", "line": PREVIEW_LINE})
+check("asking again returns the sample already banked instead of making another",
+      r.status_code == 200 and r.json()["url"] == saved["url"], r.text[:200])
+check("...and doesn't quietly overwrite it with the second one",
+      BLOBS[saved["url"]] == b"fake-voice-sample-bytes", BLOBS.get(saved["url"]))
+
+# A sample is only the right answer for the sentence it was read from. Change
+# the line and the stored clip is saying something else.
+BLOBS["https://poyo.cdn/voice-new-line.mp3"] = b"read-from-the-new-line"
+BLOB_CONTENT_TYPES["https://poyo.cdn/voice-new-line.mp3"] = "audio/mpeg"
+r = c.post("/api/voice-previews", json={"voice": "Rachel", "source_url": "https://poyo.cdn/voice-new-line.mp3",
+                                        "line": "A completely different sample sentence."})
+check("changing the sample line re-records rather than serving the old words",
+      r.status_code == 200 and BLOBS.get(r.json()["url"]) == b"read-from-the-new-line", r.text[:200])
+check("...and replaces the row rather than adding a second one for the same voice",
+      len(c.get("/api/voice-previews").json()) == 1, c.get("/api/voice-previews").json())
+
+r = c.post("/api/voice-previews", json={"voice": "", "source_url": "https://poyo.cdn/voice-abc.mp3"})
+check("a preview with no voice attached is refused", r.status_code == 400, r.text[:160])
+
+BLOBS["https://poyo.cdn/not-audio.txt"] = b"plain text"
+BLOB_CONTENT_TYPES["https://poyo.cdn/not-audio.txt"] = "text/plain"
+r = c.post("/api/voice-previews", json={"voice": "Aria", "source_url": "https://poyo.cdn/not-audio.txt"})
+check("something that isn't audio is refused rather than saved as a preview", r.status_code == 400, r.text[:160])
+
+r = c.post("/api/voice-previews", json={"voice": "Aria", "source_url": "http://169.254.169.254/"})
+check("the same SSRF guard as every other fetch applies here", r.status_code == 400, r.text[:160])
+
+r = c.delete("/api/voice-previews/Rachel")
+check("a sample can be thrown away so the next preview re-records it", r.status_code == 200, r.text)
+check("...and it's gone from the list", c.get("/api/voice-previews").json() == [], c.get("/api/voice-previews").json())
+r = c.delete("/api/voice-previews/Rachel")
+check("deleting one that isn't there 404s", r.status_code == 404, r.text[:160])
+
+
 # --- app access token: off by default, enforced once set, cron route exempt ---
 check("no token configured: every route is open", c.get("/api/stats").status_code == 200)
 server.APP_ACCESS_TOKEN = "super-secret"
