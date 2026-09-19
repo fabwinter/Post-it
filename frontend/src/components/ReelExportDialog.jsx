@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { VisualCard, themeFor } from "@/components/VisualCard";
 import { CARD_REF_WIDTH } from "@/lib/slideElements";
 import { reelTimeline, formatSeconds } from "@/lib/videoClip";
-import { safeFontEmbedCSS } from "@/lib/fontExport";
+import { fontEmbedCSSFor } from "@/lib/cardExport";
 import {
   EXPORT_PRESETS, exportDimensions, exportSupported, pickRecorderMime,
   prepareScenes, recordReel, downloadBlob, loadMusic, missingMedia,
@@ -199,8 +199,8 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
       // of parsing and re-encoding per screenshot. On a seven-scene reel that
       // repeated work is most of the minutes an export spends before it ever
       // starts recording, which is where a phone was giving up.
-      // undefined = not tried yet, null = tried and failed (fall back to
-      // html-to-image's own per-call embedding rather than lose the faces).
+      // undefined = not tried yet; "" = tried and got nothing, which is
+      // still an answer and still gets passed (see the opts below).
       let fontEmbedCSS;
 
       const layers = {};
@@ -227,16 +227,24 @@ export function ReelExportDialog({ open, onClose, assets, brand, aspect, title, 
 
         if (fontEmbedCSS === undefined) {
           try {
+            // Scoped to the faces this scene actually uses, and including the
+            // families loaded at runtime from Google, which a readable-sheets
+            // sweep can't see at all (lib/cardExport explains both).
             // eslint-disable-next-line no-await-in-loop
-            fontEmbedCSS = await safeFontEmbedCSS();
-          } catch { fontEmbedCSS = null; }
+            fontEmbedCSS = await fontEmbedCSSFor(contentRefs.current[it.index] || bgRefs.current[it.index]);
+          } catch { fontEmbedCSS = ""; }
         }
 
         // cacheBust appends a unique query to every source, which defeats the
         // browser cache and refetches the same logo once per screenshot.
+        //
+        // fontEmbedCSS is passed even when it came back empty: html-to-image
+        // only skips its own stylesheet walk when the option is non-null, so
+        // dropping "" for being falsy hands the export back to re-downloading
+        // the whole font catalogue once per screenshot.
         const opts = {
           pixelRatio: 1, width: dims.width, height: dims.height,
-          ...(fontEmbedCSS ? { fontEmbedCSS } : {}),
+          fontEmbedCSS: fontEmbedCSS || "",
         };
         // A scene whose background is one flat colour does not need a
         // full-resolution screenshot to say so. Every one of those decoded to
