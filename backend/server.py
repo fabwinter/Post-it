@@ -472,6 +472,58 @@ SHORTFORM_SCRIPT_GUIDE = (
     "opening clause, voiceover the sentence it leads into), never as two separate, unrelated ideas."
 )
 
+# The retention structure a viral YouTube Short runs on, as an alternative to
+# SHORTFORM_SCRIPT_GUIDE's plainer hook/problem/payoff/CTA arc. Two rules here
+# are deliberately bent to fit what this app actually builds:
+#
+#  1. The source structure treats on-screen text and narration as two separate
+#     stories, where the text proves something the narrator never says. That
+#     cannot work here: synthesizeSceneVoice reads on_screen_text and voiceover
+#     ALOUD TOGETHER as one line, so writing them as independent thoughts makes
+#     the recorded take a non-sequitur. The two-story idea is kept, moved onto
+#     the layer that can carry it — the FOOTAGE (scene/video_prompt), which
+#     shows the evidence rather than illustrating the sentence.
+#  2. It forbids an outro outright. Here that is the reel_outro toggle's job,
+#     so the note below only fires when the caller left that off.
+VIRAL_SHORT_SCRIPT_GUIDE = (
+    " Structure this as a high-retention YouTube Short: hook, then context that MOVES, then one rehook, then a "
+    "turn, then the payoff — and stop dead on the payoff. Beat by beat: scene 1 is the hook — the subject plus an "
+    "unexpected result or conflict, implying a question it does not answer yet; it must work with the sound off and "
+    "promise a destination. Never open with \"Today we're talking about\", \"Did you know\", \"In this video\", "
+    "\"Let me explain\", a disclaimer, or a biography. The middle scenes do NOT dump background — each one advances "
+    "the story and smuggles in only the context the next beat needs, joined by cause and contradiction (because, "
+    "but, so, until, except, which meant, that's when, the problem was) rather than \"and then\". One scene shortly "
+    "before the turn is a rehook that ties the current moment back to the opening promise (\"but that still doesn't "
+    "explain why…\", \"and this is where it changes\"). The turn must CHANGE how the viewer reads everything before "
+    "it — the obvious explanation is wrong, the win causes the loss, a small detail explains a huge result — not "
+    "merely add one more fact. The payoff answers the hook outright, concrete and specific, and lands in the last "
+    "stretch rather than being explained twice. Every single line must earn its seconds by "
+    "advancing the story, raising the stakes, adding a concrete detail, or opening/closing a question — cut any "
+    "line that only introduces, repeats, hedges, or restates. Pick at most three of curiosity, specificity, "
+    "stakes, contradiction, authority and time-pressure; stacking more reads as clickbait. Keep the footage "
+    "telling its own half of the story: each scene's video_prompt should show the evidence, the contrast, or the "
+    "reveal, never just illustrate the words being spoken over it. Never invent a statistic, quote, event or motive "
+    "to make the turn land harder — if the real story has no turn, use the most surprising true detail instead."
+)
+
+# The script shapes a reel/Short can be built in. `guide` is the prompt module
+# ai_build_post appends; label/desc are display copy served via GET
+# /script-styles so the picker and the prompt can never drift apart.
+SCRIPT_STYLES = {
+    "standard": {
+        "label": "Standard",
+        "desc": "Hook, problem, payoff, one-line CTA",
+        "guide": SHORTFORM_SCRIPT_GUIDE,
+    },
+    "viral-short": {
+        "label": "Viral YouTube Short",
+        "desc": "Hook → rehook → twist → payoff, then a hard cut",
+        "guide": SHORTFORM_SCRIPT_GUIDE + VIRAL_SHORT_SCRIPT_GUIDE,
+    },
+}
+DEFAULT_SCRIPT_STYLE = "standard"
+
+
 # Cover/thumbnail image-generation prompt rules: what a viewer actually
 # perceives at the small size a feed or a mobile thumbnail renders it at.
 THUMBNAIL_PROMPT_GUIDE = (
@@ -888,6 +940,15 @@ TEMPLATE_GUIDES = {
 @api_router.get("/template-styles")
 async def template_styles():
     return {"templates": [{"key": k, **v} for k, v in TEMPLATE_GUIDES.items()]}
+
+
+@api_router.get("/script-styles")
+async def script_styles():
+    """The reel/Short script shapes the Composer's picker offers. Only the
+    display copy — the guide itself is prompt material the client never needs
+    and should not be shipping around."""
+    return {"styles": [{"key": k, "label": v["label"], "desc": v["desc"]} for k, v in SCRIPT_STYLES.items()],
+            "default": DEFAULT_SCRIPT_STYLE}
 
 
 class TemplateRequest(BaseModel):
@@ -4822,6 +4883,11 @@ class BuildPostRequest(BaseModel):
     custom_template_id: Optional[str] = None
     brand_kit_id: Optional[str] = None
     use_knowledge: bool = True
+    # Which TEMPLATE_GUIDES structure the post is written to (the Composer's
+    # "Style" picker). None means "no explicit structure", which is what every
+    # build did before this was wired up and what a caller that doesn't send
+    # one still gets.
+    style_template: Optional[str] = None
     # Reel-only build controls (ComposerReelOptions) — ignored for every
     # other format, and only honored when the CALLER asked for "reel"
     # explicitly rather than leaving format on "auto" for the model to pick,
@@ -4829,6 +4895,11 @@ class BuildPostRequest(BaseModel):
     reel_intro: bool = False
     reel_outro: bool = False
     include_voiceover: bool = True
+    # Which script shape the scenes are written to (SCRIPT_STYLES). An
+    # unknown value falls back to the default rather than 400ing — a stale
+    # client sending a style this build no longer ships should still get a
+    # reel, just the plain one.
+    script_style: str = DEFAULT_SCRIPT_STYLE
     # What of a chosen design's OWN media comes along, per kind. All three
     # default true — that's what every build did before these existed, and
     # what picking a design usually means. False means "keep the design's
@@ -5082,8 +5153,33 @@ async def ai_build_post(req: BuildPostRequest):
     # guide always applies; the short-form script guide only makes sense when
     # a video scene script is actually possible for this platform.
     craft_notes = HOOK_CRAFT_GUIDE + CAROUSEL_CRAFT_GUIDE + HUMANIZE_GUIDE + THUMBNAIL_PROMPT_GUIDE
+    # The script shape only reaches the prompt once a reel is actually on the
+    # table — the styles say nothing useful about a carousel or a single.
+    script_style = req.script_style if req.script_style in SCRIPT_STYLES else DEFAULT_SCRIPT_STYLE
     if "reel" in allowed:
-        craft_notes += SHORTFORM_SCRIPT_GUIDE
+        craft_notes += SCRIPT_STYLES[script_style]["guide"]
+
+    # The Composer's "Style" picker (hooks/story/listicle/contrarian/how-to).
+    # This used to reach ai_restyle and ai_templates but never this route, so
+    # picking a style and hitting "Build whole post" changed nothing — for any
+    # format. Hooks looked like the one that worked only because
+    # HOOK_CRAFT_GUIDE is unconditional above, so every build already came out
+    # hook-shaped whatever the picker said.
+    #
+    # The guide strings were written for a one-shot text post, so they are
+    # framed here to reach a multi-part post too: the structure decides the
+    # angle and the wording across caption AND slides/scenes, while the count
+    # and pacing stay with the format rules that already computed them.
+    style_tpl = TEMPLATE_GUIDES.get(req.style_template or "")
+    style_note = ""
+    if style_tpl:
+        style_note = (
+            f" POST STRUCTURE: write this post as {style_tpl['style']} Carry that shape through the whole "
+            "post — the caption follows it, and where the format has slides or scenes they deliver the same "
+            "shape in order, roughly one beat each, rather than the caption following it while the slides go "
+            "somewhere unrelated. Keep the slide/scene COUNT, order and pacing the rules above already set: "
+            "this decides the angle and the words, not how many parts there are."
+        )
 
     # ComposerReelOptions' own structure controls — only meaningful once the
     # caller has committed to "reel" rather than leaving it to "auto", since
@@ -5109,6 +5205,15 @@ async def ai_build_post(req: BuildPostRequest):
                 " The LAST scene is a distinct outro — a one-line recap or a direct call to action, "
                 "separate from the payoff scene before it."
             )
+        elif script_style == "viral-short":
+            # The hard cut lives HERE rather than in the guide because ticking
+            # the outro box has to be able to win. Baked into the guide it
+            # would still be in the prompt alongside "write an outro scene",
+            # and the model would be holding two contradicting instructions.
+            reel_structure_note += (
+                " There is no outro scene: the reel ends on the payoff itself, mid-momentum — no recap, no "
+                "summary, no sign-off, no \"follow for more\"."
+            )
         if not req.include_voiceover:
             reel_structure_note += (
                 " This reel has no voiceover — omit the \"voiceover\" key entirely and make on_screen_text "
@@ -5122,7 +5227,7 @@ async def ai_build_post(req: BuildPostRequest):
         f"{format_rule} "
         f"If the format is carousel, thread or reel, produce exactly {n} slides/scenes (a carousel's cover "
         f"is separate and does not count). "
-        f"{craft_notes}{reel_structure_note} "
+        f"{craft_notes}{style_note}{reel_structure_note} "
         f"{brand_note}{template_note}"
         "Return ONLY JSON with this exact shape:\n"
         '{"format": "one of ' + "|".join(allowed) + '", '

@@ -14,6 +14,10 @@ fi
 # Pure-maths checks first — they need no server, and a timeline model that is
 # already wrong makes every browser failure below harder to read.
 (cd "$ROOT" && node e2e/clip-maths.mjs)
+# Same reasoning for the draft splitter: the rule is "what you typed is what
+# lands on the cards", and that is far easier to pin down here than through
+# a browser.
+(cd "$ROOT" && node e2e/draft-split.mjs)
 # Source-level rules the browser can't show us — see the file for why the
 # download bug is one of them.
 (cd "$ROOT" && node e2e/source-checks.mjs)

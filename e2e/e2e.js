@@ -19,14 +19,15 @@ async function tap(page, testid) {
   await el.click({ force: true });
 }
 
-// A reel build now stops at the script review step instead of applying
-// straight away (ComposerReelReview) — every test that builds a reel has to
-// clear it before the slide strip (or anything downstream of it) exists.
-// Confirming with the script exactly as it came back is the common case;
-// tests of the review step itself interact with it directly instead.
-async function confirmReel(page) {
-  await page.getByTestId('composer-reel-review').waitFor({ timeout: 20000 });
-  await tap(page, 'composer-reel-review-confirm');
+// A build now stops at a review step instead of applying straight away
+// (ComposerBuildReview) — scenes for a reel, slides for a deck — so every
+// test that builds anything with more than one card has to clear it before
+// the slide strip (or anything downstream of it) exists. Confirming exactly
+// what came back is the common case; tests of the review step itself
+// interact with it directly instead.
+async function confirmBuild(page) {
+  await page.getByTestId('composer-build-review').waitFor({ timeout: 20000 });
+  await tap(page, 'composer-build-review-confirm');
 }
 
 (async () => {
@@ -70,8 +71,30 @@ async function confirmReel(page) {
   ok('build button per idea', await page.getByTestId('idea-build-0').isVisible());
 
   await page.getByTestId('idea-build-0').click();
+  // A deck stops at the same review a reel does now: its slides and their
+  // per-slide image prompts used to be decided and applied without ever
+  // being shown, which is the whole point of reviewing before generating.
+  await page.getByTestId('composer-build-review').waitFor({ timeout: 20000 });
+  ok('a carousel build stops to be reviewed, not just a reel', true);
+  ok('...showing a row per card, cover included',
+     (await page.locator('[data-testid^="composer-build-review-row-"]').count()) === 4,
+     String(await page.locator('[data-testid^="composer-build-review-row-"]').count()));
+  ok('...with the cover edited as a title rather than a blank heading/body pair',
+     (await page.getByTestId('composer-build-review-heading-0').inputValue()).length > 0
+     && (await page.getByTestId('composer-build-review-body-0').count()) === 0);
+  ok('...and a slide showing the image prompt that would be generated',
+     (await page.getByTestId('composer-build-review-visual-1').inputValue()).length > 0,
+     await page.getByTestId('composer-build-review-visual-1').inputValue());
+  // An edit made here has to be what actually lands on the card.
+  await page.getByTestId('composer-build-review-heading-1').fill('E2E reviewed slide');
+  await tap(page, 'composer-build-review-confirm');
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   ok('build lands in composer', page.url().includes('/composer'));
+  await tap(page, 'composer-slide-1');
+  ok('an edit made in the deck review reaches the slide it was made on',
+     (await page.getByTestId('composer-slide-heading').inputValue()) === 'E2E reviewed slide',
+     await page.getByTestId('composer-slide-heading').inputValue());
+  await tap(page, 'composer-slide-0');
   const caption = await page.getByTestId('composer-content').inputValue();
   ok('caption filled from plan', caption.includes('kept showing up'), caption.slice(0, 60));
   const tags = await page.getByTestId('composer-hashtags').innerText();
@@ -81,6 +104,27 @@ async function confirmReel(page) {
   const strip = await page.getByTestId('composer-slide-strip').locator('button').count();
   ok('cover + 3 slides + add button in strip', strip === 5, 'strip buttons: ' + strip);
   ok('carousel format selected', (await page.getByTestId('composer-format-carousel').getAttribute('class')).includes('border-lime'));
+
+  // Writing a post by hand used to dead-end at the caption: the words never
+  // reached a single card, so "write it yourself" and "build it" were two
+  // disconnected halves of the page. The splitting rules themselves are
+  // pinned down in e2e/draft-split.mjs, so this only has to prove the draft
+  // in the box really does become the deck, word for word.
+  await page.getByTestId('composer-content').fill(
+    'Ship weekly\nIt compounds faster than talent.\n\nWeek six\nThis is where everyone quits.\n\nWeek twenty\nThe compounding starts.');
+  await tap(page, 'composer-split-draft');
+  await page.waitForTimeout(400);
+  const splitStrip = await page.getByTestId('composer-slide-strip').locator('button').count();
+  ok('a hand-written draft becomes the cards themselves', splitStrip === 4, 'strip buttons: ' + splitStrip);
+  await tap(page, 'composer-slide-1');
+  ok('...carrying the words that were typed, not a reworded version',
+     (await page.getByTestId('composer-slide-heading').inputValue()) === 'Week six',
+     await page.getByTestId('composer-slide-heading').inputValue());
+  ok('...including the body under it',
+     (await page.getByTestId('composer-slide-body').inputValue()) === 'This is where everyone quits.',
+     await page.getByTestId('composer-slide-body').inputValue());
+  await tap(page, 'composer-undo');
+  await page.waitForTimeout(300);
 
   // slide editing reflects in the preview
   await tap(page, 'composer-slide-1');
@@ -417,7 +461,7 @@ async function confirmReel(page) {
   await page.waitForTimeout(300);
   await page.getByTestId('composer-brief').fill('shipping weekly');
   await tap(page, 'composer-autobuild');
-  await confirmReel(page);
+  await confirmBuild(page);
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForTimeout(1000);
 
@@ -528,7 +572,7 @@ async function confirmReel(page) {
   await tap(page, 'composer-format-reel');
   await page.getByTestId('composer-brief').fill('shipping weekly');
   await tap(page, 'composer-autobuild');
-  await confirmReel(page);
+  await confirmBuild(page);
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForTimeout(900);
   for (let i = 0; i < 3; i += 1) {
@@ -772,28 +816,58 @@ async function confirmReel(page) {
      (await page.getByTestId('composer-reel-music-style').count()) === 0);
   await tap(page, 'composer-reel-include-music'); // back on
 
+  // The script style picker: standard is the default, picking viral-short
+  // selects it, and — since that style ends on the payoff — picking it
+  // clears an already-set outro toggle rather than leaving two contradicting
+  // instructions (an outro scene + "no outro") to reach the same prompt.
+  ok('standard is the default script style',
+     (await page.getByTestId('composer-reel-script-standard').getAttribute('class')).includes('border-lime'));
+  await tap(page, 'composer-reel-outro');
+  await tap(page, 'composer-reel-script-viral-short');
+  ok('picking a script style selects it',
+     (await page.getByTestId('composer-reel-script-viral-short').getAttribute('class')).includes('border-lime'));
+  ok('...and an already-set outro toggle is cleared, since this style ends on the payoff',
+     !(await page.getByTestId('composer-reel-outro').getAttribute('class')).includes('border-lime'));
+
+  // The Style picker has to shape what gets BUILT, not only what its own
+  // "Apply style" button rewrites afterwards. It reached the restyle route
+  // but never build-post, so picking a style and hitting Build changed
+  // nothing — on every format. Hooks looked like the only one that worked
+  // because the hook-craft rules are on for every build regardless.
+  await page.getByTestId('composer-style-select').selectOption('listicle');
+
+  const buildRequests = [];
+  await page.route('**/api/ai/build-post', async (route) => {
+    buildRequests.push(route.request().postDataJSON());
+    await route.continue();
+  });
   await page.getByTestId('composer-brief').fill('shipping weekly, e2e review step');
   await tap(page, 'composer-autobuild');
-  await page.getByTestId('composer-reel-review').waitFor({ timeout: 20000 });
+  await page.getByTestId('composer-build-review').waitFor({ timeout: 20000 });
+  await page.unroute('**/api/ai/build-post');
+  ok('the picked copy style reaches the build request too',
+     buildRequests[0]?.style_template === 'listicle', JSON.stringify(buildRequests[0]));
+  ok('the picked script style actually reaches the build request',
+     buildRequests[0]?.script_style === 'viral-short', JSON.stringify(buildRequests[0]));
 
   // The whole point of the step: nothing has recorded, shot or scored
   // anything while this is up.
   ok('the review step blocks recording/shooting until confirmed',
      (await page.getByTestId('composer-slide-strip').count()) === 0);
 
-  const reviewRowsBefore = await page.locator('[data-testid^="composer-reel-review-scene-"]').count();
+  const reviewRowsBefore = await page.locator('[data-testid^="composer-build-review-row-"]').count();
   ok('the review step shows one row per scripted scene', reviewRowsBefore === 3, String(reviewRowsBefore));
 
   // Edit a line, drop the last scripted scene, add a fresh one of our own.
-  await page.getByTestId('composer-reel-review-heading-0').fill('E2E edited heading');
-  await tap(page, `composer-reel-review-remove-${reviewRowsBefore - 1}`);
-  await tap(page, 'composer-reel-review-add');
-  const reviewRowsAfter = await page.locator('[data-testid^="composer-reel-review-scene-"]').count();
+  await page.getByTestId('composer-build-review-heading-0').fill('E2E edited heading');
+  await tap(page, `composer-build-review-remove-${reviewRowsBefore - 1}`);
+  await tap(page, 'composer-build-review-add');
+  const reviewRowsAfter = await page.locator('[data-testid^="composer-build-review-row-"]').count();
   ok('removing one scene and adding one keeps the count the same', reviewRowsAfter === reviewRowsBefore,
      String(reviewRowsAfter));
   const addedIdx = reviewRowsAfter - 1;
-  await page.getByTestId(`composer-reel-review-heading-${addedIdx}`).fill('E2E added scene');
-  await page.getByTestId(`composer-reel-review-visual-${addedIdx}`).fill('a rocket launch at dawn');
+  await page.getByTestId(`composer-build-review-heading-${addedIdx}`).fill('E2E added scene');
+  await page.getByTestId(`composer-build-review-visual-${addedIdx}`).fill('a rocket launch at dawn');
 
   // Capture every voice request this confirm triggers — this IS the exact
   // race that used to drop the headline: synthesizeReelVoices runs in the
@@ -808,7 +882,7 @@ async function confirmReel(page) {
     if (body?.kind === 'voice') voicePrompts.push(body.prompt);
     await route.continue();
   });
-  await tap(page, 'composer-reel-review-confirm');
+  await tap(page, 'composer-build-review-confirm');
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForSelector('[data-testid="composer-voice-synthesizing"]', { state: 'hidden', timeout: 15000 });
   await page.unroute('**/api/ai/generate');
@@ -869,11 +943,11 @@ async function confirmReel(page) {
   await tap(page, 'composer-format-reel');
   await page.getByTestId('composer-brief').fill('shipping weekly, e2e discard check');
   await tap(page, 'composer-autobuild');
-  await page.getByTestId('composer-reel-review').waitFor({ timeout: 20000 });
-  await tap(page, 'composer-reel-review-discard');
+  await page.getByTestId('composer-build-review').waitFor({ timeout: 20000 });
+  await tap(page, 'composer-build-review-discard');
   await page.waitForTimeout(300);
   ok('discarding the review leaves nothing built',
-     (await page.getByTestId('composer-reel-review').count()) === 0
+     (await page.getByTestId('composer-build-review').count()) === 0
      && (await page.getByTestId('composer-slide-strip').count()) === 0);
 
   // ---------- 11a-visuals. Reel options — AI-generated visuals, not stock ----------
@@ -892,7 +966,7 @@ async function confirmReel(page) {
 
   await page.getByTestId('composer-brief').fill('shipping weekly, e2e ai visuals');
   await tap(page, 'composer-autobuild');
-  await confirmReel(page);
+  await confirmBuild(page);
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForSelector('[data-testid="composer-visual-filling"]', { state: 'hidden', timeout: 15000 });
   ok('a scene built with an AI-generated visual holds a real still',
@@ -925,7 +999,7 @@ async function confirmReel(page) {
 
   await page.getByTestId('composer-brief').fill('shipping weekly no matter what');
   await tap(page, 'composer-autobuild');
-  await confirmReel(page);
+  await confirmBuild(page);
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForSelector('[data-testid="composer-voice-synthesizing"]', { state: 'hidden', timeout: 15000 });
   const postActive = await page.evaluate(() =>
@@ -1290,6 +1364,7 @@ async function confirmReel(page) {
   await page.waitForTimeout(400);
   await page.getByTestId('composer-brief').fill('a short carousel about morning routines, e2e opacity check');
   await tap(page, 'composer-autobuild');
+  await confirmBuild(page);
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForTimeout(900);
   await tap(page, 'composer-slide-stock-image');
@@ -1341,7 +1416,7 @@ async function confirmReel(page) {
   await page.waitForTimeout(300);
   await page.getByTestId('composer-brief').fill('shipping weekly, e2e still-image reel');
   await tap(page, 'composer-autobuild');
-  await confirmReel(page);
+  await confirmBuild(page);
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForTimeout(1000);
 
@@ -1444,7 +1519,7 @@ async function confirmReel(page) {
   await page.waitForTimeout(300);
   await page.getByTestId('composer-brief').fill('shipping weekly, e2e clip template');
   await tap(page, 'composer-autobuild');
-  await confirmReel(page);
+  await confirmBuild(page);
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForTimeout(1000);
   // A generated scene now arrives with freeform elements already (the brand
@@ -1540,9 +1615,9 @@ async function confirmReel(page) {
   // exported — while the voiceover recorded it, so the reel said one thing
   // and showed another. Reading it back off the rendered card (not the
   // heading input, which was always right) is what tells those apart.
-  await page.getByTestId('composer-reel-review').waitFor({ timeout: 20000 });
-  await page.getByTestId('composer-reel-review-heading-0').fill('E2E designed edit');
-  await tap(page, 'composer-reel-review-confirm');
+  await page.getByTestId('composer-build-review').waitFor({ timeout: 20000 });
+  await page.getByTestId('composer-build-review-heading-0').fill('E2E designed edit');
+  await tap(page, 'composer-build-review-confirm');
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForTimeout(1000);
   ok("an edit made in review reaches the card a design actually renders, not just spec.heading",
@@ -1585,7 +1660,7 @@ async function confirmReel(page) {
   await page.waitForTimeout(200);
   await page.getByTestId('composer-brief').fill('shipping weekly, e2e new footage');
   await tap(page, 'composer-autobuild');
-  await confirmReel(page);
+  await confirmBuild(page);
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForTimeout(1200);
   await tap(page, 'composer-reel-view-play');
@@ -1625,6 +1700,7 @@ async function confirmReel(page) {
   page.once('dialog', (d) => d.accept('E2E Headline Template'));
   await page.getByTestId('composer-brief').fill('a short carousel about morning routines');
   await tap(page, 'composer-autobuild');
+  await confirmBuild(page);
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForTimeout(1000);
   if (await page.getByTestId('composer-slide-edit-layout').count()) await tap(page, 'composer-slide-edit-layout');
@@ -1707,6 +1783,7 @@ async function confirmReel(page) {
   page.once('dialog', (d) => d.accept('E2E Handle Design'));
   await page.getByTestId('composer-brief').fill('a carousel about gentle parenting routines');
   await tap(page, 'composer-autobuild');
+  await confirmBuild(page);
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForTimeout(1000);
   if (await page.getByTestId('composer-slide-edit-layout').count()) await tap(page, 'composer-slide-edit-layout');
@@ -1762,6 +1839,7 @@ async function confirmReel(page) {
   await page.getByTestId('composer-custom-template-select').selectOption({ index: handleIdx });
   await page.getByTestId('composer-brief').fill('a different carousel about toddler sleep');
   await tap(page, 'composer-autobuild');
+  await confirmBuild(page);
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForTimeout(1200);
   const builtCoverLines = await cardLines();
@@ -1781,6 +1859,7 @@ async function confirmReel(page) {
   await page.waitForTimeout(500);
   await page.getByTestId('composer-brief').fill('another short carousel about focus habits');
   await tap(page, 'composer-autobuild');
+  await confirmBuild(page);
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForTimeout(1000);
   if (await page.getByTestId('composer-slide-edit-layout').count()) await tap(page, 'composer-slide-edit-layout');
@@ -1831,6 +1910,15 @@ async function confirmReel(page) {
   await page.waitForTimeout(200);
   await page.getByTestId('composer-brief').fill('a single photo post about a quiet morning coffee');
   await tap(page, 'composer-autobuild');
+  // One card, but an image is about to be generated for it — which is the
+  // other half of "there is something to review": the prompt that image
+  // comes from is editable here, before it is spent, rather than only being
+  // discoverable afterwards on the canvas.
+  await page.getByTestId('composer-build-review').waitFor({ timeout: 20000 });
+  ok('a single post whose image is about to be generated is reviewed too',
+     (await page.getByTestId('composer-build-review-visual-0').inputValue()).length > 0,
+     await page.getByTestId('composer-build-review-visual-0').inputValue());
+  await tap(page, 'composer-build-review-confirm');
   await page.waitForTimeout(1500);
   ok('a plain single/photo build puts a real visual asset on the canvas',
      (await page.getByTestId('composer-save-template').count()) > 0);
@@ -2179,6 +2267,7 @@ async function confirmReel(page) {
   await page.waitForTimeout(500);
   await page.getByTestId('composer-brief').fill('a carousel about exporting artwork');
   await tap(page, 'composer-autobuild');
+  await confirmBuild(page);
   await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
   await page.waitForTimeout(1200);
 
