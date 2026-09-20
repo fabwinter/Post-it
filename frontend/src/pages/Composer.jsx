@@ -22,6 +22,7 @@ import { useTemplateStyles } from "@/lib/templateStyles";
 import { useCustomTemplates } from "@/lib/useCustomTemplates";
 import { elementsFromSpec, newElement, useCardScale, clampPos, slideText, elementsWithText, isFixedText } from "@/lib/slideElements";
 import { materializeTemplateSlides } from "@/lib/templateEdit";
+import { splitDraftIntoCards } from "@/lib/draftSlides";
 import { groupFontsByCategory, fontStack, useAllFontsLoaded, useFontCatalog } from "@/lib/fonts";
 import { FontNotice } from "@/components/CustomFonts";
 import { reelTimeline, normalizeClip, formatSeconds, withLength, deriveCaptionWords, durationFromAlignment, alignmentSlice } from "@/lib/videoClip";
@@ -33,7 +34,7 @@ import { ComposerProjectPanel } from "@/components/ComposerProjectPanel";
 import { ComposerIdeaPanel } from "@/components/ComposerIdeaPanel";
 import { ComposerReelOptions } from "@/components/ComposerReelOptions";
 import { ComposerDesignMedia } from "@/components/ComposerDesignMedia";
-import { ComposerReelReview } from "@/components/ComposerReelReview";
+import { ComposerBuildReview } from "@/components/ComposerBuildReview";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
@@ -391,9 +392,9 @@ export default function Composer() {
   const [designMedia, setDesignMedia] = useState(DEFAULT_DESIGN_MEDIA);
   // The raw script (data.assets, still on-screen-text/voiceover per scene)
   // waiting on a look before anything gets recorded or shot for it — see
-  // buildFromTopic and confirmReelReview. Null once confirmed or discarded.
-  const [reelReviewPlan, setReelReviewPlan] = useState(null);
-  const [reelReviewBuilding, setReelReviewBuilding] = useState(false);
+  // buildFromTopic and confirmBuildReview. Null once confirmed or discarded.
+  const [buildReviewPlan, setBuildReviewPlan] = useState(null);
+  const [buildReviewBuilding, setBuildReviewBuilding] = useState(false);
   // An unsaved snapshot found at mount, offered back rather than applied —
   // see DRAFT_KEY. Null once it's been taken or dismissed.
   const [recoverable, setRecoverable] = useState(null);
@@ -631,6 +632,33 @@ export default function Composer() {
     const ok = await synthesizeSceneVoice(index);
     if (ok) toast.success(`Scene ${index + 1}'s voiceover updated`);
     else toast.error(`Couldn't record scene ${index + 1}'s voiceover.`);
+  };
+
+  // A take you already have — recorded properly, in a voice this app can't
+  // synthesize, or simply one you'd rather use — standing in for a generated
+  // one. There's no alignment to slice here, so the word timing comes from
+  // the file's real duration split evenly; that is the same fallback
+  // probeAudioDuration and deriveCaptionWords already cover for a generated
+  // take whose response carried no timestamps.
+  const attachSceneVoice = async (index, url) => {
+    const body = (slideText(assets[index]?.spec).body || "").trim();
+    setSceneVoiceLoading((s) => ({ ...s, [index]: true }));
+    setSceneVoiceError((s) => ({ ...s, [index]: false }));
+    try {
+      const duration = await probeAudioDuration(url);
+      const words = body ? deriveCaptionWords(body, duration, null) : [];
+      setAssets((s) => s.map((asset, idx) => {
+        if (idx !== index) return asset;
+        const clip = duration ? withLength(asset.spec.clip, duration + VOICE_PAD_SECONDS) : asset.spec.clip;
+        return { ...asset, spec: { ...asset.spec, voice: { url, duration: duration || null, words }, clip } };
+      }));
+      toast.success(`Scene ${index + 1}'s voiceover attached`);
+    } catch (e) {
+      setSceneVoiceError((s) => ({ ...s, [index]: String(apiErrorMessage(e, "Couldn't use that audio.")).slice(0, 700) }));
+      toast.error("Couldn't use that audio file.");
+    } finally {
+      setSceneVoiceLoading((s) => ({ ...s, [index]: false }));
+    }
   };
 
   // The one thing that makes a reel feel produced instead of guessed: every
@@ -1179,8 +1207,8 @@ export default function Composer() {
   // A reel never used to have a moment between "write the script" and
   // "start recording, shooting and scoring it" — the two happened in the
   // same request. For a reel this now stops one step short: the script
-  // comes back and waits in reelReviewPlan for confirmReelReview (or
-  // discardReelReview) instead of being applied straight away. Every other
+  // comes back and waits in buildReviewPlan for confirmBuildReview (or
+  // discardBuildReview) instead of being applied straight away. Every other
   // format is unaffected — applyPlan runs immediately, exactly as before.
   const buildFromTopic = async (topic, ideaIndex = null) => {
     if (!topic.trim()) { toast.error("Give it a topic or a brief first."); return; }
@@ -1203,9 +1231,13 @@ export default function Composer() {
           script_style: reelOptions.scriptStyle,
         } : {}),
       });
-      if (data.format === "reel" && (data.assets || []).some((a) => a.type === "scene")) {
-        setReelReviewPlan({ ...data, platform: primary });
-        toast.success("Script's ready — review it before it records or shoots anything.");
+      const built = data.assets || [];
+      const isSceneBuild = built.some((a) => a.type === "scene");
+      if (isSceneBuild || worthReviewing(built)) {
+        setBuildReviewPlan({ ...data, platform: primary });
+        toast.success(isSceneBuild
+          ? "Script's ready — review it before it records or shoots anything."
+          : "Draft's ready — review the slides before anything is generated.");
       } else {
         applyPlan({ ...data, platform: primary });
         toast.success(`Built a ${FORMAT_LABEL[data.format] || data.format} for ${pspec.label}.`);
@@ -1225,49 +1257,72 @@ export default function Composer() {
   // rebuilding rather than patching. THEN runs applyPlan, which is what
   // actually starts recording, shooting and scoring. Discarding just drops
   // the draft; nothing was ever applied, so there's nothing to undo.
-  const confirmReelReview = (rows) => {
-    if (!reelReviewPlan) return;
-    setReelReviewBuilding(true);
-    const total = rows.length;
-    const serverAssets = reelReviewPlan.assets || [];
-    // A row that started as one of the server's own scenes (_origIndex set —
-    // see the scenes prop below) keeps that scene's asset — elements,
-    // bg_color, clip, video_url, everything _apply_template_layouts (server
-    // side, at build time) put there from the chosen design — and only its
-    // text fields get overwritten. This used to rebuild every scene from
-    // scratch with just {heading, body, video_prompt}, which is a bare spec
-    // with none of that: since the review step is now mandatory for every
-    // reel, that meant no reel ever kept its chosen design past this step.
-    // A row added IN review has no such asset to extend — those still get a
-    // fresh minimal spec, same shape as before.
+  // Worth stopping for when there is more than one card to look at, or when
+  // confirming is about to spend a generation on media. A lone card with no
+  // image to make has nothing to review, so it goes straight to the canvas
+  // the way every non-reel build always did.
+  const worthReviewing = (list) =>
+    list.length > 1
+    || list.some((a) => (a.spec?.image_prompt || "").trim() || (a.spec?.video_prompt || "").trim());
+
+  // A reel reviews scenes; everything else reviews slides. The plan's own
+  // assets say which, so nothing has to thread the format through.
+  const reviewKind = (buildReviewPlan?.assets || []).some((a) => a.type === "scene") ? "scene" : "slide";
+
+  const confirmBuildReview = (rows) => {
+    if (!buildReviewPlan) return;
+    setBuildReviewBuilding(true);
+    const serverAssets = buildReviewPlan.assets || [];
+    const scenes = reviewKind === "scene";
+    const promptKey = scenes ? "video_prompt" : "image_prompt";
+    // A row that started as one of the server's own assets (_origIndex set —
+    // see the rows prop below) keeps that asset — elements, bg_color, clip,
+    // video_url, everything _apply_template_layouts (server side, at build
+    // time) put there from the chosen design — and only its text fields get
+    // overwritten. This used to rebuild every scene from scratch with just
+    // {heading, body, video_prompt}, which is a bare spec with none of that:
+    // since the review step is mandatory for every reel, that meant no reel
+    // ever kept its chosen design past this step. A row added IN review has
+    // no such asset to extend — those still get a fresh minimal spec.
     const assets = rows.map((r, i) => {
       const base = r._origIndex != null ? serverAssets[r._origIndex] : null;
       const heading = r.heading || "";
       const body = r.body || "";
+      // A deck's cover carries a title and no body; every other card is a
+      // heading/body pair. The review edits both through the same field, so
+      // this is where the one the card actually renders gets written.
+      const isCover = (base?.spec?.template || r._template) === "cover";
+      const text = isCover ? { title: heading } : { heading, body };
       // Keeping base.spec keeps the design — but a design bakes its copy
       // straight into element text (_fill_layout, server side) and VisualCard
       // renders elements in preference to heading/body, so writing only the
-      // two plain fields meant an edit made right here never appeared on the
-      // card (while the voiceover, which used to read spec.body, dutifully
+      // plain fields meant an edit made right here never appeared on the card
+      // (while the voiceover, which used to read spec.body, dutifully
       // recorded it). elementsWithText puts it where it's actually read, and
       // renumbers number/step elements to the row's NEW position, which is
-      // what a scene deleted from the middle breaks without.
+      // what a card deleted from the middle breaks without. textRoles counts
+      // "title" as a heading role, so a cover's own box is covered too.
       const spec = base
         ? {
-            ...base.spec, index: i + 1, total, heading, body, video_prompt: r.video_prompt || "",
+            ...base.spec, ...text, [promptKey]: r[promptKey] || "",
             elements: elementsWithText(base.spec?.elements, { heading, body, index: i + 1 }),
           }
         : {
-            template: "slide", theme: reelReviewPlan.theme || "midnight", index: i + 1, total, coverCounts: false,
-            heading: r.heading || "", body: r.body || "", video_prompt: r.video_prompt || "",
+            template: isCover ? "cover" : "slide", theme: buildReviewPlan.theme || "midnight",
+            ...text, [promptKey]: r[promptKey] || "",
+            ...(scenes ? { coverCounts: false } : {}),
           };
-      return { type: "scene", caption: r.body || "", spec };
+      return { type: scenes ? "scene" : "visual", caption: scenes ? body : (base?.caption || ""), spec };
     });
-    applyPlan({ ...reelReviewPlan, assets }, reelOptions);
-    setReelReviewPlan(null);
-    setReelReviewBuilding(false);
+    // index/total/coverCounts have to reflect the list as it stands AFTER
+    // rows were dropped, added or reordered here, and renumber already knows
+    // the one rule that differs between the two shapes: a deck numbers from
+    // its cover, a reel's scenes number from one.
+    applyPlan({ ...buildReviewPlan, assets: renumber(assets) }, reelOptions);
+    setBuildReviewPlan(null);
+    setBuildReviewBuilding(false);
   };
-  const discardReelReview = () => setReelReviewPlan(null);
+  const discardBuildReview = () => setBuildReviewPlan(null);
 
   const runCoach = async () => {
     if (!content.trim()) { toast.error("Write something first."); return; }
@@ -1357,6 +1412,43 @@ export default function Composer() {
     setActive(next.length - 1);
     return next;
   });
+  // The draft in the box, turned into the cards themselves. Writing a post
+  // by hand used to dead-end at the caption: the words you typed never
+  // reached a single slide, and the only way to get them there was to retype
+  // them one card at a time. Literal on purpose — see lib/draftSlides — so
+  // this never costs a generation and never rewords what you wrote.
+  const splitDraftToSlides = () => {
+    const cards = splitDraftIntoCards(content);
+    if (!cards.length) { toast.error("Write or paste something into the post first."); return; }
+    const theme = assets[0]?.spec?.theme || (brand?.id ? "brand" : "midnight");
+    const total = cards.length;
+    setAssets(renumber(cards.map((card, i) => {
+      // A reel's cards are scenes, and its first card is a scene like any
+      // other; a deck opens on a cover, which carries a title rather than a
+      // heading/body pair.
+      if (isReel) {
+        return {
+          type: "scene", caption: card.body || "",
+          spec: { template: "slide", theme, index: i + 1, total, coverCounts: false,
+                  heading: card.heading, body: card.body },
+        };
+      }
+      if (isDeck && i === 0) {
+        return {
+          type: "visual", caption: "",
+          spec: { template: "cover", theme, index: 0, total, title: card.heading || card.body },
+        };
+      }
+      return {
+        type: "visual", caption: "",
+        spec: { template: "slide", theme, index: i, total, heading: card.heading, body: card.body },
+      };
+    })));
+    setActive(0);
+    setSelectedElementId(null);
+    toast.success(`Split into ${total} ${total === 1 ? "card" : "cards"}`);
+  };
+
   const removeSlide = (i) => setAssets((s) => renumber(s.filter((_, idx) => idx !== i)));
   // A copy right after the original, elements re-keyed so dragging one
   // slide's element never shares an id with the slide it was cloned from.
@@ -1607,6 +1699,21 @@ export default function Composer() {
   // One handler for every place the stock picker can be opened from — which
   // field it fills depends on which target requested it.
   const onStockPick = (item) => {
+    // Audio the user brings themselves, rather than a generated track or
+    // take. MediaPicker has always been able to upload and browse audio; the
+    // Composer just never opened it on that tab, so a score and a voiceover
+    // were the two things in the app you could only ever generate.
+    if (stockTarget === "music") {
+      setMusic({ url: item.url, volume: music.volume ?? DEFAULT_MUSIC_VOLUME, credit: item.credit || "" });
+      toast.success("Music attached");
+      setStockTarget(null);
+      return;
+    }
+    if (typeof stockTarget === "object" && stockTarget?.kind === "scene-voice") {
+      attachSceneVoice(stockTarget.index, item.url);
+      setStockTarget(null);
+      return;
+    }
     if (stockTarget === "clip-video") setClipSource(item.url, item.credit, item.type);
     else if (stockTarget === "slide-video") patchSlide(active, { video_url: item.url, video_credit: item.credit, image_url: "" });
     else if (stockTarget === "slide-image") patchSlide(active, { image_url: item.url, image_credit: item.credit, video_url: "" });
@@ -2115,6 +2222,18 @@ export default function Composer() {
               <span className="text-xs text-zinc-600">shapes what Build writes — or rewrites the draft above now</span>
             </div>
 
+            {/* The other half of writing a post by hand: getting those words
+                onto the cards. Blank line between ideas, or a numbered/dashed
+                list — nothing is sent anywhere and nothing is reworded. */}
+            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-3">
+              <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Your words</span>
+              <Button variant="secondary" onClick={splitDraftToSlides} data-testid="composer-split-draft"
+                className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 text-xs text-white hover:bg-white/10">
+                <Layers size={13} /> Use draft as {isReel ? "scenes" : "slides"}
+              </Button>
+              <span className="text-xs text-zinc-600">one card per paragraph or list item, word for word</span>
+            </div>
+
             <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-3">
               <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-600">Design</span>
               <select value={customTemplateId || ""} onChange={(e) => setCustomTemplateId(e.target.value || null)}
@@ -2262,8 +2381,31 @@ export default function Composer() {
                 <audio src={music.url} controls className="h-8 flex-1 min-w-[160px]" />
                 <button onClick={() => synthesizeReelMusic(title || content, reelOptions.musicStyle)} data-testid="composer-music-regenerate"
                   title="Generate a different score" className="flex-none text-zinc-500 hover:text-white"><RefreshCw size={13} /></button>
+                <button onClick={() => setStockTarget("music")} data-testid="composer-music-attach"
+                  title="Use a track of your own" className="flex-none text-zinc-500 hover:text-white"><Upload size={13} /></button>
                 <Button variant="ghost" onClick={removeMusic} data-testid="composer-music-remove"
                   className="h-7 flex-none px-2 text-zinc-500 hover:text-magic"><Trash2 size={13} /></Button>
+              </div>
+            )}
+
+            {/* A reel with no score yet. Kept as its own row rather than
+                folded into the one above, because composer-music-row means
+                "this reel HAS a score" — the removal path asserts it goes
+                away. Same testid for the attach button in both: only one of
+                the two rows is ever mounted. */}
+            {isReel && !music.url && assets.length > 0 && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2" data-testid="composer-music-empty-row">
+                <Music size={13} className="flex-none text-zinc-400" />
+                <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-zinc-500">Music</span>
+                <span className="text-xs text-zinc-500">No score on this reel</span>
+                <button onClick={() => synthesizeReelMusic(title || content, reelOptions.musicStyle)} disabled={musicLoading}
+                  data-testid="composer-music-generate" className="ml-auto flex flex-none items-center gap-1.5 text-xs text-zinc-400 hover:text-white disabled:opacity-50">
+                  {musicLoading ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />} Generate
+                </button>
+                <button onClick={() => setStockTarget("music")} data-testid="composer-music-attach"
+                  className="flex flex-none items-center gap-1.5 text-xs text-zinc-400 hover:text-white">
+                  <Upload size={13} /> Use my own
+                </button>
               </div>
             )}
 
@@ -2485,6 +2627,16 @@ export default function Composer() {
                               <button onClick={() => retrySceneVoice(active)} data-testid="composer-scene-voice-retry"
                                 className="flex items-center gap-1 hover:text-white"><RefreshCw size={11} /> Record this line</button>
                             )}
+                            {/* A take of your own instead of a synthesized
+                                one — your actual voice, or one this app has
+                                no way to generate. */}
+                            {!sceneVoiceLoading[active] && (
+                              <button onClick={() => setStockTarget({ kind: "scene-voice", index: active })}
+                                data-testid="composer-scene-voice-attach" title="Use an audio file of your own"
+                                className="flex flex-none items-center gap-1 hover:text-white">
+                                <Upload size={11} /> Use my own
+                              </button>
+                            )}
                           </div>
                         )}
 
@@ -2660,7 +2812,8 @@ export default function Composer() {
         open={stockTarget !== null}
         onOpenChange={(open) => !open && setStockTarget(null)}
         defaultType={
-          stockTarget === "slide-video" || stockTarget === "clip-video" ? "video"
+          stockTarget === "music" || stockTarget?.kind === "scene-voice" ? "audio"
+          : stockTarget === "slide-video" || stockTarget === "clip-video" ? "video"
           : stockTarget === "element-replace"
             ? ((activeAsset?.spec.elements || []).find((x) => x.id === selectedElementId)?.type === "video" ? "video" : "image")
             : "image"
@@ -2680,18 +2833,25 @@ export default function Composer() {
       <PngExportPreview preview={pngPreview} asset={assets[pngPreview?.slideIndex]} brand={brand} aspectCls={aspectCls}
         onCancel={closePngPreview} onConfirm={confirmPngPreview} onRetry={retryPngPreview} />
 
-      {reelReviewPlan && (
-        <ComposerReelReview title={reelReviewPlan.title}
-          scenes={(reelReviewPlan.assets || []).map((a, i) => ({
-            heading: a.spec?.heading || "", body: a.spec?.body || "", video_prompt: a.spec?.video_prompt || "",
-            // Which server-built asset this row started as — confirmReelReview
+      {buildReviewPlan && (
+        <ComposerBuildReview title={buildReviewPlan.title} kind={reviewKind}
+          rows={(buildReviewPlan.assets || []).map((a, i) => ({
+            // A cover's words live in spec.title, every other card's in
+            // heading/body. Both are edited through `heading` here and
+            // written back to whichever one the card actually renders.
+            heading: (a.spec?.template === "cover" ? a.spec?.title : a.spec?.heading) || "",
+            body: a.spec?.body || "",
+            video_prompt: a.spec?.video_prompt || "",
+            image_prompt: a.spec?.image_prompt || "",
+            _template: a.spec?.template,
+            // Which server-built asset this row started as — confirmBuildReview
             // needs it to keep that asset's template-applied layout/background/
             // clip alive rather than rebuilding a bare spec from just these
-            // three text fields. A row added in review has none (undefined).
+            // text fields. A row added in review has none (undefined).
             _origIndex: i,
           }))}
           includeVoiceover={reelOptions.includeVoiceover}
-          onConfirm={confirmReelReview} onCancel={discardReelReview} confirming={reelReviewBuilding} />
+          onConfirm={confirmBuildReview} onCancel={discardBuildReview} confirming={buildReviewBuilding} />
       )}
 
       {canvasOpen && activeAsset && (
