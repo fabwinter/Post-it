@@ -338,6 +338,39 @@ b = r.json()
 check("reel assets are scenes", [a["type"] for a in b["assets"]] == ["scene", "scene"], b["assets"])
 check("scene keeps video prompt", b["assets"][0]["spec"]["video_prompt"] == "vp1", b["assets"][0])
 
+# --- the Style picker shapes what gets BUILT, not just what restyle rewrites ---
+# It reached ai_restyle and ai_templates but never build-post, so picking a
+# style and hitting Build changed nothing, for any format. Hooks looked like
+# the only one that worked because HOOK_CRAFT_GUIDE is on for every build.
+for style, marker in [("story", "narrative arc"), ("listicle", "numbered list"),
+                      ("contrarian", "contrarian take"), ("how_to", "how-to post"),
+                      ("hooks", "scroll-stopping single-line hook")]:
+    c.post("/api/ai/build-post", json={"topic": "x", "platform": "instagram", "format": "carousel",
+                                        "slides": 3, "style_template": style})
+    sent_style = SENT_MESSAGES[-1][0]["content"]
+    check(f"the {style} style reaches a build's prompt", marker in sent_style and "POST STRUCTURE" in sent_style,
+          sent_style[-500:])
+
+# Every format, not just the one the picker happens to sit next to.
+for fmt, platform in [("reel", "tiktok"), ("single", "instagram"), ("thread", "twitter")]:
+    c.post("/api/ai/build-post", json={"topic": "x", "platform": platform, "format": fmt,
+                                        "style_template": "listicle"})
+    check(f"...and on a {fmt} too", "numbered list" in SENT_MESSAGES[-1][0]["content"])
+
+# The count is computed and clamped before the style note is written, so the
+# style must not be able to argue the model out of it.
+c.post("/api/ai/build-post", json={"topic": "x", "platform": "instagram", "format": "carousel",
+                                    "slides": 3, "style_template": "hooks"})
+check("a style can't override the slide count the format already fixed",
+      "not how many parts there are" in SENT_MESSAGES[-1][0]["content"])
+
+c.post("/api/ai/build-post", json={"topic": "x", "platform": "instagram", "format": "carousel", "slides": 3})
+check("no style picked leaves the prompt as it was", "POST STRUCTURE" not in SENT_MESSAGES[-1][0]["content"])
+r = c.post("/api/ai/build-post", json={"topic": "x", "platform": "instagram", "style_template": "no-such-style"})
+check("an unknown style falls back instead of failing the build", r.status_code == 200, r.text[:160])
+check("...to no structure note at all", "POST STRUCTURE" not in SENT_MESSAGES[-1][0]["content"])
+
+
 # --- script styles: which shape a reel's scenes get written to ---
 r = c.get("/api/script-styles")
 styles = r.json()

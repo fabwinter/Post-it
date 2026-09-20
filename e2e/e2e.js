@@ -785,6 +785,13 @@ async function confirmReel(page) {
   ok('...and an already-set outro toggle is cleared, since this style ends on the payoff',
      !(await page.getByTestId('composer-reel-outro').getAttribute('class')).includes('border-lime'));
 
+  // The Style picker has to shape what gets BUILT, not only what its own
+  // "Apply style" button rewrites afterwards. It reached the restyle route
+  // but never build-post, so picking a style and hitting Build changed
+  // nothing — on every format. Hooks looked like the only one that worked
+  // because the hook-craft rules are on for every build regardless.
+  await page.getByTestId('composer-style-select').selectOption('listicle');
+
   const buildRequests = [];
   await page.route('**/api/ai/build-post', async (route) => {
     buildRequests.push(route.request().postDataJSON());
@@ -794,6 +801,8 @@ async function confirmReel(page) {
   await tap(page, 'composer-autobuild');
   await page.getByTestId('composer-reel-review').waitFor({ timeout: 20000 });
   await page.unroute('**/api/ai/build-post');
+  ok('the picked copy style reaches the build request too',
+     buildRequests[0]?.style_template === 'listicle', JSON.stringify(buildRequests[0]));
   ok('the picked script style actually reaches the build request',
      buildRequests[0]?.script_style === 'viral-short', JSON.stringify(buildRequests[0]));
 

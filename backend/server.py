@@ -4883,6 +4883,11 @@ class BuildPostRequest(BaseModel):
     custom_template_id: Optional[str] = None
     brand_kit_id: Optional[str] = None
     use_knowledge: bool = True
+    # Which TEMPLATE_GUIDES structure the post is written to (the Composer's
+    # "Style" picker). None means "no explicit structure", which is what every
+    # build did before this was wired up and what a caller that doesn't send
+    # one still gets.
+    style_template: Optional[str] = None
     # Reel-only build controls (ComposerReelOptions) — ignored for every
     # other format, and only honored when the CALLER asked for "reel"
     # explicitly rather than leaving format on "auto" for the model to pick,
@@ -5154,6 +5159,28 @@ async def ai_build_post(req: BuildPostRequest):
     if "reel" in allowed:
         craft_notes += SCRIPT_STYLES[script_style]["guide"]
 
+    # The Composer's "Style" picker (hooks/story/listicle/contrarian/how-to).
+    # This used to reach ai_restyle and ai_templates but never this route, so
+    # picking a style and hitting "Build whole post" changed nothing — for any
+    # format. Hooks looked like the one that worked only because
+    # HOOK_CRAFT_GUIDE is unconditional above, so every build already came out
+    # hook-shaped whatever the picker said.
+    #
+    # The guide strings were written for a one-shot text post, so they are
+    # framed here to reach a multi-part post too: the structure decides the
+    # angle and the wording across caption AND slides/scenes, while the count
+    # and pacing stay with the format rules that already computed them.
+    style_tpl = TEMPLATE_GUIDES.get(req.style_template or "")
+    style_note = ""
+    if style_tpl:
+        style_note = (
+            f" POST STRUCTURE: write this post as {style_tpl['style']} Carry that shape through the whole "
+            "post — the caption follows it, and where the format has slides or scenes they deliver the same "
+            "shape in order, roughly one beat each, rather than the caption following it while the slides go "
+            "somewhere unrelated. Keep the slide/scene COUNT, order and pacing the rules above already set: "
+            "this decides the angle and the words, not how many parts there are."
+        )
+
     # ComposerReelOptions' own structure controls — only meaningful once the
     # caller has committed to "reel" rather than leaving it to "auto", since
     # they change the scene COUNT itself, before the model has run.
@@ -5200,7 +5227,7 @@ async def ai_build_post(req: BuildPostRequest):
         f"{format_rule} "
         f"If the format is carousel, thread or reel, produce exactly {n} slides/scenes (a carousel's cover "
         f"is separate and does not count). "
-        f"{craft_notes}{reel_structure_note} "
+        f"{craft_notes}{style_note}{reel_structure_note} "
         f"{brand_note}{template_note}"
         "Return ONLY JSON with this exact shape:\n"
         '{"format": "one of ' + "|".join(allowed) + '", '

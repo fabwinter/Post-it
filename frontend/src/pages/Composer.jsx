@@ -1190,6 +1190,10 @@ export default function Composer() {
         topic, platform: primary, format, model: model || defaultModel,
         slides: format === "reel" ? (reelOptions.sceneCount || pspec.slides?.default) : pspec.slides?.default,
         custom_template_id: customTemplateId || undefined, brand_kit_id: brandKitId || undefined,
+        // The Style picker shapes what gets BUILT, not just what "Apply
+        // style" rewrites afterwards — without this the picker silently did
+        // nothing on a build, for every format.
+        style_template: styleTemplate,
         reuse_template_images: designMedia.images === "reuse",
         reuse_template_videos: designMedia.videos === "reuse",
         reuse_template_backgrounds: designMedia.backgrounds === "reuse",
@@ -2108,7 +2112,7 @@ export default function Composer() {
                 className="h-8 gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 text-xs text-white hover:bg-white/10">
                 {restyling ? <Loader2 size={13} className="animate-spin" /> : <Wand size={13} />} Apply style
               </Button>
-              <span className="text-xs text-zinc-600">rewrites the draft above in that structure</span>
+              <span className="text-xs text-zinc-600">shapes what Build writes — or rewrites the draft above now</span>
             </div>
 
             <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-3">
