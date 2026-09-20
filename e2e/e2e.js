@@ -2417,6 +2417,43 @@ async function confirmBuild(page) {
      (await logoCorner()) > 1, 'distinct colours in the logo corner: ' + await logoCorner());
   await tap(page, 'png-export-cancel');
 
+  // The other real regression: every image element already renders with
+  // crossOrigin="anonymous" pointed straight at its real URL (VisualCard),
+  // so a cross-origin logo that's visible ON SCREEN has already proven the
+  // host sends CORS headers — the direct URL works. withProxiedImages used
+  // to swap every cross-origin image to our own /api/proxy-image hop
+  // UNCONDITIONALLY, before ever trying the URL it was already rendering
+  // successfully, so a proxy hiccup (timeout, content-type sniffing, its
+  // own network) could drop a perfectly good logo with no working direct
+  // attempt ever made. 'localhost' and '127.0.0.1' are different origins
+  // to the browser even though they're the same server here, which is
+  // enough to exercise the real cross-origin path without standing up a
+  // second host.
+  const crossOriginLogo = await (await page.request.post(B + '/api/brand-kits', {
+    data: { name: 'E2E Cross-Origin Logo Kit', logo_url: 'http://localhost:8123/e2e-logo.svg' },
+  })).json();
+  await page.request.put(B + `/api/brand-kits/${crossOriginLogo.id}`, { data: { is_default: true } });
+  await page.goto(B + '/composer', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(400);
+  let proxyHits = 0;
+  const onProxyReq = (req) => { if (req.url().includes('/api/proxy-image')) proxyHits++; };
+  page.on('request', onProxyReq);
+  await page.getByTestId('composer-brief').fill('a carousel whose logo lives on a different origin');
+  await tap(page, 'composer-autobuild');
+  await confirmBuild(page);
+  await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
+  await page.waitForTimeout(1200);
+  await tap(page, 'composer-slide-download');
+  await page.getByTestId('png-export-preview').waitFor({ timeout: 20000 });
+  await page.waitForSelector('[data-testid="png-export-loading"]', { state: 'detached', timeout: 40000 }).catch(() => {});
+  page.off('request', onProxyReq);
+  ok('a cross-origin logo the browser can already fetch directly raises no warning',
+     (await page.getByTestId('png-export-warning').count()) === 0);
+  ok('...and is drawn into the export using the direct URL, not the proxy',
+     (await logoCorner()) > 1 && proxyHits === 0,
+     `distinct colours: ${await logoCorner()}, proxy hits: ${proxyHits}`);
+  await tap(page, 'png-export-cancel');
+
   const deadLogo = await (await page.request.post(B + '/api/brand-kits', {
     data: { name: 'E2E Dead Logo Kit', logo_url: B + '/no-such-logo-404.png' },
   })).json();

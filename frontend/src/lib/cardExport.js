@@ -260,8 +260,19 @@ function imageSettled(img) {
   });
 }
 
-// Cross-origin images, swapped to the proxy for the duration of the capture
-// so they can be read back, then restored.
+// Direct first, our own proxy only as a fallback — the same order
+// loadMediaElement/loadClipImage use for a reel's footage in videoExport.js,
+// and for the same reason: every one of these <img>s already renders with
+// crossOrigin="anonymous" pointed at its real URL (see VisualCard), so if
+// the host sends CORS headers at all, the direct URL already works — which
+// is exactly what having it visible on screen a moment earlier means. This
+// used to swap every cross-origin image to the proxy UNCONDITIONALLY,
+// before ever trying the URL it was already rendering successfully. That
+// is a real extra hop — our backend fetching the file itself, subject to
+// its own timeout, its own content-type sniffing, its own network — and a
+// working brand logo failing that hop got dropped from the export with no
+// working direct URL ever attempted. Now the proxy is only reached for
+// whatever the direct load actually couldn't get.
 //
 // Whatever still hasn't loaded by the end is LEFT OUT of the capture rather
 // than drawn. An <img> that failed renders as nothing on screen (alt="" has
@@ -275,25 +286,16 @@ function imageSettled(img) {
 async function withProxiedImages(node, run) {
   const imgs = Array.from(node.querySelectorAll("img"));
   const originals = imgs.map((img) => img.getAttribute("src"));
-  imgs.forEach((img) => {
-    const src = img.getAttribute("src");
-    const p = proxied(src);
-    if (p !== src) { img.crossOrigin = "anonymous"; img.setAttribute("src", p); }
-  });
   let settled = await Promise.all(imgs.map(imageSettled));
 
-  // One retry through the proxy for anything that failed and wasn't already
-  // going through it — the same direct-then-proxy order the reel exporter
-  // uses, and the case it covers is a host that serves the bytes to an
-  // <img> but sends no CORS header with them.
   const retryIdx = imgs.reduce((acc, img, i) => {
-    if (!settled[i] && img.getAttribute("src") === originals[i]) acc.push(i);
+    if (!settled[i] && proxied(originals[i]) !== originals[i]) acc.push(i);
     return acc;
   }, []);
   retryIdx.forEach((i) => {
     const img = imgs[i];
-    const p = proxied(img.getAttribute("src"));
-    if (p !== img.getAttribute("src")) { img.crossOrigin = "anonymous"; img.setAttribute("src", p); }
+    img.crossOrigin = "anonymous";
+    img.setAttribute("src", proxied(originals[i]));
   });
   if (retryIdx.length) {
     const retried = await Promise.all(retryIdx.map((i) => imageSettled(imgs[i])));
