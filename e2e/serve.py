@@ -269,7 +269,7 @@ server.app.mount("/static", StaticFiles(directory=f"{BUILD}/static"), name="stat
 
 MIME = {".woff2": "font/woff2", ".woff": "font/woff", ".ttf": "font/ttf", ".otf": "font/otf",
         ".mp4": "video/mp4", ".webm": "video/webm", ".png": "image/png", ".jpg": "image/jpeg",
-        ".wav": "audio/wav"}
+        ".wav": "audio/wav", ".svg": "image/svg+xml"}
 
 @server.app.get("/{full_path:path}")
 async def spa(full_path: str):

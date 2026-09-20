@@ -1750,13 +1750,32 @@ export default function Composer() {
   // reading whatever `active` happens to be by the time the dialog opens.
   const [pngPreview, setPngPreview] = useState(null); // { mode, loading, error, images, slideIndex }
 
+  // An image the browser couldn't fetch — a brand logo whose URL has gone
+  // dead or whose host won't serve it here — shows as nothing at all on the
+  // card, because a failed <img> with no alt text has nothing to draw. It
+  // used to reach the PNG as the browser's own broken-image glyph, so the
+  // first you knew of it was a torn-paper icon in a file you were about to
+  // post. captureCardPng leaves those out now and reports them here.
+  const describeMissing = (sources) => {
+    const names = sources.map((src) => {
+      const logo = brand?.logo_url && src === brand.logo_url;
+      if (logo) return "the brand logo";
+      try { return decodeURIComponent(new URL(src, window.location.href).pathname.split("/").pop()) || src; }
+      catch { return src; }
+    });
+    return `Left out of the export — couldn't load ${names.join(", ")}. Check the link still works, or re-add it from the Library.`;
+  };
+
   const downloadSlide = async () => {
     if (!cardRef.current) return;
     const slideIndex = active;
     setPngPreview({ mode: "single", loading: true, error: null, images: [], slideIndex });
     try {
-      const url = await captureCardPng(cardRef.current);
-      setPngPreview({ mode: "single", loading: false, error: null, images: [{ index: slideIndex, url }], slideIndex });
+      let warning = null;
+      const url = await captureCardPng(cardRef.current, {
+        onMissingMedia: (sources) => { if (sources.length) warning = describeMissing(sources); },
+      });
+      setPngPreview({ mode: "single", loading: false, error: null, warning, images: [{ index: slideIndex, url }], slideIndex });
     } catch (e) {
       setPngPreview({ mode: "single", loading: false, error: apiErrorMessage(e, "Export failed."), images: [], slideIndex });
     }
@@ -1776,14 +1795,21 @@ export default function Composer() {
     setPngPreview({ mode: "all", loading: true, error: null, images: [], slideIndex: startedOn });
     try {
       const images = [];
+      // One slide's dead logo is every slide's dead logo, so report the set
+      // rather than the same URL once per card.
+      const missing = new Set();
       for (let i = 0; i < assets.length; i++) {
         setActive(i);
         await new Promise((r) => setTimeout(r, 260)); // let the card re-render for slide i
         if (!cardRef.current) continue;
-        const url = await captureCardPng(cardRef.current);
+        const url = await captureCardPng(cardRef.current, {
+          onMissingMedia: (sources) => sources.forEach((s) => missing.add(s)),
+        });
         images.push({ index: i, url });
       }
-      setPngPreview({ mode: "all", loading: false, error: null, images, slideIndex: startedOn });
+      setPngPreview({ mode: "all", loading: false, error: null,
+                      warning: missing.size ? describeMissing([...missing]) : null,
+                      images, slideIndex: startedOn });
     } catch (e) {
       setPngPreview({ mode: "all", loading: false, error: apiErrorMessage(e, "Export failed."), images: [], slideIndex: startedOn });
     } finally { setActive(startedOn); setDownloadingAll(false); }

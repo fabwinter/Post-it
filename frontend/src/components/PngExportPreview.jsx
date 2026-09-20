@@ -23,7 +23,7 @@ function LiveCard({ spec, brand, aspectCls }) {
 export function PngExportPreview({ preview, asset, brand, aspectCls, onCancel, onConfirm, onRetry }) {
   const [zoomed, setZoomed] = useState(null);
   if (!preview) return null;
-  const { mode, loading, error, images } = preview;
+  const { mode, loading, error, warning, images } = preview;
   const count = images.length;
 
   return (
@@ -61,6 +61,16 @@ export function PngExportPreview({ preview, asset, brand, aspectCls, onCancel, o
           <div className="mt-4 flex gap-2 rounded-lg border border-magic/30 bg-magic/5 p-3 text-xs text-magic" data-testid="png-export-error">
             <AlertTriangle size={14} className="mt-0.5 flex-none" />
             <span>{error}</span>
+          </div>
+        )}
+
+        {/* The file is fine and downloadable — something just isn't in it.
+            An image that fails to load draws nothing on the card, so without
+            this the only hint would have been the gap itself. */}
+        {!loading && !error && warning && (
+          <div className="mt-4 flex gap-2 rounded-lg border border-amber-400/30 bg-amber-400/5 p-3 text-xs text-amber-300" data-testid="png-export-warning">
+            <AlertTriangle size={14} className="mt-0.5 flex-none" />
+            <span>{warning}</span>
           </div>
         )}
 
