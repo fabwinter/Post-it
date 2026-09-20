@@ -2346,6 +2346,78 @@ async function confirmBuild(page) {
   const zipped = await exportPng('composer-slide-download-all');
   ok('every slide zips up together, footage and all', /\.zip$/.test(zipped.file || '') && zipped.bytes > 1000, JSON.stringify(zipped));
 
+  // ---------- the brand logo, in and out of the export ----------
+  // A brand kit's logo is seeded onto every generated card (_seed_brand_design,
+  // server side) as an ordinary image element, and nothing here ever checked
+  // it survived to the file. Two halves, because they fail in opposite ways:
+  // a logo that loads has to actually be IN the PNG, and one that doesn't has
+  // to be left OUT of it. The second is the one that shipped: a failed <img>
+  // draws nothing on the card (no alt text to show), but html-to-image
+  // rasterises the browser's own broken-image glyph, so the first you knew of
+  // a dead logo URL was a torn-paper icon in a file you were about to post.
+  const logoCorner = async () => page.evaluate(async () => {
+    const img = document.querySelector('[data-testid="png-export-image"]');
+    if (!img) return null;
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth; c.height = img.naturalHeight;
+    c.getContext('2d').drawImage(img, 0, 0);
+    // The logo sits bottom-right; sample a patch inside it and count how many
+    // distinct colours are there. Flat background = one colour.
+    const side = Math.round(Math.min(c.width, c.height) * 0.1);
+    const d = c.getContext('2d').getImageData(c.width - side * 1.4, c.height - side * 1.4, side, side).data;
+    const seen = new Set();
+    for (let i = 0; i < d.length; i += 4) seen.add(`${d[i]},${d[i + 1]},${d[i + 2]}`);
+    return seen.size;
+  });
+
+  const withLogo = await (await page.request.post(B + '/api/brand-kits', {
+    data: { name: 'E2E Logo Kit', logo_url: B + '/e2e-asset.png' },
+  })).json();
+  // There is no /default route — a kit becomes the default through an
+  // ordinary update, which is what the Composer's own picker does.
+  await page.request.put(B + `/api/brand-kits/${withLogo.id}`, { data: { is_default: true } });
+  await page.goto(B + '/composer', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(400);
+  await page.getByTestId('composer-brief').fill('a carousel that carries the brand logo');
+  await tap(page, 'composer-autobuild');
+  await confirmBuild(page);
+  await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
+  await page.waitForTimeout(1200);
+  await tap(page, 'composer-slide-download');
+  await page.getByTestId('png-export-preview').waitFor({ timeout: 20000 });
+  await page.waitForSelector('[data-testid="png-export-loading"]', { state: 'detached', timeout: 40000 }).catch(() => {});
+  ok('a working brand logo raises no warning',
+     (await page.getByTestId('png-export-warning').count()) === 0);
+  ok('...and really is drawn into the exported PNG, not just planned for it',
+     (await logoCorner()) > 1, 'distinct colours in the logo corner: ' + await logoCorner());
+  await tap(page, 'png-export-cancel');
+
+  const deadLogo = await (await page.request.post(B + '/api/brand-kits', {
+    data: { name: 'E2E Dead Logo Kit', logo_url: B + '/no-such-logo-404.png' },
+  })).json();
+  // There is no /default route — a kit becomes the default through an
+  // ordinary update, which is what the Composer's own picker does.
+  await page.request.put(B + `/api/brand-kits/${deadLogo.id}`, { data: { is_default: true } });
+  await page.goto(B + '/composer', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(400);
+  await page.getByTestId('composer-brief').fill('a carousel whose logo url is dead');
+  await tap(page, 'composer-autobuild');
+  await confirmBuild(page);
+  await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
+  await page.waitForTimeout(1200);
+  await tap(page, 'composer-slide-download');
+  await page.getByTestId('png-export-preview').waitFor({ timeout: 20000 });
+  await page.waitForSelector('[data-testid="png-export-loading"]', { state: 'detached', timeout: 40000 }).catch(() => {});
+  const logoWarning = await page.getByTestId('png-export-warning').count()
+    ? await page.getByTestId('png-export-warning').innerText() : '';
+  ok('a logo that will not load is called out by name rather than silently dropped',
+     logoWarning.includes('brand logo'), logoWarning || '(no warning)');
+  ok('...and no broken-image glyph is burned into the file',
+     (await logoCorner()) === 1, 'distinct colours in the logo corner: ' + await logoCorner());
+  ok('...while the export itself still succeeds',
+     (await page.getByTestId('png-export-confirm').count()) === 1);
+  await tap(page, 'png-export-cancel');
+
   const real = errs.filter(e => !/favicon|manifest|404|Failed to load resource/i.test(e));
   ok('no console errors', real.length === 0, real.slice(0, 3).join(' | '));
 

@@ -231,8 +231,29 @@ async function withVideoStills(node, run) {
   }
 }
 
+// Resolves once an <img> has either loaded or given up, so the capture never
+// rasterises one mid-flight.
+function imageSettled(img) {
+  if (img.complete && img.naturalWidth) return Promise.resolve();
+  return new Promise((resolve) => {
+    img.addEventListener("load", resolve, { once: true });
+    img.addEventListener("error", resolve, { once: true });
+    setTimeout(resolve, 8000);
+  });
+}
+
 // Cross-origin images, swapped to the proxy for the duration of the capture
 // so they can be read back, then restored.
+//
+// Whatever still hasn't loaded by the end is LEFT OUT of the capture rather
+// than drawn. An <img> that failed renders as nothing on screen (alt="" has
+// no alt box to show), so a broken brand logo looks merely absent while you
+// are working — but html-to-image faithfully rasterises the browser's own
+// broken-image glyph, which is how a downloaded PNG ended up with a little
+// grey box with a torn corner sitting where the logo should be. A card that
+// is missing its logo is a bad export; a card with a broken-image icon
+// burned into it is an unusable one, and the caller is told either way (see
+// onMissingMedia) instead of finding out from the file.
 async function withProxiedImages(node, run) {
   const imgs = Array.from(node.querySelectorAll("img"));
   const originals = imgs.map((img) => img.getAttribute("src"));
@@ -241,17 +262,31 @@ async function withProxiedImages(node, run) {
     const p = proxied(src);
     if (p !== src) { img.crossOrigin = "anonymous"; img.setAttribute("src", p); }
   });
-  await Promise.all(imgs.map((img) => (img.complete && img.naturalWidth
-    ? Promise.resolve()
-    : new Promise((resolve) => {
-      img.addEventListener("load", resolve, { once: true });
-      img.addEventListener("error", resolve, { once: true });
-      setTimeout(resolve, 8000);
-    }))));
+  await Promise.all(imgs.map(imageSettled));
+
+  // One retry through the proxy for anything that failed and wasn't already
+  // going through it — the same direct-then-proxy order the reel exporter
+  // uses, and the case it covers is a host that serves the bytes to an
+  // <img> but sends no CORS header with them.
+  const retry = imgs.filter((img, i) => !img.naturalWidth && img.getAttribute("src") === originals[i]);
+  retry.forEach((img) => {
+    const p = proxied(img.getAttribute("src"));
+    if (p !== img.getAttribute("src")) { img.crossOrigin = "anonymous"; img.setAttribute("src", p); }
+  });
+  if (retry.length) await Promise.all(retry.map(imageSettled));
+
+  const missing = [];
+  imgs.forEach((img, i) => {
+    if (img.naturalWidth) return;
+    missing.push(originals[i] || "");
+    img.setAttribute(EXPORT_SKIP_ATTR, "");
+  });
+
   try {
-    return await run();
+    return await run(missing);
   } finally {
     imgs.forEach((img, i) => {
+      img.removeAttribute(EXPORT_SKIP_ATTR);
       if (originals[i] == null) img.removeAttribute("src");
       else img.setAttribute("src", originals[i]);
     });
@@ -260,11 +295,16 @@ async function withProxiedImages(node, run) {
 
 /**
  * Rasterises a card to a PNG data URL. `extra` is passed through to
- * html-to-image (the reel exporter sets its own size and drops the backdrop).
+ * html-to-image (the reel exporter sets its own size and drops the backdrop),
+ * except for `onMissingMedia`, which is called with the source URLs of any
+ * images that could not be loaded and were therefore left out of the capture.
+ * Nothing on the card fails the export — the caller decides whether a card
+ * missing its logo is worth warning about.
  *
  * Resolves to the data URL. Rejects only when there is no PNG at all.
  */
 export async function captureCardPng(node, extra = {}) {
+  const { onMissingMedia, ...options } = extra;
   if (!node) throw new Error("There's nothing on the canvas to export yet.");
   if (document.fonts?.ready) {
     // Measure text in the face it will be rasterised in, not in whatever was
@@ -273,22 +313,23 @@ export async function captureCardPng(node, extra = {}) {
   }
   const fontEmbedCSS = (await fontEmbedCSSFor(node)) || "";
 
-  return withVideoStills(node, () => withProxiedImages(node, async () => {
+  return withVideoStills(node, (footageMissing) => withProxiedImages(node, async (imagesMissing) => {
     const dataUrl = await toPng(node, {
       pixelRatio: 2,
-      ...extra,
+      ...options,
       fontEmbedCSS,
       // The <video>s that withVideoStills has already stood an <img> in for,
-      // plus whatever the caller wants dropped.
+      // the images that never loaded, plus whatever the caller wants dropped.
       filter: (n) => {
         if (n instanceof Element && n.hasAttribute(EXPORT_SKIP_ATTR)) return false;
-        return extra.filter ? extra.filter(n) : true;
+        return options.filter ? options.filter(n) : true;
       },
       // Without this, one unreachable image rejects the entire export. The
       // slot is left empty instead.
       onImageErrorHandler: () => {},
     });
     if (!dataUrl || dataUrl === "data:,") throw new Error("The card came back empty. Try again in a moment.");
+    if ((imagesMissing.length || footageMissing) && onMissingMedia) onMissingMedia(imagesMissing, footageMissing);
     return dataUrl;
   }));
 }
