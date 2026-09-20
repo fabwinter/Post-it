@@ -2392,6 +2392,31 @@ async function confirmBuild(page) {
      (await logoCorner()) > 1, 'distinct colours in the logo corner: ' + await logoCorner());
   await tap(page, 'png-export-cancel');
 
+  // A real regression: an SVG with only a viewBox (no width/height on the
+  // root) decodes and paints fine, but reports naturalWidth 0 in Chrome —
+  // identically to a genuinely broken image. Checking naturalWidth alone to
+  // decide "did this load" silently dropped a perfectly good logo from the
+  // export and reported it as unloadable.
+  const svgLogo = await (await page.request.post(B + '/api/brand-kits', {
+    data: { name: 'E2E SVG Logo Kit', logo_url: B + '/e2e-logo.svg' },
+  })).json();
+  await page.request.put(B + `/api/brand-kits/${svgLogo.id}`, { data: { is_default: true } });
+  await page.goto(B + '/composer', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(400);
+  await page.getByTestId('composer-brief').fill('a carousel that carries a viewBox-only svg logo');
+  await tap(page, 'composer-autobuild');
+  await confirmBuild(page);
+  await page.getByTestId('composer-slide-strip').waitFor({ timeout: 20000 });
+  await page.waitForTimeout(1200);
+  await tap(page, 'composer-slide-download');
+  await page.getByTestId('png-export-preview').waitFor({ timeout: 20000 });
+  await page.waitForSelector('[data-testid="png-export-loading"]', { state: 'detached', timeout: 40000 }).catch(() => {});
+  ok('a sizeless (viewBox-only) SVG logo raises no false warning',
+     (await page.getByTestId('png-export-warning').count()) === 0);
+  ok('...and is really drawn into the export, not dropped for lacking naturalWidth',
+     (await logoCorner()) > 1, 'distinct colours in the logo corner: ' + await logoCorner());
+  await tap(page, 'png-export-cancel');
+
   const deadLogo = await (await page.request.post(B + '/api/brand-kits', {
     data: { name: 'E2E Dead Logo Kit', logo_url: B + '/no-such-logo-404.png' },
   })).json();

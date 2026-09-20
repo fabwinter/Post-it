@@ -231,14 +231,32 @@ async function withVideoStills(node, run) {
   }
 }
 
-// Resolves once an <img> has either loaded or given up, so the capture never
-// rasterises one mid-flight.
+// Resolves once an <img> has either loaded or given up, to a boolean that
+// says which — the capture never rasterises one mid-flight, and the caller
+// finds out whether it actually has something to draw.
+//
+// naturalWidth is NOT that signal on its own: a same-origin or successfully
+// proxied SVG whose root declares only a viewBox (no explicit width/height)
+// decodes and paints fine — you can see it on screen right now — but Chrome
+// still reports naturalWidth 0 for it, identically to a genuinely broken
+// image. img.decode() asks the browser the real question ("is there usable
+// image data here") instead of inferring it from a size that a valid SVG is
+// allowed not to have, so it's the one used to tell "failed" from "fine".
 function imageSettled(img) {
-  if (img.complete && img.naturalWidth) return Promise.resolve();
-  return new Promise((resolve) => {
-    img.addEventListener("load", resolve, { once: true });
-    img.addEventListener("error", resolve, { once: true });
-    setTimeout(resolve, 8000);
+  if (img.complete && img.naturalWidth) return Promise.resolve(true);
+  let viaDecode;
+  try {
+    viaDecode = typeof img.decode === "function"
+      ? img.decode().then(() => true, () => false)
+      : Promise.resolve(null); // no decode() support — fall through to events below
+  } catch { viaDecode = Promise.resolve(null); }
+  return viaDecode.then((ok) => {
+    if (ok !== null) return ok;
+    return new Promise((resolve) => {
+      img.addEventListener("load", () => resolve(true), { once: true });
+      img.addEventListener("error", () => resolve(false), { once: true });
+      setTimeout(() => resolve(img.complete && !!img.naturalWidth), 8000);
+    });
   });
 }
 
@@ -262,22 +280,29 @@ async function withProxiedImages(node, run) {
     const p = proxied(src);
     if (p !== src) { img.crossOrigin = "anonymous"; img.setAttribute("src", p); }
   });
-  await Promise.all(imgs.map(imageSettled));
+  let settled = await Promise.all(imgs.map(imageSettled));
 
   // One retry through the proxy for anything that failed and wasn't already
   // going through it — the same direct-then-proxy order the reel exporter
   // uses, and the case it covers is a host that serves the bytes to an
   // <img> but sends no CORS header with them.
-  const retry = imgs.filter((img, i) => !img.naturalWidth && img.getAttribute("src") === originals[i]);
-  retry.forEach((img) => {
+  const retryIdx = imgs.reduce((acc, img, i) => {
+    if (!settled[i] && img.getAttribute("src") === originals[i]) acc.push(i);
+    return acc;
+  }, []);
+  retryIdx.forEach((i) => {
+    const img = imgs[i];
     const p = proxied(img.getAttribute("src"));
     if (p !== img.getAttribute("src")) { img.crossOrigin = "anonymous"; img.setAttribute("src", p); }
   });
-  if (retry.length) await Promise.all(retry.map(imageSettled));
+  if (retryIdx.length) {
+    const retried = await Promise.all(retryIdx.map((i) => imageSettled(imgs[i])));
+    retryIdx.forEach((i, j) => { settled[i] = retried[j]; });
+  }
 
   const missing = [];
   imgs.forEach((img, i) => {
-    if (img.naturalWidth) return;
+    if (settled[i]) return;
     missing.push(originals[i] || "");
     img.setAttribute(EXPORT_SKIP_ATTR, "");
   });
