@@ -300,6 +300,22 @@ async def spa(full_path: str):
         if full_path.endswith(".png"):
             return FileResponse(os.path.join(FIXTURES, "stock_photo.png"), media_type="image/png")
         return FileResponse(os.path.join(FIXTURES, "clip.webm"), media_type="video/webm")
+    if full_path == "e2e-logo.svg":
+        # Deliberately has NO width/height on the root — only a viewBox, which
+        # is a perfectly valid SVG and exactly how a lot of real logo exports
+        # (Figma, Illustrator "responsive" exports) come out. Chrome reports
+        # naturalWidth/naturalHeight as 0 for an <img> pointed at one of these
+        # even though it decodes and paints fine, which is the case that
+        # falsely flagged a real brand logo as "failed to load" and dropped
+        # it from the PNG export (cardExport.js's imageSettled/decode() path).
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+            '<rect width="100" height="100" fill="#ff3366"/>'
+            '<circle cx="50" cy="50" r="35" fill="#22cc88"/>'
+            '</svg>'
+        )
+        from fastapi.responses import Response as _R
+        return _R(svg, media_type="image/svg+xml")
     f = os.path.join(BUILD, full_path)
     if full_path and os.path.isfile(f): return FileResponse(f)
     return FileResponse(os.path.join(BUILD, "index.html"))
