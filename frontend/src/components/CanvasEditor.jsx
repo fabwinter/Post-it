@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { VisualCard, ASPECT_RATIO } from "@/components/VisualCard";
 import { SlideEditor } from "@/components/SlideEditor";
+import { LineSizeControls } from "@/components/LineSizeControls";
 import { clampPos } from "@/lib/slideElements";
 import { groupFontsByCategory, fontStack, useAllFontsLoaded, useFontCatalog } from "@/lib/fonts";
 import { FontNotice } from "@/components/CustomFonts";
@@ -297,6 +298,9 @@ export function CanvasEditor({
             ))}
           </select>
           <FontNotice fontKey={el.fontFamily || "Inter"} testid="canvas-font-notice" />
+          <button onClick={() => patch({ fontStyle: el.fontStyle === "italic" ? "normal" : "italic" })}
+            data-testid="canvas-element-italic" aria-pressed={el.fontStyle === "italic"}
+            className={`mt-2 h-10 rounded-lg border px-4 italic ${el.fontStyle === "italic" ? "border-lime text-lime" : "border-white/10 text-zinc-400"}`}>Italic</button>
           <div className="mt-2 flex flex-wrap gap-1.5">
             {[400, 500, 600, 700, 800, 900].map((w) => (
               <button key={w} onClick={() => patch({ fontWeight: w })} data-testid={`canvas-weight-${w}`}
@@ -317,6 +321,7 @@ export function CanvasEditor({
             <Slider label="Leading" min={80} max={240} step={5} value={(el.lineHeight ?? 1.2) * 100}
               onChange={(v) => patch({ lineHeight: Number((v / 100).toFixed(2)) })} suffix="%" testid="canvas-element-leading" />
           </div>
+          <LineSizeControls element={el} onPatch={patch} prefix="canvas" />
         </Sheet>
       )}
 
