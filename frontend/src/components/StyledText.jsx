@@ -14,7 +14,7 @@ export function StyledText({ element, scale, style }) {
   const [width, setWidth] = useState(0);
   const [height, setHeight] = useState(0);
   const [fontVersion, setFontVersion] = useState(0);
-  const lines = String(element.text || "").split("\n");
+  const sourceLines = String(element.text || "").split("\n");
 
   useLayoutEffect(() => {
     const node = ref.current;
@@ -30,25 +30,44 @@ export function StyledText({ element, scale, style }) {
   const settings = lineSettings(element);
   // Recalculate canvas metrics when a web font finishes loading.
   void fontVersion;
-  const sizes = settings.map(({ size, fit }, index) => {
-    if (!fit || !width || !lines[index].trim()) return size * scale;
-    const canvas = document.createElement("canvas");
-    const context = canvas.getContext("2d");
-    if (!context) return size * scale;
-    context.font = `${element.fontStyle === "italic" ? "italic " : ""}${element.fontWeight || 600} 100px ${style.fontFamily}`;
-    const measured = context.measureText(lines[index]).width;
-    return measured ? Math.min(240 * scale, (width * 0.98 * 100) / measured) : size * scale;
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  const font = (size) => `${element.fontStyle === "italic" ? "italic " : ""}${element.fontWeight || 600} ${size}px ${style.fontFamily}`;
+  const lines = element.fitAllLines && width && context
+    ? sourceLines.flatMap((sourceLine, sourceIndex) => {
+      if (!sourceLine.trim()) return [{ text: "", setting: settings[sourceIndex] }];
+      const words = sourceLine.trim().split(/\s+/);
+      const wrapped = [];
+      let current = "";
+      context.font = font(settings[sourceIndex].size * scale);
+      words.forEach((word) => {
+        const candidate = current ? `${current} ${word}` : word;
+        if (current && context.measureText(candidate).width > width * 0.98) {
+          wrapped.push({ text: current, setting: settings[sourceIndex] });
+          current = word;
+        } else current = candidate;
+      });
+      wrapped.push({ text: current, setting: settings[sourceIndex] });
+      return wrapped;
+    })
+    : sourceLines.map((text, index) => ({ text, setting: settings[index] }));
+  const sizes = lines.map(({ text, setting }) => {
+    const fit = element.fitAllLines || setting.fit;
+    if (!fit || !width || !text.trim() || !context) return setting.size * scale;
+    context.font = font(100);
+    const measured = context.measureText(text).width;
+    return measured ? Math.min(240 * scale, (width * 0.98 * 100) / measured) : setting.size * scale;
   });
   // Fit-to-width lines also respect the box's height as a group.
   const leading = element.lineHeight || 1.2;
   const total = sizes.reduce((sum, size) => sum + size * leading, 0);
-  const heightScale = settings.some((line) => line.fit) && height && total > height ? height / total : 1;
+  const heightScale = (element.fitAllLines || settings.some((line) => line.fit)) && height && total > height ? height / total : 1;
 
   return (
     <div ref={ref} style={{ ...style, width: "100%", height: "100%" }}>
-      {lines.map((line, index) => (
-        <div key={index} style={{ fontSize: sizes[index] * heightScale, lineHeight: leading, whiteSpace: "pre", overflow: settings[index].fit ? "hidden" : "visible" }}>
-          {line || "\u00a0"}
+      {lines.map(({ text, setting }, index) => (
+        <div key={index} style={{ fontSize: sizes[index] * heightScale, lineHeight: leading, whiteSpace: "pre", overflow: element.fitAllLines || setting.fit ? "hidden" : "visible" }}>
+          {text || "\u00a0"}
         </div>
       ))}
     </div>

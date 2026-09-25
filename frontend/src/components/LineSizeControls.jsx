@@ -2,7 +2,6 @@ import { lineSettings } from "@/components/StyledText";
 
 export function LineSizeControls({ element, onPatch, prefix }) {
   const lines = String(element.text || "").split("\n");
-  if (lines.length < 2) return null;
   const settings = lineSettings(element);
   const update = (index, key, value) => {
     const values = settings.map((line) => line[key]);
@@ -11,8 +10,17 @@ export function LineSizeControls({ element, onPatch, prefix }) {
   };
   return (
     <div className="mt-3 space-y-2 border-t border-white/10 pt-3" data-testid={`${prefix}-line-sizes`}>
-      <p className="font-mono text-[10px] uppercase tracking-wider text-zinc-500">Individual lines</p>
-      {lines.map((line, index) => (
+      <label className="flex items-start gap-2 text-xs text-zinc-300">
+        <input type="checkbox" checked={Boolean(element.fitAllLines)}
+          onChange={(event) => onPatch({ fitAllLines: event.target.checked })}
+          data-testid={`${prefix}-fit-all-lines`} className="mt-0.5 accent-lime" />
+        <span>
+          <span className="block text-white">Fit every line to box width</span>
+          <span className="block text-[10px] leading-4 text-zinc-500">Automatically wraps the words, then sizes each visible line independently.</span>
+        </span>
+      </label>
+      {lines.length > 1 && <p className="font-mono text-[10px] uppercase tracking-wider text-zinc-500">Manual line overrides</p>}
+      {!element.fitAllLines && lines.length > 1 && lines.map((line, index) => (
         <div key={index} className="flex flex-wrap items-center gap-2 text-xs text-zinc-300">
           <span className="w-20 truncate" title={line || `Line ${index + 1}`}>{line || `Line ${index + 1}`}</span>
           <input type="number" min="8" max="240" aria-label={`Line ${index + 1} font size`}

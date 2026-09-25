@@ -223,7 +223,7 @@ export const VisualCard = forwardRef(function VisualCard(
               // font measuring wider, or fresh copy longer than the original.
               // The card itself still clips, so nothing escapes the slide.
               <div key={el.id} style={{ ...box, ...type }}>
-                {el.lineSizes?.length || el.fitLines?.some(Boolean)
+                {el.fitAllLines || el.lineSizes?.length || el.fitLines?.some(Boolean)
                   ? <StyledText element={el} scale={scale} style={{ fontFamily: type.fontFamily, fontWeight: type.fontWeight, fontStyle: type.fontStyle }} />
                   : el.text}
               </div>
