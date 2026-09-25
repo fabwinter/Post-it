@@ -12,6 +12,7 @@ import { ModelPicker } from "@/components/ModelPicker";
 import { VisualCard, ASPECT_CLASS, ASPECT_RATIO, THEME_LIST, themeFor } from "@/components/VisualCard";
 import { SlideEditor } from "@/components/SlideEditor";
 import { CanvasEditor } from "@/components/CanvasEditor";
+import { LineSizeControls } from "@/components/LineSizeControls";
 import { ReelPlayer } from "@/components/ReelPlayer";
 import { VideoClipEditor } from "@/components/VideoClipEditor";
 import { ReelExportDialog } from "@/components/ReelExportDialog";
@@ -3073,6 +3074,9 @@ function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, 
                 </select>
               </div>
               <FontNotice fontKey={el.fontFamily || "Inter"} testid="composer-font-notice" />
+              <button onClick={() => onPatch(el.id, { fontStyle: el.fontStyle === "italic" ? "normal" : "italic" })}
+                data-testid="composer-element-italic" aria-pressed={el.fontStyle === "italic"}
+                className={`mt-2 h-8 rounded-lg border px-3 text-xs italic ${el.fontStyle === "italic" ? "border-lime text-lime" : "border-white/10 text-zinc-400"}`}>Italic</button>
               {/* Which boxes a design refills, and which it leaves alone.
                   Saving a slide as a design turns one or two of its text
                   boxes into copy slots — refilled with fresh words on every
@@ -3118,6 +3122,7 @@ function ElementPropertyPanel({ elements, selectedId, onSelect, onPatch, onAdd, 
                   ))}
                 </div>
               </div>
+              <LineSizeControls element={el} onPatch={(patch) => onPatch(el.id, patch)} prefix="composer" />
             </>
           )}
           {(el.type === "image" || el.type === "video") && (

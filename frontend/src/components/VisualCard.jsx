@@ -3,6 +3,7 @@ import { Twitter, BadgeCheck, Loader2 } from "lucide-react";
 import { activeColors } from "@/lib/useBrand";
 import { fontStack, useBrandFonts, ensureFontLoaded } from "@/lib/fonts";
 import { elementBoxStyle } from "@/lib/slideElements";
+import { StyledText } from "@/components/StyledText";
 import { normalizeClip, filterCss } from "@/lib/videoClip";
 import { ICON_MAP } from "@/lib/elementLibrary";
 
@@ -194,6 +195,7 @@ export const VisualCard = forwardRef(function VisualCard(
             const type = {
               fontFamily: fontStack(family), fontSize: f(el.fontSize || 16),
               fontWeight: el.fontWeight || 600, color: roleColor, textAlign: el.align || "left",
+              fontStyle: el.fontStyle || "normal",
               lineHeight: el.lineHeight || 1.2, whiteSpace: "pre-wrap", wordBreak: "break-word",
             };
             // The spoken line, highlighted word by word as the reel plays.
@@ -221,7 +223,9 @@ export const VisualCard = forwardRef(function VisualCard(
               // font measuring wider, or fresh copy longer than the original.
               // The card itself still clips, so nothing escapes the slide.
               <div key={el.id} style={{ ...box, ...type }}>
-                {el.text}
+                {el.fitAllLines || el.lineSizes?.length || el.fitLines?.some(Boolean)
+                  ? <StyledText element={el} scale={scale} style={{ fontFamily: type.fontFamily, fontWeight: type.fontWeight, fontStyle: type.fontStyle }} />
+                  : el.text}
               </div>
             );
           }
